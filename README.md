@@ -71,4 +71,4 @@ Issues and Pull Requests are welcome.
 
 ## License
 
-GPL License
+GPL-3.0-only. See [LICENSE](LICENSE).
