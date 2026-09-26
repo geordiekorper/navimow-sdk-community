@@ -4,6 +4,8 @@
   <img src="https://fra-navimow-prod.s3.eu-central-1.amazonaws.com/img/navimowhomeassistant.png" width="600">
 </p>
 
+> **Community edition.** Forked from [segwaynavimow/navimow-sdk](https://github.com/segwaynavimow/navimow-sdk) at 0.1.2 (April 2026), which has had no maintainer activity since. The import name is unchanged: `import mower_sdk`.
+
 A lightweight Python SDK for integrating Navimow robotic mowers with cloud platforms and smart home systems.
 
 It provides a simple interface for device discovery, status monitoring, and mower control using REST APIs and MQTT-based real-time communication.
@@ -24,7 +26,7 @@ More features are being added over time.
 Install from PyPI:
 
 ```bash
-pip install navimow-sdk
+pip install navimow-sdk-community
 ````
 
 ## Quick Example

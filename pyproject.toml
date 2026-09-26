@@ -3,8 +3,8 @@ requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "navimow-sdk"
-version = "0.1.2"
+name = "navimow-sdk-community"
+dynamic = ["version"]
 description = "Python SDK for cloud mower platform integration with smart home systems."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -39,13 +39,16 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/segwaynavimow/navimow-sdk"
-Documentation = "https://github.com/segwaynavimow/navimow-sdk#readme"
-Repository = "https://github.com/segwaynavimow/navimow-sdk"
-Issues = "https://github.com/segwaynavimow/navimow-sdk/issues"
+Homepage = "https://github.com/geordiekorper/navimow-sdk-community"
+Documentation = "https://github.com/geordiekorper/navimow-sdk-community#readme"
+Repository = "https://github.com/geordiekorper/navimow-sdk-community"
+Issues = "https://github.com/geordiekorper/navimow-sdk-community/issues"
 
-[tool.setuptools]
-packages = ["mower_sdk"]
+[tool.setuptools.dynamic]
+version = {attr = "mower_sdk.__version__"}
+
+[tool.setuptools.packages.find]
+include = ["mower_sdk*"]
 
 [tool.black]
 line-length = 100
