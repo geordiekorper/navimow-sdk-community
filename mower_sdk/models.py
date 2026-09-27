@@ -3,9 +3,39 @@
 Defines every data model the SDK uses: enums and dataclasses.
 """
 
+import importlib
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+from mower_sdk._deprecation import warn_legacy
+
+if TYPE_CHECKING:
+    from mower_sdk.legacy.thing_models import (
+        ThingEventMessage as ThingEventMessage,
+        ThingParams as ThingParams,
+        ThingPropertiesMessage as ThingPropertiesMessage,
+        ThingStatusMessage as ThingStatusMessage,
+    )
+
+# The public surface upstream published from this module. The four Thing*
+# classes now live in mower_sdk.legacy.thing_models and are served by
+# __getattr__.
+__all__ = [
+    "Device",
+    "DeviceAttributesMessage",
+    "DeviceCommandMessage",
+    "DeviceEventMessage",
+    "DeviceStateMessage",
+    "DeviceStatus",
+    "MowerCommand",
+    "MowerError",
+    "MowerStatus",
+    "ThingEventMessage",
+    "ThingParams",
+    "ThingPropertiesMessage",
+    "ThingStatusMessage",
+]
 
 
 _RAW_STATE_TO_CANONICAL: dict[str, str] = {
@@ -25,6 +55,23 @@ _RAW_STATE_TO_CANONICAL: dict[str, str] = {
     "Offline": "unknown",
     "offline": "unknown",
 }
+
+
+def _raw_state(data: dict[str, Any], keys: tuple[str, ...]) -> Any:
+    """Return the raw state under the first key with a truthy value, else the last key's value.
+
+    Exactly what ``data.get(k1) or data.get(k2) or data.get(k3)`` returns: the
+    first truthy value in key order, or, when none is truthy, whatever the last
+    key holds, falsy values such as False or "" included. Each reader passes
+    its own key order, because a payload carrying both keys resolves
+    differently per reader and that precedence is kept.
+    """
+    value = None
+    for key in keys:
+        value = data.get(key)
+        if value:
+            return value
+    return value
 
 
 def _normalize_state_value(raw_state: Any) -> str:
@@ -190,86 +237,6 @@ class Device:
 
 
 @dataclass
-class ThingParams:
-    """Common params wrapper for Thing messages."""
-
-    iot_id: str | None = None
-    product_key: str | None = None
-    device_name: str | None = None
-    identifier: str | None = None
-    value: Any | None = None
-    raw: dict[str, Any] | None = None
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "ThingParams":
-        return cls(
-            iot_id=data.get("iotId") or data.get("iot_id"),
-            product_key=data.get("productKey") or data.get("product_key"),
-            device_name=data.get("deviceName") or data.get("device_name"),
-            identifier=data.get("identifier"),
-            value=data.get("value"),
-            raw=data,
-        )
-
-
-@dataclass
-class ThingStatusMessage:
-    """Thing status message."""
-
-    method: str | None
-    id: str | None
-    params: ThingParams
-    version: str | None
-
-    @classmethod
-    def from_dict(cls, payload: dict[str, Any]) -> "ThingStatusMessage":
-        return cls(
-            method=payload.get("method"),
-            id=payload.get("id"),
-            params=ThingParams.from_dict(payload.get("params", {})),
-            version=payload.get("version"),
-        )
-
-
-@dataclass
-class ThingPropertiesMessage:
-    """Thing properties message."""
-
-    method: str | None
-    id: str | None
-    params: ThingParams
-    version: str | None
-
-    @classmethod
-    def from_dict(cls, payload: dict[str, Any]) -> "ThingPropertiesMessage":
-        return cls(
-            method=payload.get("method"),
-            id=payload.get("id"),
-            params=ThingParams.from_dict(payload.get("params", {})),
-            version=payload.get("version"),
-        )
-
-
-@dataclass
-class ThingEventMessage:
-    """Thing event message."""
-
-    method: str | None
-    id: str | None
-    params: ThingParams
-    version: str | None
-
-    @classmethod
-    def from_dict(cls, payload: dict[str, Any]) -> "ThingEventMessage":
-        return cls(
-            method=payload.get("method"),
-            id=payload.get("id"),
-            params=ThingParams.from_dict(payload.get("params", {})),
-            version=payload.get("version"),
-        )
-
-
-@dataclass
 class DeviceStatus:
     """Device status.
 
@@ -309,7 +276,7 @@ class DeviceStatus:
         Returns:
             A DeviceStatus instance
         """
-        status_source = data.get("status") or data.get("state") or data.get("vehicleState")
+        status_source = _raw_state(data, ("status", "state", "vehicleState"))
         normalized_state = _normalize_state_value(status_source)
         try:
             status = MowerStatus(normalized_state)
@@ -394,9 +361,7 @@ class DeviceStateMessage:
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "DeviceStateMessage":
-        raw_state = payload.get("state") or payload.get("status") or payload.get(
-            "vehicleState"
-        )
+        raw_state = _raw_state(payload, ("state", "status", "vehicleState"))
         normalized_state = _normalize_state_value(raw_state)
         metrics = payload.get("metrics")
         if not isinstance(metrics, dict):
@@ -510,3 +475,24 @@ class DeviceCommandMessage:
             "command": self.command,
             "params": self.params or {},
         }
+
+
+# Names that moved to mower_sdk.legacy: attribute here -> (legacy module, attribute there).
+_LEGACY_NAMES = {
+    "ThingParams": ("thing_models", "ThingParams"),
+    "ThingStatusMessage": ("thing_models", "ThingStatusMessage"),
+    "ThingPropertiesMessage": ("thing_models", "ThingPropertiesMessage"),
+    "ThingEventMessage": ("thing_models", "ThingEventMessage"),
+}
+
+
+def __getattr__(name: str) -> Any:
+    """Serve the names that moved to mower_sdk.legacy, warning once per legacy module."""
+    try:
+        legacy_module, attribute = _LEGACY_NAMES[name]
+    except KeyError:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
+    warn_legacy(legacy_module, f"{__name__}.{name}")
+    value = getattr(importlib.import_module(f"mower_sdk.legacy.{legacy_module}"), attribute)
+    globals()[name] = value
+    return value

@@ -2,7 +2,7 @@
 # so no API token is stored anywhere. TestPyPI must list this repository as
 # the project's trusted publisher: owner geordiekorper, repository
 # navimow-sdk-community, workflow publish.yml, environment testpypi.
-# Publishing to PyPI proper is a later addition (Phase 0 Q7: TestPyPI only).
+# Publishing to PyPI proper is a later addition; for now TestPyPI only.
 name: Publish
 
 on:

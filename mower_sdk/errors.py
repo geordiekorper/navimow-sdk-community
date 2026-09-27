@@ -3,6 +3,26 @@
 Defines every custom exception type the SDK raises.
 """
 
+import importlib
+from typing import TYPE_CHECKING, Any
+
+from mower_sdk._deprecation import warn_legacy
+
+if TYPE_CHECKING:
+    from mower_sdk.legacy.errors import COMMAND_ERRORS as COMMAND_ERRORS
+    from mower_sdk.legacy.errors import MowerAuthError as MowerAuthError
+
+# The public surface upstream published from this module. MowerAuthError and
+# COMMAND_ERRORS now live in mower_sdk.legacy.errors and are served by
+# __getattr__.
+__all__ = [
+    "COMMAND_ERRORS",
+    "ERROR_MESSAGES",
+    "MowerAPIError",
+    "MowerAuthError",
+    "MowerMQTTError",
+]
+
 
 class MowerAPIError(Exception):
     """Raised when an API request fails.
@@ -41,23 +61,6 @@ class MowerAPIError(Exception):
         return " | ".join(parts)
 
 
-class MowerAuthError(Exception):
-    """Raised when authentication fails.
-
-    Attributes:
-        message: Error message
-    """
-
-    def __init__(self, message: str):
-        """Initialize the authentication exception.
-
-        Args:
-            message: Error message
-        """
-        super().__init__(message)
-        self.message = message
-
-
 class MowerMQTTError(Exception):
     """Raised when an MQTT operation fails.
 
@@ -90,23 +93,21 @@ ERROR_MESSAGES = {
     "INVALID_DEVICE_STATUS": "无效的设备状态",
 }
 
-# Command error mapping
-COMMAND_ERRORS = {
-    "START": {
-        "DEVICE_OFFLINE": "设备离线，无法启动",
-        "ALREADY_MOWING": "设备正在割草中",
-        "BATTERY_LOW": "电池电量过低，无法启动",
-    },
-    "PAUSE": {
-        "NOT_MOWING": "设备未在割草中，无法暂停",
-        "DEVICE_OFFLINE": "设备离线，无法暂停",
-    },
-    "DOCK": {
-        "ALREADY_DOCKED": "设备已在充电站",
-        "DEVICE_OFFLINE": "设备离线，无法返回充电站",
-    },
-    "RESUME": {
-        "NOT_PAUSED": "设备未暂停，无法恢复",
-        "DEVICE_OFFLINE": "设备离线，无法恢复",
-    },
+
+# Names that moved to mower_sdk.legacy: attribute here -> (legacy module, attribute there).
+_LEGACY_NAMES = {
+    "MowerAuthError": ("errors", "MowerAuthError"),
+    "COMMAND_ERRORS": ("errors", "COMMAND_ERRORS"),
 }
+
+
+def __getattr__(name: str) -> Any:
+    """Serve the names that moved to mower_sdk.legacy, warning once per legacy module."""
+    try:
+        legacy_module, attribute = _LEGACY_NAMES[name]
+    except KeyError:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
+    warn_legacy(legacy_module, f"{__name__}.{name}")
+    value = getattr(importlib.import_module(f"mower_sdk.legacy.{legacy_module}"), attribute)
+    globals()[name] = value
+    return value
