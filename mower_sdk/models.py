@@ -57,6 +57,23 @@ _RAW_STATE_TO_CANONICAL: dict[str, str] = {
 }
 
 
+def _raw_state(data: dict[str, Any], keys: tuple[str, ...]) -> Any:
+    """Return the raw state under the first key with a truthy value, else the last key's value.
+
+    Exactly what ``data.get(k1) or data.get(k2) or data.get(k3)`` returns: the
+    first truthy value in key order, or, when none is truthy, whatever the last
+    key holds, falsy values such as False or "" included. Each reader passes
+    its own key order, because a payload carrying both keys resolves
+    differently per reader and that precedence is kept.
+    """
+    value = None
+    for key in keys:
+        value = data.get(key)
+        if value:
+            return value
+    return value
+
+
 def _normalize_state_value(raw_state: Any) -> str:
     """Normalize cloud/raw mower state to canonical internal state value."""
     if isinstance(raw_state, MowerStatus):
@@ -259,7 +276,7 @@ class DeviceStatus:
         Returns:
             A DeviceStatus instance
         """
-        status_source = data.get("status") or data.get("state") or data.get("vehicleState")
+        status_source = _raw_state(data, ("status", "state", "vehicleState"))
         normalized_state = _normalize_state_value(status_source)
         try:
             status = MowerStatus(normalized_state)
@@ -344,9 +361,7 @@ class DeviceStateMessage:
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "DeviceStateMessage":
-        raw_state = payload.get("state") or payload.get("status") or payload.get(
-            "vehicleState"
-        )
+        raw_state = _raw_state(payload, ("state", "status", "vehicleState"))
         normalized_state = _normalize_state_value(raw_state)
         metrics = payload.get("metrics")
         if not isinstance(metrics, dict):
