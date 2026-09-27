@@ -118,7 +118,7 @@ def test_direct_legacy_imports_and_the_package_import_do_not_warn(tmp_path: Path
         tmp_path,
         """\
 import mower_sdk
-from mower_sdk import MowerClient, Navimow, NavimowCloud, NavimowCloudDevice, StateManager, DataEvent
+from mower_sdk import MowerAPI, NavimowMQTT, NavimowSDK
 import mower_sdk.legacy.client
 import mower_sdk.legacy.cloud
 import mower_sdk.legacy.device
