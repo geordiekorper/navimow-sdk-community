@@ -81,7 +81,8 @@ jobs:
 
 
           async def main() -> None:
-              MowerMQTT("broker.invalid")
+              # MowerMQTT builds its paho client lazily; NavimowMQTT builds it in __init__.
+              MowerMQTT("broker.invalid")._build_client()
               NavimowMQTT("broker.invalid", 8883, None, None, records=[])
               NavimowSDK("broker.invalid", 8883)
               print(
@@ -130,6 +131,40 @@ jobs:
           cd "$RUNNER_TEMP"
           venv/bin/python -c 'import mower_sdk; print("importing", mower_sdk.__file__)'
           venv/bin/python -m pytest tests
+      - name: Check the installed wheel's identity, version and license metadata
+        run: |
+          cd "$RUNNER_TEMP"
+          venv/bin/python - <<'PY'
+          import sys
+          from importlib.metadata import distribution
+
+          import mower_sdk
+
+          dist = distribution("navimow-sdk-community")
+          problems = []
+          if dist.metadata["Name"] != "navimow-sdk-community":
+              problems.append(f"Name is {dist.metadata['Name']!r}")
+          if dist.version != mower_sdk.__version__:
+              problems.append(f"version {dist.version!r} != mower_sdk.__version__ {mower_sdk.__version__!r}")
+          if dist.metadata["License-Expression"] != "GPL-3.0-only":
+              problems.append(f"License-Expression is {dist.metadata['License-Expression']!r}")
+          licenses = [
+              path
+              for path in dist.files or []
+              if path.name == "LICENSE"
+              and path.parent.name == "licenses"
+              and path.parent.parent.name.endswith(".dist-info")
+          ]
+          if not licenses:
+              problems.append("dist-info/licenses/LICENSE is not packaged")
+          elif not licenses[0].locate().is_file():
+              problems.append(f"{licenses[0]} is recorded but missing")
+          elif "GNU GENERAL PUBLIC LICENSE" not in licenses[0].read_text()[:200]:
+              problems.append(f"{licenses[0]} is not the GPL text")
+          print(f"{dist.metadata['Name']} {dist.version}, {dist.metadata['License-Expression']}")
+          if problems:
+              sys.exit("wheel metadata: " + "; ".join(problems))
+          PY
 
   ruff:
     name: ruff (advisory until Phase 1)

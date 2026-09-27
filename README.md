@@ -27,7 +27,17 @@ Install from PyPI:
 
 ```bash
 pip install navimow-sdk-community
-````
+```
+
+> **Switching from the upstream package.** `navimow-sdk` and `navimow-sdk-community` both install
+> the `mower_sdk` package, so they cannot coexist in one environment: whichever was installed last
+> overwrites the other's files. Uninstall the upstream distribution first, or use a fresh
+> environment, and change any requirement on `navimow-sdk` to `navimow-sdk-community`.
+>
+> ```bash
+> pip uninstall navimow-sdk
+> pip install navimow-sdk-community
+> ```
 
 ## Quick Example
 

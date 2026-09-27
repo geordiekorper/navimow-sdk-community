@@ -542,10 +542,18 @@ class NavimowMQTT:
         password: str | None = None,
         auth_headers: dict[str, str] | None = None,
     ) -> None:
-        """Update the MQTT credentials. While connected, only store the new values and apply them at the next reconnect; while disconnected, reconnect immediately.
+        """Update the MQTT credentials.
 
-        paho-mqtt's ws_set_options only takes effect before a connection is established, so a reconnect needs a rebuilt client.
-        An established connection is not dropped on purpose, so hourly OAuth token rotation does not force an hourly disconnect.
+        Unchanged values are ignored. While connected, changed values are only stored on
+        this object; the live paho client and its connection are left alone, so hourly
+        OAuth token rotation does not force a disconnect. Stored values reach the broker
+        only when the paho client is next rebuilt, which this method does on a later call
+        made while disconnected; paho's own automatic reconnect reuses the existing client
+        and its original credentials. While disconnected, changed values rebuild the paho
+        client and start an asynchronous reconnect.
+
+        paho-mqtt's ws_set_options only takes effect before a connection is established,
+        so new WebSocket headers always need a rebuilt client.
         """
         changed = False
         if username is not None and username != self.username:
@@ -562,8 +570,11 @@ class NavimowMQTT:
             return
 
         if self.client.is_connected():
-            # The connection is healthy; the new credentials are stored and apply when the broker next disconnects and we reconnect.
-            # Do not disconnect on purpose: hourly token rotation would otherwise cause needless reconnects and "device unavailable".
+            # The connection is healthy: store the new credentials and leave the live client alone.
+            # They reach the broker when the client is next rebuilt, on a later call made while
+            # disconnected; paho's automatic reconnect reuses this client as it is. Not disconnecting
+            # on purpose: hourly token rotation would otherwise cause needless reconnects and
+            # "device unavailable".
             _LOGGER.info(
                 "NavimowMQTT credentials updated while connected (will apply on next reconnect): broker=%s port=%s",
                 self.broker,

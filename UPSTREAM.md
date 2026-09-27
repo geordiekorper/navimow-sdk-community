@@ -22,7 +22,9 @@ commit as the change it records.
 | origin | https://github.com/geordiekorper/navimow-sdk-community | this fork; `main` is the community branch |
 | upstream | https://github.com/segwaynavimow/navimow-sdk | fetched for comparison, never pushed to |
 
-To see what has changed since the fork point: `git fetch upstream && git diff upstream/main`.
+To see what has changed since the fork point: `git log 6596aa0..main` for the commits,
+`git diff 6596aa0 main` for the tree. To compare with upstream's current tip instead:
+`git fetch upstream && git diff upstream/main main`.
 
 ## Commits taken from elsewhere
 
