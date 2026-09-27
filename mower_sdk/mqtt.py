@@ -103,21 +103,11 @@ class NavimowMQTT:
         self.on_message: Callable[[str, bytes, str], Awaitable[None]] | None = None
         self.on_disconnected: Callable[[], Awaitable[None]] | None = None
 
+        # self.client is assigned before it is configured: the callback lookups
+        # in _configure_client may read it, and a subclass can rely on that.
         transport = "websockets" if self.ws_path else "tcp"
         self.client = mqtt_client.Client(client_id=self._client_id, transport=transport)
-        if self.username and self.password:
-            self.client.username_pw_set(self.username, self.password)
-        if self.ws_path:
-            self.client.ws_set_options(path=self.ws_path, headers=self.auth_headers or {})
-        if self._use_tls:
-            self.client.tls_set()
-        self.client.reconnect_delay_set(
-            min_delay=self.reconnect_min_delay, max_delay=self.reconnect_max_delay
-        )
-
-        self.client.on_connect = self._on_connect
-        self.client.on_disconnect = self._on_disconnect
-        self.client.on_message = self._on_message
+        self._configure_client(self.client)
         _LOGGER.info(
             "NavimowMQTT init: broker=%s port=%s ws_path=%s tls=%s client_id=%s",
             self.broker,
@@ -131,10 +121,8 @@ class NavimowMQTT:
     def is_connected(self) -> bool:
         return self.client.is_connected()
 
-    def _build_new_client(self) -> mqtt_client.Client:
-        """Rebuild the paho MQTT client with the latest credentials and configuration."""
-        transport = "websockets" if self.ws_path else "tcp"
-        client = mqtt_client.Client(client_id=self._client_id, transport=transport)
+    def _configure_client(self, client: mqtt_client.Client) -> None:
+        """Apply the current credentials, WebSocket options, TLS, reconnect delays and callbacks."""
         if self.username and self.password:
             client.username_pw_set(self.username, self.password)
         if self.ws_path:
@@ -147,6 +135,16 @@ class NavimowMQTT:
         client.on_connect = self._on_connect
         client.on_disconnect = self._on_disconnect
         client.on_message = self._on_message
+
+    def _build_new_client(self) -> mqtt_client.Client:
+        """Build a new paho MQTT client with the latest credentials and configuration.
+
+        Not called by __init__, which configures self.client in place, so an
+        override here takes effect on the next rebuild, not at construction.
+        """
+        transport = "websockets" if self.ws_path else "tcp"
+        client = mqtt_client.Client(client_id=self._client_id, transport=transport)
+        self._configure_client(client)
         return client
 
     def update_credentials(
@@ -248,7 +246,13 @@ class NavimowMQTT:
                 device_ids.append(device_id)
         return device_ids
 
-    def subscribe_all(self, product_key: str, device_name: str) -> None:
+    def subscribe_all(self, product_key: str = "", device_name: str = "") -> None:  # noqa: ARG002
+        """Subscribe to the state, event and attributes topics of every known device.
+
+        product_key and device_name are ignored; they are kept, optional, so
+        callers and overrides written against the original signature keep
+        working.
+        """
         device_ids = self._get_device_ids()
         if not device_ids:
             _LOGGER.warning(
@@ -269,7 +273,11 @@ class NavimowMQTT:
                 f"/downlink/vehicle/{device_id}/realtimeDate/attributes"
             )
 
-    def unsubscribe_all(self, product_key: str, device_name: str) -> None:
+    def unsubscribe_all(self, product_key: str = "", device_name: str = "") -> None:  # noqa: ARG002
+        """Unsubscribe from the topics subscribe_all subscribed to.
+
+        product_key and device_name are ignored, as in subscribe_all.
+        """
         device_ids = self._get_device_ids()
         if not device_ids:
             _LOGGER.info("NavimowMQTT unsubscribing cloud topics (wildcard)")
@@ -303,6 +311,8 @@ class NavimowMQTT:
             self.broker,
             self.port,
         )
+        # Called with both arguments so an override with the original two-argument
+        # signature keeps working.
         self.subscribe_all("", "")
 
         if self.on_connected is not None:
@@ -334,7 +344,7 @@ class NavimowMQTT:
 
     def _on_message(self, _client, _userdata, msg) -> None:
         topic = msg.topic
-        device_id, _channel = self._parse_topic(topic)
+        device_id, _ = self._parse_topic(topic)
 
         payload_bytes = msg.payload
         _LOGGER.debug(
@@ -354,6 +364,9 @@ class NavimowMQTT:
             payload = None
 
         if isinstance(payload, dict) and device_id:
+            # Re-encoded on purpose: on_message(topic, bytes, device_id) is a public
+            # contract, consumers decode the bytes themselves, and integrations wrap
+            # this slot expecting the device_id to be present in the payload.
             payload.setdefault("device_id", device_id)
             payload_bytes = json.dumps(payload).encode("utf-8")
 
