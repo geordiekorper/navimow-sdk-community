@@ -126,9 +126,9 @@ def subject(commit: str) -> str:
 def split_lines(data: bytes) -> list[bytes]:
     """Split on LF only, keeping the line ends: git counts hunk lines the same way.
 
-    bytes.splitlines would also split on vertical tabs, form feeds and the
-    like, which git treats as ordinary content, and that would throw the hunk
-    counting off.
+    bytes.splitlines would also split on a lone CR, and str.splitlines on
+    vertical tabs, form feeds and the like; git treats all of those as
+    ordinary content, and splitting on them would throw the hunk counting off.
     """
     pieces = data.split(b"\n")
     lines = [piece + b"\n" for piece in pieces[:-1]]
