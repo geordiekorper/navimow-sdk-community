@@ -39,16 +39,18 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 MAP_FILE = REPO_ROOT / "tools" / "upstream_path_map.json"
 
-# Patch lines that carry a path: the header, the pre/post-image lines, rename
-# and copy headers, and the diffstat summary (informational only).
+# Patch header lines that carry a path. Only these, and the diffstat lines in
+# the message part of each patch, are rewritten; hunk bodies and commit
+# messages are copied byte for byte.
 PATH_LINES = [
     re.compile(r"^(diff --git a/)(?P<a>\S+)( b/)(?P<b>\S+)$"),
     re.compile(r"^(--- a/)(?P<a>.+)$"),
     re.compile(r"^(\+\+\+ b/)(?P<a>.+)$"),
     re.compile(r"^(rename (?:from|to) )(?P<a>.+)$"),
     re.compile(r"^(copy (?:from|to) )(?P<a>.+)$"),
-    re.compile(r"^( )(?P<a>\S+)(\s+\|\s+\d+.*)$"),
 ]
+DIFFSTAT_LINE = re.compile(r"^( )(?P<a>\S+)(\s+\|\s+\d+.*)$")
+HUNK_HEADER = re.compile(r"^@@ -\d+(?:,(?P<old>\d+))? \+\d+(?:,(?P<new>\d+))? @@")
 
 
 def git(*args: str, check: bool = True, **kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -76,10 +78,10 @@ def subject(commit: str) -> str:
     return git("log", "-1", "--format=%h %s", commit).stdout.strip()
 
 
-def rewrite_line(line: str, moved: dict[str, str]) -> str:
+def rewrite_path_line(line: str, patterns: list[re.Pattern[str]], moved: dict[str, str]) -> str:
     body = line.rstrip("\r\n")
     ending = line[len(body) :]
-    for pattern in PATH_LINES:
+    for pattern in patterns:
         match = pattern.match(body)
         if not match:
             continue
@@ -93,7 +95,67 @@ def rewrite_line(line: str, moved: dict[str, str]) -> str:
 
 
 def rewrite_series(series: str, moved: dict[str, str]) -> str:
-    return "".join(rewrite_line(line, moved) for line in series.splitlines(keepends=True))
+    """Rewrite the moved paths in a format-patch mbox, and nothing else.
+
+    Each patch is a mail: headers and commit message, a "---" separator, the
+    diffstat, then one diff per file. A diff has header lines (diff --git,
+    index, mode, rename, copy, --- a/, +++ b/) and hunks; each hunk header
+    says how many old and new lines it holds, so the hunk body is copied
+    through by counting. Only diff header lines and the diffstat are rewritten;
+    hunk bodies and the commit message are never touched, however much they
+    look like a path.
+    """
+    out: list[str] = []
+    state = "message"  # message | stat | header | hunk | binary
+    old_left = new_left = 0
+    for line in series.splitlines(keepends=True):
+        body = line.rstrip("\r\n")
+        if state == "hunk" and (old_left > 0 or new_left > 0):
+            if body.startswith("\\"):  # "\ No newline at end of file"
+                pass
+            elif body.startswith("+"):
+                new_left -= 1
+            elif body.startswith("-"):
+                old_left -= 1
+            else:  # a context line (" ..." or, with trailing whitespace stripped, "")
+                old_left -= 1
+                new_left -= 1
+            out.append(line)
+            continue
+        if body.startswith("From ") and state != "message":
+            # The next patch in the mbox.
+            state = "message"
+        if body.startswith("diff --git "):
+            state = "header"
+            out.append(rewrite_path_line(line, PATH_LINES[:1], moved))
+            continue
+        if state in ("header", "hunk"):
+            hunk = HUNK_HEADER.match(body)
+            if hunk:
+                state = "hunk"
+                old_left = int(hunk.group("old")) if hunk.group("old") is not None else 1
+                new_left = int(hunk.group("new")) if hunk.group("new") is not None else 1
+                out.append(line)
+                continue
+            if body.startswith("GIT binary patch"):
+                state = "binary"
+                out.append(line)
+                continue
+            if state == "header":
+                out.append(rewrite_path_line(line, PATH_LINES[1:], moved))
+                continue
+            # After a hunk: the trailer ("-- " and the git version) or the next mail.
+            out.append(line)
+            continue
+        if state == "message" and body == "---":
+            state = "stat"
+            out.append(line)
+            continue
+        if state == "stat":
+            out.append(rewrite_path_line(line, [DIFFSTAT_LINE], moved))
+            continue
+        out.append(line)
+    return "".join(out)
 
 
 def main(argv: list[str] | None = None) -> int:
