@@ -50,18 +50,24 @@ The forks reviewed on 2026-09-26, in the order their pieces are applied:
 
 Phase 1 moves everything outside the live path into `mower_sdk.legacy` with
 `git mv`, so history and merge-back survive, and leaves a deprecating re-export
-at the old location. Commits are named by their Phase 1 label; `git log --follow`
-on the new path finds each one.
+at the old location. Commits are named by their Phase 1 label and, once known,
+their sha; `git log --follow` on the new path finds each one.
+
+Every old path is a shim: it emits one `DeprecationWarning` per legacy module
+per process, on the first deprecated access through any old path, and then
+re-exports the legacy module with a star import. Importing
+`mower_sdk.legacy.<module>` directly never warns. The policy lives in
+`mower_sdk/_deprecation.py`.
 
 | At the fork point | Now | Moved in | Old import still works |
 |---|---|---|---|
-| `mower_sdk/client.py` | `mower_sdk/legacy/client.py` | Phase 1 C3 (whole file) | not yet: the shim follows in C4 |
-| `mower_sdk/cloud.py` | `mower_sdk/legacy/cloud.py` | Phase 1 C3 (whole file) | not yet: the shim follows in C4 |
-| `mower_sdk/device.py` | `mower_sdk/legacy/device.py` | Phase 1 C3 (whole file) | not yet: the shim follows in C4 |
-| `mower_sdk/event.py` | `mower_sdk/legacy/event.py` | Phase 1 C3 (whole file) | not yet: the shim follows in C4 |
-| `mower_sdk/navimow.py` | `mower_sdk/legacy/navimow.py` | Phase 1 C3 (whole file) | not yet: the shim follows in C4 |
-| `mower_sdk/state_manager.py` | `mower_sdk/legacy/state_manager.py` | Phase 1 C3 (whole file) | not yet: the shim follows in C4 |
-| `mower_sdk/utils.py` | `mower_sdk/legacy/utils.py` | Phase 1 C3 (whole file) | not yet: the shim follows in C4 |
+| `mower_sdk/client.py` | `mower_sdk/legacy/client.py` | Phase 1 C3, `93869a2` (whole file) | yes: a shim at the old path warns once per process (Phase 1 C4) |
+| `mower_sdk/cloud.py` | `mower_sdk/legacy/cloud.py` | Phase 1 C3, `93869a2` (whole file) | yes: a shim at the old path warns once per process (Phase 1 C4) |
+| `mower_sdk/device.py` | `mower_sdk/legacy/device.py` | Phase 1 C3, `93869a2` (whole file) | yes: a shim at the old path warns once per process (Phase 1 C4) |
+| `mower_sdk/event.py` | `mower_sdk/legacy/event.py` | Phase 1 C3, `93869a2` (whole file) | yes: a shim at the old path warns once per process (Phase 1 C4) |
+| `mower_sdk/navimow.py` | `mower_sdk/legacy/navimow.py` | Phase 1 C3, `93869a2` (whole file) | yes: a shim at the old path warns once per process (Phase 1 C4) |
+| `mower_sdk/state_manager.py` | `mower_sdk/legacy/state_manager.py` | Phase 1 C3, `93869a2` (whole file) | yes: a shim at the old path warns once per process (Phase 1 C4) |
+| `mower_sdk/utils.py` | `mower_sdk/legacy/utils.py` | Phase 1 C3, `93869a2` (whole file) | yes: a shim at the old path warns once per process (Phase 1 C4) |
 
 The moved files received no edit beyond imports of sibling legacy modules
 retargeted to `mower_sdk.legacy.*`; imports of core classes (`MowerAPI`,
