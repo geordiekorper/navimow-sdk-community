@@ -73,7 +73,7 @@ def test_package_reexports(name: str, source: str) -> None:
 
 def test_all_names_arrive_with_star_import() -> None:
     namespace: dict[str, object] = {}
-    exec(f"from {PACKAGE} import *", namespace)  # noqa: S102 - the star import is the point
+    exec(f"from {PACKAGE} import *", namespace)  # the star import is the point of this test
     missing = [name for name in INVENTORY["all"] if name not in namespace]
     assert not missing, f"names dropped from {PACKAGE}.__all__: {missing}"
     declared = importlib.import_module(PACKAGE).__all__
