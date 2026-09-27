@@ -14,7 +14,12 @@ commit by commit instead:
    whose content was split between core and ``legacy/`` by extraction, listed
    in ``tools/upstream_path_map.json``), it stops before applying anything and
    lists those commits for manual classification. It does not try to track the
-   extracted line ranges through upstream edits.
+   extracted line ranges through upstream edits. Merge commits are inspected
+   too: ``git format-patch`` writes no patch for a merge, so a merge whose
+   tree differs from all of its parents (a conflict resolution or other change
+   made in the merge itself) is refused the same way, while a merge that only
+   joins its parents is skipped, because the commits it joins are in the
+   series and carry its changes.
 2. Otherwise it writes the series with ``git format-patch``, rewrites the
    ``a/`` and ``b/`` paths of the moved files through the map, and applies it
    with ``git am -3``, so each commit lands in ``legacy/`` with its author, date
@@ -24,7 +29,8 @@ commit by commit instead:
    ``git am --continue``; ``git am --abort`` restores the branch.
 
 Exit status: 0 applied (or dry run), 1 ``git am`` stopped on a conflict,
-2 refused because a commit touches a mixed file, 3 usage or git error.
+2 refused because a commit touches a mixed file or is a merge with changes
+of its own, 3 usage, git error or nothing to apply.
 """
 
 from __future__ import annotations
@@ -64,13 +70,16 @@ def load_map() -> tuple[dict[str, str], list[str]]:
     return dict(data["moved"]), list(data["mixed"])
 
 
-def commits_in(range_spec: str) -> list[str]:
-    out = git("rev-list", "--reverse", range_spec).stdout.split()
-    return out
+def commits_in(range_spec: str) -> list[tuple[str, bool]]:
+    """The commits of the range, oldest first, each with whether it is a merge."""
+    out = git("rev-list", "--reverse", "--parents", range_spec).stdout
+    return [(fields[0], len(fields) > 2) for line in out.splitlines() if (fields := line.split())]
 
 
-def files_touched(commit: str) -> list[str]:
-    out = git("diff-tree", "--no-commit-id", "--name-only", "-r", "--root", commit).stdout
+def files_touched(commit: str, is_merge: bool) -> list[str]:
+    """Files the commit changes; for a merge, only those that differ from all its parents."""
+    options = ["-c"] if is_merge else ["--root"]
+    out = git("diff-tree", "--no-commit-id", "--name-only", "-r", *options, commit).stdout
     return [line for line in out.splitlines() if line]
 
 
@@ -177,24 +186,37 @@ def main(argv: list[str] | None = None) -> int:
         return 3
 
     # 1. Scan the whole series before touching anything.
-    refused: list[tuple[str, list[str]]] = []
-    for commit in commits:
-        touched = files_touched(commit)
+    refused: list[tuple[str, str]] = []
+    to_apply = 0
+    for commit, is_merge in commits:
+        touched = files_touched(commit, is_merge)
+        if is_merge:
+            if touched:
+                refused.append((commit, "merge commit with changes of its own: " + ", ".join(touched)))
+                print(f"{subject(commit)}: merge commit with changes of its own")
+            else:
+                print(f"{subject(commit)}: merge commit without changes of its own, skipped")
+            continue
+        to_apply += 1
         hits = [path for path in touched if path in mixed]
         if hits:
-            refused.append((commit, hits))
+            refused.append((commit, "touches a mixed file: " + ", ".join(hits)))
         moved_hits = [f"{path} -> {moved[path]}" for path in touched if path in moved]
         print(f"{subject(commit)}: " + (", ".join(moved_hits) if moved_hits else "no moved file"))
     if refused:
         print(
-            f"\nrefused: {len(refused)} commit(s) touch a mixed file whose content was split "
-            "between core and mower_sdk/legacy/; nothing was applied. Classify each hunk by "
-            "hand (core file or extracted file) and apply it manually:",
+            f"\nrefused: {len(refused)} commit(s) need manual classification; nothing was "
+            "applied. A commit touching a mixed file has to be split by hand into the core "
+            "file and the extracted file; a merge commit with changes of its own has to be "
+            "applied by hand, because git format-patch writes no patch for a merge:",
             file=sys.stderr,
         )
-        for commit, hits in refused:
-            print(f"  {subject(commit)}: {', '.join(hits)}", file=sys.stderr)
+        for commit, reason in refused:
+            print(f"  {subject(commit)}: {reason}", file=sys.stderr)
         return 2
+    if not to_apply:
+        print(f"nothing to port: {args.range} holds only merge commits", file=sys.stderr)
+        return 3
 
     # 2. Rewrite the series.
     series = git("format-patch", "--stdout", args.range).stdout
@@ -220,7 +242,7 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 1
-    print(f"applied {len(commits)} commit(s) from {args.range}")
+    print(f"applied {to_apply} commit(s) from {args.range}")
     return 0
 
 
