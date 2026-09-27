@@ -16,7 +16,8 @@ import threading
 import warnings
 
 _LOCK = threading.RLock()
-_WARNED: set[str] = set()
+_WARNED: set[str] = set()  # legacy modules whose warning has been emitted
+_WARNING: set[str] = set()  # legacy modules whose first warning is being emitted right now
 
 
 def warn_legacy(legacy_module: str, via: str) -> None:
@@ -35,17 +36,26 @@ def warn_legacy(legacy_module: str, via: str) -> None:
 
     The check, the warning and the record run under an RLock, so concurrent
     first accesses produce one warning and a warning handler that itself
-    touches a legacy name does not deadlock. The module is recorded only after
-    ``warnings.warn`` returns: under an error filter every deprecated access
-    raises, rather than raising once and passing silently afterwards.
+    touches a legacy name does not deadlock. While a module's first warning is
+    being emitted, a re-entrant access to the same module from the warning
+    handler is silent, so the module still warns once. The module is recorded
+    as warned only after ``warnings.warn`` returns: when an error filter is
+    active before the module's first warning completes, every deprecated
+    access raises rather than raising once and passing silently afterwards.
+    A module whose warning has already completed, or was ignored by a filter,
+    stays silent whatever filter is installed later.
     """
     with _LOCK:
-        if legacy_module in _WARNED:
+        if legacy_module in _WARNED or legacy_module in _WARNING:
             return
-        warnings.warn(
-            f"{via} is deprecated: all names in mower_sdk.legacy.{legacy_module} "
-            "are legacy code kept only for compatibility",
-            DeprecationWarning,
-            stacklevel=3,
-        )
+        _WARNING.add(legacy_module)
+        try:
+            warnings.warn(
+                f"{via} is deprecated: all names in mower_sdk.legacy.{legacy_module} "
+                "are legacy code kept only for compatibility",
+                DeprecationWarning,
+                stacklevel=3,
+            )
+        finally:
+            _WARNING.discard(legacy_module)
         _WARNED.add(legacy_module)
