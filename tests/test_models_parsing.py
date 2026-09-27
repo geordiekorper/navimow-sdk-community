@@ -4,8 +4,9 @@
 normaliser but read the raw state with different key precedence, and both use
 the same battery extraction. Everything here is pinned at today's values,
 falsy fallbacks included, so the raw-state refactor can show that nothing
-observable changed. Decisions D5 (battery ``None``) and D6 (new MowerStatus
-members) change several of these values in Phase 3; the affected tests are
+observable changed. Two planned behaviour changes, ``None`` for a missing or
+unparsable battery and new MowerStatus members for mapping, updating and
+offline, will change several of these values later; the affected tests are
 then updated on purpose, in the same commit.
 """
 

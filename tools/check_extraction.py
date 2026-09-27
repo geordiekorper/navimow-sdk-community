@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check that the Phase 1 extractions into mower_sdk/legacy/ are verbatim.
+"""Check that the extractions into mower_sdk/legacy/ are verbatim.
 
 Each extracted top-level node (the six classes and the COMMAND_ERRORS
 assignment) is compared with the node of the same name in the core module of

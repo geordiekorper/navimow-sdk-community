@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 # The public surface upstream published from this module: the classes it
 # defined plus the names it imported and callers picked up as aliases.
 # MowerMQTTError, ERROR_MESSAGES and DeviceStatus were used only by
-# MowerMQTT and are kept as inventory aliases (Phase 1 Q6); MowerMQTT and
+# MowerMQTT and are kept as inventory aliases; MowerMQTT and
 # parse_json now live in mower_sdk.legacy and are served by __getattr__.
 __all__ = [
     "MowerMQTT",
