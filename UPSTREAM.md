@@ -61,20 +61,27 @@ re-exports the legacy module with a star import. Importing
 
 | At the fork point | Now | Moved in | Old import still works |
 |---|---|---|---|
-| `mower_sdk/client.py` | `mower_sdk/legacy/client.py` | Phase 1 C3, `9ceceed` (whole file) | yes: a shim at the old path warns once per process (Phase 1 C4) |
-| `mower_sdk/cloud.py` | `mower_sdk/legacy/cloud.py` | Phase 1 C3, `9ceceed` (whole file) | yes: a shim at the old path warns once per process (Phase 1 C4) |
-| `mower_sdk/device.py` | `mower_sdk/legacy/device.py` | Phase 1 C3, `9ceceed` (whole file) | yes: a shim at the old path warns once per process (Phase 1 C4) |
-| `mower_sdk/event.py` | `mower_sdk/legacy/event.py` | Phase 1 C3, `9ceceed` (whole file) | yes: a shim at the old path warns once per process (Phase 1 C4) |
-| `mower_sdk/navimow.py` | `mower_sdk/legacy/navimow.py` | Phase 1 C3, `9ceceed` (whole file) | yes: a shim at the old path warns once per process (Phase 1 C4) |
-| `mower_sdk/state_manager.py` | `mower_sdk/legacy/state_manager.py` | Phase 1 C3, `9ceceed` (whole file) | yes: a shim at the old path warns once per process (Phase 1 C4) |
-| `mower_sdk/utils.py` | `mower_sdk/legacy/utils.py` | Phase 1 C3, `9ceceed` (whole file) | yes: a shim at the old path warns once per process (Phase 1 C4) |
+| `mower_sdk/client.py` | `mower_sdk/legacy/client.py` | Phase 1 C3, `9ceceed` (whole file) | yes: a shim at the old path warns once per process (Phase 1 C4, `96c6696`) |
+| `mower_sdk/cloud.py` | `mower_sdk/legacy/cloud.py` | Phase 1 C3, `9ceceed` (whole file) | yes: a shim at the old path warns once per process (Phase 1 C4, `96c6696`) |
+| `mower_sdk/device.py` | `mower_sdk/legacy/device.py` | Phase 1 C3, `9ceceed` (whole file) | yes: a shim at the old path warns once per process (Phase 1 C4, `96c6696`) |
+| `mower_sdk/event.py` | `mower_sdk/legacy/event.py` | Phase 1 C3, `9ceceed` (whole file) | yes: a shim at the old path warns once per process (Phase 1 C4, `96c6696`) |
+| `mower_sdk/navimow.py` | `mower_sdk/legacy/navimow.py` | Phase 1 C3, `9ceceed` (whole file) | yes: a shim at the old path warns once per process (Phase 1 C4, `96c6696`) |
+| `mower_sdk/state_manager.py` | `mower_sdk/legacy/state_manager.py` | Phase 1 C3, `9ceceed` (whole file) | yes: a shim at the old path warns once per process (Phase 1 C4, `96c6696`) |
+| `mower_sdk/utils.py` | `mower_sdk/legacy/utils.py` | Phase 1 C3, `9ceceed` (whole file) | yes: a shim at the old path warns once per process (Phase 1 C4, `96c6696`) |
+| `mower_sdk/mqtt.py` lines 49–454: `MowerMQTT` | `mower_sdk/legacy/mqtt_v1.py` | Phase 1 C5 (extraction) | yes: `mower_sdk.mqtt.MowerMQTT` is served lazily and warns once per process |
+| `mower_sdk/models.py` lines 192–271: `ThingParams`, `ThingStatusMessage`, `ThingPropertiesMessage`, `ThingEventMessage` | `mower_sdk/legacy/thing_models.py` | Phase 1 C5 (extraction) | yes: served lazily from `mower_sdk.models`, one warning per process |
+| `mower_sdk/errors.py` lines 44–58: `MowerAuthError`; lines 94–112: `COMMAND_ERRORS` | `mower_sdk/legacy/errors.py` | Phase 1 C5 (extraction) | yes: served lazily from `mower_sdk.errors`, one warning per process |
 
 The moved files received no edit beyond imports of sibling legacy modules
 retargeted to `mower_sdk.legacy.*`; imports of core classes (`MowerAPI`,
-`NavimowMQTT`, the models) still come from core. One core import goes the
-other way for now: `mower_sdk/mqtt.py` reads `parse_json` from
-`mower_sdk.legacy.utils` until C5 moves its only caller, `MowerMQTT`, into
-`legacy/` as well.
+`NavimowMQTT`, the models) still come from core. The three extractions are
+cuts from files that stay, so default `git blame` on the new files starts at
+the extraction commit; the line ranges above are at the fork point `6596aa0`,
+and `git blame -C` or `git log -L` on those ranges is the way back. Each
+extracted node is AST-identical to its original: `tools/check_extraction.py`
+checks that, with docstrings and decorators included. No core module imports
+`mower_sdk.legacy`: `mower_sdk.mqtt.parse_json`, which core no longer uses, is
+served lazily from `mower_sdk/legacy/utils.py` like the extracted names.
 
 ## Rules that keep a merge-back possible
 

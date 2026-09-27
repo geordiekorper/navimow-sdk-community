@@ -6,17 +6,22 @@ Provides access to the cloud mower platform over its REST API and MQTT feed.
 from mower_sdk.api import MowerAPI
 from mower_sdk.errors import (
     MowerAPIError,
-    MowerAuthError,
     MowerMQTTError,
     ERROR_MESSAGES,
-    COMMAND_ERRORS,
 )
 from mower_sdk.legacy.client import MowerClient
 from mower_sdk.legacy.cloud import NavimowCloud
 from mower_sdk.legacy.device import NavimowCloudDevice
+from mower_sdk.legacy.errors import MowerAuthError, COMMAND_ERRORS
 from mower_sdk.legacy.event import DataEvent
+from mower_sdk.legacy.mqtt_v1 import MowerMQTT
 from mower_sdk.legacy.navimow import Navimow
 from mower_sdk.legacy.state_manager import StateManager
+from mower_sdk.legacy.thing_models import (
+    ThingEventMessage,
+    ThingPropertiesMessage,
+    ThingStatusMessage,
+)
 from mower_sdk.models import (
     Device,
     DeviceAttributesMessage,
@@ -27,11 +32,8 @@ from mower_sdk.models import (
     MowerCommand,
     MowerError,
     MowerStatus,
-    ThingEventMessage,
-    ThingPropertiesMessage,
-    ThingStatusMessage,
 )
-from mower_sdk.mqtt import MowerMQTT, NavimowMQTT
+from mower_sdk.mqtt import NavimowMQTT
 from mower_sdk.sdk import NavimowSDK
 
 __version__ = "0.2.0a1"
