@@ -8,7 +8,7 @@ from typing import Any, Callable, TYPE_CHECKING
 
 from mower_sdk.api import MowerAPI
 from mower_sdk.models import Device, DeviceStatus, MowerCommand
-from mower_sdk.mqtt import MowerMQTT
+from mower_sdk.legacy.mqtt_v1 import MowerMQTT
 
 if TYPE_CHECKING:
     import aiohttp
