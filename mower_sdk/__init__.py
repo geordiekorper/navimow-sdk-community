@@ -1,26 +1,22 @@
 """Python SDK for the Navimow mower cloud platform.
 
 Provides access to the cloud mower platform over its REST API and MQTT feed.
+
+The live path is imported eagerly: MowerAPI, NavimowMQTT, NavimowSDK, the
+models and the errors. The names that moved to mower_sdk.legacy are served by
+__getattr__ on first access, with one DeprecationWarning per legacy module per
+process, so importing this package loads no legacy code.
 """
 
+import importlib
+from typing import TYPE_CHECKING, Any
+
+from mower_sdk._deprecation import warn_legacy
 from mower_sdk.api import MowerAPI
 from mower_sdk.errors import (
     MowerAPIError,
     MowerMQTTError,
     ERROR_MESSAGES,
-)
-from mower_sdk.legacy.client import MowerClient
-from mower_sdk.legacy.cloud import NavimowCloud
-from mower_sdk.legacy.device import NavimowCloudDevice
-from mower_sdk.legacy.errors import MowerAuthError, COMMAND_ERRORS
-from mower_sdk.legacy.event import DataEvent
-from mower_sdk.legacy.mqtt_v1 import MowerMQTT
-from mower_sdk.legacy.navimow import Navimow
-from mower_sdk.legacy.state_manager import StateManager
-from mower_sdk.legacy.thing_models import (
-    ThingEventMessage,
-    ThingPropertiesMessage,
-    ThingStatusMessage,
 )
 from mower_sdk.models import (
     Device,
@@ -35,6 +31,22 @@ from mower_sdk.models import (
 )
 from mower_sdk.mqtt import NavimowMQTT
 from mower_sdk.sdk import NavimowSDK
+
+if TYPE_CHECKING:
+    from mower_sdk.legacy.client import MowerClient as MowerClient
+    from mower_sdk.legacy.cloud import NavimowCloud as NavimowCloud
+    from mower_sdk.legacy.device import NavimowCloudDevice as NavimowCloudDevice
+    from mower_sdk.legacy.errors import COMMAND_ERRORS as COMMAND_ERRORS
+    from mower_sdk.legacy.errors import MowerAuthError as MowerAuthError
+    from mower_sdk.legacy.event import DataEvent as DataEvent
+    from mower_sdk.legacy.mqtt_v1 import MowerMQTT as MowerMQTT
+    from mower_sdk.legacy.navimow import Navimow as Navimow
+    from mower_sdk.legacy.state_manager import StateManager as StateManager
+    from mower_sdk.legacy.thing_models import (
+        ThingEventMessage as ThingEventMessage,
+        ThingPropertiesMessage as ThingPropertiesMessage,
+        ThingStatusMessage as ThingStatusMessage,
+    )
 
 __version__ = "0.2.0a1"
 
@@ -70,3 +82,36 @@ __all__ = [
     "ERROR_MESSAGES",
     "COMMAND_ERRORS",
 ]
+
+# Names that moved to mower_sdk.legacy: attribute here -> (legacy module, attribute there).
+# MowerAuthError is served like the others but, as upstream had it, stays out of __all__.
+_LEGACY_NAMES = {
+    "MowerClient": ("client", "MowerClient"),
+    "Navimow": ("navimow", "Navimow"),
+    "MowerMQTT": ("mqtt_v1", "MowerMQTT"),
+    "NavimowCloud": ("cloud", "NavimowCloud"),
+    "NavimowCloudDevice": ("device", "NavimowCloudDevice"),
+    "StateManager": ("state_manager", "StateManager"),
+    "DataEvent": ("event", "DataEvent"),
+    "ThingStatusMessage": ("thing_models", "ThingStatusMessage"),
+    "ThingPropertiesMessage": ("thing_models", "ThingPropertiesMessage"),
+    "ThingEventMessage": ("thing_models", "ThingEventMessage"),
+    "COMMAND_ERRORS": ("errors", "COMMAND_ERRORS"),
+    "MowerAuthError": ("errors", "MowerAuthError"),
+}
+
+
+def __getattr__(name: str) -> Any:
+    """Serve the names that moved to mower_sdk.legacy, warning once per legacy module."""
+    try:
+        legacy_module, attribute = _LEGACY_NAMES[name]
+    except KeyError:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
+    warn_legacy(legacy_module, f"{__name__}.{name}")
+    value = getattr(importlib.import_module(f"mower_sdk.legacy.{legacy_module}"), attribute)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted({*globals(), *_LEGACY_NAMES})
