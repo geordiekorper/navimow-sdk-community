@@ -29,9 +29,11 @@ commit by commit instead:
    the moved files rewritten through the map. The message and the diff come
    from separate git commands, so the rewriter only ever sees diff text and
    the message is copied byte for byte however much it looks like a patch.
-   The mbox is applied with ``git am -3 --patch-format=mboxrd``, so each
-   commit lands in ``legacy/`` with its author, date and message, and the
-   shims are untouched.
+   Patches are handled as bytes, split on LF only, so file content is never
+   decoded or newline-translated on the way. The mbox is applied with
+   ``git am -3 --keep-cr --patch-format=mboxrd``, so each commit lands in
+   ``legacy/`` with its author, date, message and bytes, and the shims are
+   untouched.
 3. A conflict stops ``git am``; translated docstrings are the usual cause and
    would conflict without any move. Resolve it, ``git add`` the file and run
    ``git am --continue``; ``git am --abort`` restores the branch.
@@ -55,25 +57,39 @@ MAP_FILE = REPO_ROOT / "tools" / "upstream_path_map.json"
 
 # Diff header lines that carry a path. Only these are rewritten; hunk bodies
 # are copied through by counting, and commit messages never reach the rewriter.
-DIFF_GIT_LINE = re.compile(r"^(diff --git a/)(?P<a>\S+)( b/)(?P<b>\S+)$")
+# Patches are handled as bytes throughout, so file content is never decoded
+# or newline-translated on its way from git to git.
+DIFF_GIT_LINE = re.compile(rb"^(diff --git a/)(?P<a>\S+)( b/)(?P<b>\S+)$")
 HEADER_LINES = [
-    re.compile(r"^(--- a/)(?P<a>.+)$"),
-    re.compile(r"^(\+\+\+ b/)(?P<a>.+)$"),
-    re.compile(r"^(rename (?:from|to) )(?P<a>.+)$"),
-    re.compile(r"^(copy (?:from|to) )(?P<a>.+)$"),
+    re.compile(rb"^(--- a/)(?P<a>.+)$"),
+    re.compile(rb"^(\+\+\+ b/)(?P<a>.+)$"),
+    re.compile(rb"^(rename (?:from|to) )(?P<a>.+)$"),
+    re.compile(rb"^(copy (?:from|to) )(?P<a>.+)$"),
 ]
-HUNK_HEADER = re.compile(r"^@@ -\d+(?:,(?P<old>\d+))? \+\d+(?:,(?P<new>\d+))? @@")
+HUNK_HEADER = re.compile(rb"^@@ -\d+(?:,(?P<old>\d+))? \+\d+(?:,(?P<new>\d+))? @@")
 
 
 def git(*args: str, check: bool = True, **kwargs: object) -> subprocess.CompletedProcess[str]:
+    """Run git and capture its output as text; for commit lists, names and status."""
     return subprocess.run(
         ["git", "-C", str(REPO_ROOT), *args], capture_output=True, text=True, check=check, **kwargs
+    )
+
+
+def git_bytes(*args: str, check: bool = True, **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+    """Run git and capture its output as bytes; for anything that carries file content."""
+    return subprocess.run(
+        ["git", "-C", str(REPO_ROOT), *args], capture_output=True, check=check, **kwargs
     )
 
 
 def load_map() -> tuple[dict[str, str], list[str]]:
     data = json.loads(MAP_FILE.read_text(encoding="utf-8"))
     return dict(data["moved"]), list(data["mixed"])
+
+
+def encode_map(moved: dict[str, str]) -> dict[bytes, bytes]:
+    return {old.encode("utf-8"): new.encode("utf-8") for old, new in moved.items()}
 
 
 def commits_in(range_spec: str) -> list[tuple[str, list[str]]]:
@@ -113,8 +129,22 @@ def subject(commit: str) -> str:
     return git("log", "-1", "--format=%h %s", commit).stdout.strip()
 
 
-def rewrite_path_line(line: str, patterns: list[re.Pattern[str]], moved: dict[str, str]) -> str:
-    body = line.rstrip("\r\n")
+def split_lines(data: bytes) -> list[bytes]:
+    """Split on LF only, keeping the line ends: git counts hunk lines the same way.
+
+    bytes.splitlines would also split on vertical tabs, form feeds and the
+    like, which git treats as ordinary content, and that would throw the hunk
+    counting off.
+    """
+    pieces = data.split(b"\n")
+    lines = [piece + b"\n" for piece in pieces[:-1]]
+    if pieces[-1]:
+        lines.append(pieces[-1])
+    return lines
+
+
+def rewrite_path_line(line: bytes, patterns: list[re.Pattern[bytes]], moved: dict[bytes, bytes]) -> bytes:
+    body = line.rstrip(b"\r\n")
     ending = line[len(body) :]
     for pattern in patterns:
         match = pattern.match(body)
@@ -125,11 +155,11 @@ def rewrite_path_line(line: str, patterns: list[re.Pattern[str]], moved: dict[st
             if name in pattern.groupindex:
                 index = pattern.groupindex[name] - 1
                 groups[index] = moved.get(groups[index], groups[index])
-        return "".join(groups) + ending
+        return b"".join(groups) + ending
     return line
 
 
-def rewrite_diff(diff: str, moved: dict[str, str]) -> str:
+def rewrite_diff(diff: bytes, moved: dict[bytes, bytes]) -> bytes:
     """Rewrite the moved paths in the header lines of a diff, and nothing else.
 
     A diff is a sequence of per-file sections, each a "diff --git" line, header
@@ -138,24 +168,24 @@ def rewrite_diff(diff: str, moved: dict[str, str]) -> str:
     are copied through by counting, however much a line in them looks like a
     header. Binary patches are copied through to the next section.
     """
-    out: list[str] = []
+    out: list[bytes] = []
     state = "header"  # header | hunk | binary
     old_left = new_left = 0
-    for line in diff.splitlines(keepends=True):
-        body = line.rstrip("\r\n")
+    for line in split_lines(diff):
+        body = line.rstrip(b"\r\n")
         if state == "hunk" and (old_left > 0 or new_left > 0):
-            if body.startswith("\\"):  # "\ No newline at end of file"
+            if body.startswith(b"\\"):  # "\ No newline at end of file"
                 pass
-            elif body.startswith("+"):
+            elif body.startswith(b"+"):
                 new_left -= 1
-            elif body.startswith("-"):
+            elif body.startswith(b"-"):
                 old_left -= 1
             else:  # a context line (" ..." or, with trailing whitespace stripped, "")
                 old_left -= 1
                 new_left -= 1
             out.append(line)
             continue
-        if body.startswith("diff --git "):
+        if body.startswith(b"diff --git "):
             state = "header"
             out.append(rewrite_path_line(line, [DIFF_GIT_LINE], moved))
             continue
@@ -169,7 +199,7 @@ def rewrite_diff(diff: str, moved: dict[str, str]) -> str:
             new_left = int(hunk.group("new")) if hunk.group("new") is not None else 1
             out.append(line)
             continue
-        if body.startswith("GIT binary patch"):
+        if body.startswith(b"GIT binary patch"):
             state = "binary"
             out.append(line)
             continue
@@ -177,28 +207,28 @@ def rewrite_diff(diff: str, moved: dict[str, str]) -> str:
             out.append(rewrite_path_line(line, HEADER_LINES, moved))
             continue
         out.append(line)
-    return "".join(out)
+    return b"".join(out)
 
 
-def mail_for(commit: str) -> str:
+def mail_for(commit: str) -> bytes:
     """git's own mbox entry for the commit: the From line, the headers and the message.
 
     The mboxrd form quotes message lines that start with "From ", so the entry
     splits correctly whatever the message holds; git am --patch-format=mboxrd
     unquotes them.
     """
-    mail = git("log", "-1", "--pretty=mboxrd", commit).stdout
-    return mail if mail.endswith("\n") else mail + "\n"
+    mail = git_bytes("log", "-1", "--pretty=mboxrd", commit).stdout
+    return mail if mail.endswith(b"\n") else mail + b"\n"
 
 
-def diff_for(commit: str) -> str:
+def diff_for(commit: str) -> bytes:
     """The commit's diff against its parent, renames detected, binary changes included."""
-    return git("diff-tree", "--no-commit-id", "-p", "-M", "--binary", "--root", commit).stdout
+    return git_bytes("diff-tree", "--no-commit-id", "-p", "-M", "--binary", "--root", commit).stdout
 
 
-def patch_for(commit: str, moved: dict[str, str]) -> str:
+def patch_for(commit: str, moved: dict[bytes, bytes]) -> bytes:
     """One mbox entry: the mail, a separator, and the rewritten diff."""
-    return mail_for(commit) + "---\n\n" + rewrite_diff(diff_for(commit), moved)
+    return mail_for(commit) + b"---\n\n" + rewrite_diff(diff_for(commit), moved)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -254,9 +284,14 @@ def main(argv: list[str] | None = None) -> int:
         return 3
 
     # 2. Build the series: git's message for each commit, and its diff rewritten.
-    rewritten = "".join(patch_for(commit, moved) for commit, parents in commits if len(parents) < 2)
+    moved_bytes = encode_map(moved)
+    rewritten = b"".join(
+        patch_for(commit, moved_bytes) for commit, parents in commits if len(parents) < 2
+    )
     if args.dry_run:
-        sys.stdout.write(rewritten)
+        sys.stdout.flush()
+        sys.stdout.buffer.write(rewritten)
+        sys.stdout.buffer.flush()
         return 0
 
     dirty = git("status", "--porcelain", "--untracked-files=no").stdout.strip()
@@ -265,10 +300,16 @@ def main(argv: list[str] | None = None) -> int:
         print(dirty, file=sys.stderr)
         return 3
 
-    # 3. Apply with the three-way fallback; git am reads the mbox from stdin.
-    result = git("am", "-3", "--patch-format=mboxrd", input=rewritten, check=False)
-    sys.stdout.write(result.stdout)
-    sys.stderr.write(result.stderr)
+    # 3. Apply with the three-way fallback; git am reads the mbox from stdin. --keep-cr
+    # stops git mailsplit from stripping the CR of CRLF line ends, which here can only
+    # be file content, because the mbox itself is written with LF ends.
+    result = git_bytes("am", "-3", "--keep-cr", "--patch-format=mboxrd", input=rewritten, check=False)
+    sys.stdout.flush()
+    sys.stdout.buffer.write(result.stdout)
+    sys.stdout.buffer.flush()
+    sys.stderr.flush()
+    sys.stderr.buffer.write(result.stderr)
+    sys.stderr.buffer.flush()
     if result.returncode != 0:
         print(
             "\ngit am stopped. Resolve the conflict, git add the file and run "

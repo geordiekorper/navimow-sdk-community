@@ -116,10 +116,12 @@ was measured on a clone of this repository with git 2.55.0.)
    header and message (`git log --pretty=mboxrd`), a `---` separator, and the
    commit's diff (`git diff-tree -p`) with the `a/` and `b/` paths of the moved
    files rewritten through `tools/upstream_path_map.json`. The message and the
-   diff come from separate git commands, so only diff header lines are ever
-   rewritten; hunk bodies and messages are copied byte for byte. The mbox is
-   applied with `git am -3 --patch-format=mboxrd`, so each commit lands in
-   `legacy/` with its author, date and message, and the shims are untouched.
+   diff come from separate git commands and are handled as bytes, split on LF
+   only, so only diff header lines are ever rewritten; hunk bodies and
+   messages are copied byte for byte, CRLF content included. The mbox is
+   applied with `git am -3 --keep-cr --patch-format=mboxrd`, so each commit
+   lands in `legacy/` with its author, date, message and bytes, and the shims
+   are untouched.
 3. A conflict stops `git am`. Translated docstrings are the usual cause; that
    conflict would occur without any move, and the tool does not remove it.
    Resolve it, `git add` the file and run `git am --continue`;

@@ -26,10 +26,12 @@ port_upstream = importlib.util.module_from_spec(spec)
 sys.modules["port_upstream"] = port_upstream
 spec.loader.exec_module(port_upstream)
 
-MOVED = {
-    "mower_sdk/client.py": "mower_sdk/legacy/client.py",
-    "mower_sdk/navimow.py": "mower_sdk/legacy/navimow.py",
-}
+MOVED = port_upstream.encode_map(
+    {
+        "mower_sdk/client.py": "mower_sdk/legacy/client.py",
+        "mower_sdk/navimow.py": "mower_sdk/legacy/navimow.py",
+    }
+)
 
 
 def test_path_map_lists_the_seven_moves_and_the_three_mixed_files() -> None:
@@ -43,7 +45,7 @@ def test_path_map_lists_the_seven_moves_and_the_three_mixed_files() -> None:
 
 # ---- the rewriter, on diff text alone -----------------------------------------------------
 
-DIFF = """\
+DIFF = b"""\
 diff --git a/mower_sdk/client.py b/mower_sdk/client.py
 index f3b25fd..c0c3f26 100644
 --- a/mower_sdk/client.py
@@ -87,11 +89,12 @@ diff --git a/mower_sdk/client.py b/mower_sdk/client.py
 """
 
 
-def hunk_counts_are_consistent(diff: str) -> bool:
+def hunk_counts_are_consistent(diff: bytes) -> bool:
     """Every hunk header's counts match the lines that follow it (a guard for the fixtures)."""
     old_left = new_left = 0
     in_hunk = False
-    for line in diff.splitlines():
+    for raw in port_upstream.split_lines(diff):
+        line = raw.rstrip(b"\n")
         header = port_upstream.HUNK_HEADER.match(line)
         if header:
             if in_hunk and (old_left or new_left):
@@ -100,16 +103,16 @@ def hunk_counts_are_consistent(diff: str) -> bool:
             new_left = int(header.group("new") or 1)
             in_hunk = True
             continue
-        if line.startswith(("diff --git ", "GIT binary patch")):
+        if line.startswith((b"diff --git ", b"GIT binary patch")):
             if in_hunk and (old_left or new_left):
                 return False
             in_hunk = False
             continue
-        if not in_hunk or line.startswith("\\"):
+        if not in_hunk or line.startswith(b"\\"):
             continue
-        if line.startswith("+"):
+        if line.startswith(b"+"):
             new_left -= 1
-        elif line.startswith("-"):
+        elif line.startswith(b"-"):
             old_left -= 1
         else:
             old_left -= 1
@@ -121,40 +124,40 @@ def hunk_counts_are_consistent(diff: str) -> bool:
 
 def test_the_fixture_hunk_counts_are_consistent() -> None:
     assert hunk_counts_are_consistent(DIFF)
-    assert not hunk_counts_are_consistent(DIFF.replace("@@ -1,3 +1,3 @@", "@@ -1,4 +1,4 @@"))
+    assert not hunk_counts_are_consistent(DIFF.replace(b"@@ -1,3 +1,3 @@", b"@@ -1,4 +1,4 @@"))
 
 
 def test_rewrite_touches_only_diff_headers_of_moved_files() -> None:
     rewritten = port_upstream.rewrite_diff(DIFF, MOVED)
     expected = (
         DIFF.replace(
-            "diff --git a/mower_sdk/client.py b/mower_sdk/client.py\nindex f3b25fd..c0c3f26 100644\n"
-            "--- a/mower_sdk/client.py\n+++ b/mower_sdk/client.py\n",
-            "diff --git a/mower_sdk/legacy/client.py b/mower_sdk/legacy/client.py\n"
-            "index f3b25fd..c0c3f26 100644\n"
-            "--- a/mower_sdk/legacy/client.py\n+++ b/mower_sdk/legacy/client.py\n",
+            b"diff --git a/mower_sdk/client.py b/mower_sdk/client.py\nindex f3b25fd..c0c3f26 100644\n"
+            b"--- a/mower_sdk/client.py\n+++ b/mower_sdk/client.py\n",
+            b"diff --git a/mower_sdk/legacy/client.py b/mower_sdk/legacy/client.py\n"
+            b"index f3b25fd..c0c3f26 100644\n"
+            b"--- a/mower_sdk/legacy/client.py\n+++ b/mower_sdk/legacy/client.py\n",
         )
         .replace(
-            "diff --git a/mower_sdk/navimow.py b/mower_sdk/navimow2.py\n",
-            "diff --git a/mower_sdk/legacy/navimow.py b/mower_sdk/navimow2.py\n",
+            b"diff --git a/mower_sdk/navimow.py b/mower_sdk/navimow2.py\n",
+            b"diff --git a/mower_sdk/legacy/navimow.py b/mower_sdk/navimow2.py\n",
         )
-        .replace("rename from mower_sdk/navimow.py\n", "rename from mower_sdk/legacy/navimow.py\n")
+        .replace(b"rename from mower_sdk/navimow.py\n", b"rename from mower_sdk/legacy/navimow.py\n")
         .replace(
-            "diff --git a/mower_sdk/client.py b/mower_sdk/client.py\n"
-            "--- a/mower_sdk/client.py\n+++ b/mower_sdk/client.py\n@@ -1 +1,2 @@\n",
-            "diff --git a/mower_sdk/legacy/client.py b/mower_sdk/legacy/client.py\n"
-            "--- a/mower_sdk/legacy/client.py\n+++ b/mower_sdk/legacy/client.py\n@@ -1 +1,2 @@\n",
+            b"diff --git a/mower_sdk/client.py b/mower_sdk/client.py\n"
+            b"--- a/mower_sdk/client.py\n+++ b/mower_sdk/client.py\n@@ -1 +1,2 @@\n",
+            b"diff --git a/mower_sdk/legacy/client.py b/mower_sdk/legacy/client.py\n"
+            b"--- a/mower_sdk/legacy/client.py\n+++ b/mower_sdk/legacy/client.py\n@@ -1 +1,2 @@\n",
         )
     )
     assert rewritten == expected
     # The README hunk body, which looks like headers, and the binary patch are untouched.
     assert (
-        "@@ -1,3 +1,3 @@\n mower_sdk/client.py | 1 +\n--- a/mower_sdk/client.py\n"
-        "+++ b/mower_sdk/navimow.py\n diff --git a/mower_sdk/client.py b/mower_sdk/client.py\n"
-        "\\ No newline at end of file\n"
+        b"@@ -1,3 +1,3 @@\n mower_sdk/client.py | 1 +\n--- a/mower_sdk/client.py\n"
+        b"+++ b/mower_sdk/navimow.py\n diff --git a/mower_sdk/client.py b/mower_sdk/client.py\n"
+        b"\\ No newline at end of file\n"
     ) in rewritten
-    assert "Tcmb<--- a/mower_sdk/client.py\n" in rewritten
-    assert "+ mower_sdk/client.py | 1 +\n" in rewritten
+    assert b"Tcmb<--- a/mower_sdk/client.py\n" in rewritten
+    assert b"+ mower_sdk/client.py | 1 +\n" in rewritten
 
 
 def test_rewrite_is_the_identity_for_unmapped_paths() -> None:
@@ -163,16 +166,48 @@ def test_rewrite_is_the_identity_for_unmapped_paths() -> None:
 
 def test_hunk_counting_treats_a_stripped_context_line_as_context() -> None:
     diff = (
-        "diff --git a/mower_sdk/client.py b/mower_sdk/client.py\n"
-        "--- a/mower_sdk/client.py\n+++ b/mower_sdk/client.py\n"
-        "@@ -1,2 +1,2 @@\n"
-        "\n"  # a context line whose leading space was stripped
-        "--- a/mower_sdk/client.py\n"
-        "+++ b/mower_sdk/client.py\n"
+        b"diff --git a/mower_sdk/client.py b/mower_sdk/client.py\n"
+        b"--- a/mower_sdk/client.py\n+++ b/mower_sdk/client.py\n"
+        b"@@ -1,2 +1,2 @@\n"
+        b"\n"  # a context line whose leading space was stripped
+        b"--- a/mower_sdk/client.py\n"
+        b"+++ b/mower_sdk/client.py\n"
     )
     rewritten = port_upstream.rewrite_diff(diff, MOVED)
-    assert rewritten.endswith("@@ -1,2 +1,2 @@\n\n--- a/mower_sdk/client.py\n+++ b/mower_sdk/client.py\n")
-    assert rewritten.count("mower_sdk/legacy/client.py") == 4
+    assert rewritten.endswith(b"@@ -1,2 +1,2 @@\n\n--- a/mower_sdk/client.py\n+++ b/mower_sdk/client.py\n")
+    assert rewritten.count(b"mower_sdk/legacy/client.py") == 4
+
+
+def test_lines_are_split_on_lf_only() -> None:
+    """A hunk line holding a vertical tab is one line to git, and stays one line here."""
+    body = (
+        b"hello\x0bdiff --git a/mower_sdk/client.py b/mower_sdk/client.py"
+        b"\x0b--- a/mower_sdk/client.py\x0b+++ b/mower_sdk/client.py\x0c\n"
+    )
+    diff = (
+        b"diff --git a/x.txt b/x.txt\nnew file mode 100644\nindex 0000000..1111111\n"
+        b"--- /dev/null\n+++ b/x.txt\n@@ -0,0 +1 @@\n+" + body
+        + b"diff --git a/mower_sdk/client.py b/mower_sdk/client.py\n"
+        b"--- a/mower_sdk/client.py\n+++ b/mower_sdk/client.py\n@@ -1 +1 @@\n-a\n+b\n"
+    )
+    rewritten = port_upstream.rewrite_diff(diff, MOVED)
+    assert b"+" + body in rewritten
+    assert rewritten.endswith(
+        b"diff --git a/mower_sdk/legacy/client.py b/mower_sdk/legacy/client.py\n"
+        b"--- a/mower_sdk/legacy/client.py\n+++ b/mower_sdk/legacy/client.py\n@@ -1 +1 @@\n-a\n+b\n"
+    )
+    assert port_upstream.split_lines(b"a\x0bb\nc") == [b"a\x0bb\n", b"c"]
+
+
+def test_crlf_content_is_rewritten_byte_for_byte() -> None:
+    diff = (
+        b"diff --git a/mower_sdk/client.py b/mower_sdk/client.py\n"
+        b"--- a/mower_sdk/client.py\n+++ b/mower_sdk/client.py\n"
+        b"@@ -1,2 +1,2 @@\n class MowerClient:\r\n-    pass\r\n+    crlf = True\r\n"
+    )
+    assert port_upstream.rewrite_diff(diff, MOVED).endswith(
+        b"@@ -1,2 +1,2 @@\n class MowerClient:\r\n-    pass\r\n+    crlf = True\r\n"
+    )
 
 
 # ---- the scan and the port, on a temporary repository -----------------------------------------
@@ -258,6 +293,11 @@ def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     run("merge", "-q", "-s", "ours", "--no-ff", "-m", "ours merge", "side3")
     run("tag", "ours-merge")
 
+    run("checkout", "-q", "-b", "crlf", "base")
+    (tmp_path / "mower_sdk" / "client.py").write_bytes(b"class MowerClient:\r\n    crlf = True\r\n")
+    run("commit", "-q", "-am", "crlf edit")
+    run("tag", "crlf-edit")
+
     run("checkout", "-q", "-b", "quoted", "base")
     write("mower_sdk/client.py", "class MowerClient:\n    quoted = True\n")
     run("commit", "-q", "-am", PATHOLOGICAL_MESSAGE)
@@ -279,6 +319,10 @@ def git_out(repo: Path, *args: str) -> str:
     return subprocess.run(
         ["git", "-C", str(repo), *args], capture_output=True, text=True, check=True
     ).stdout
+
+
+def git_raw(repo: Path, *args: str) -> bytes:
+    return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, check=True).stdout
 
 
 def test_commits_in_reports_parents(repo: Path) -> None:
@@ -349,27 +393,37 @@ def test_a_range_of_only_merges_is_nothing_to_port(capsys: pytest.CaptureFixture
 
 
 def test_dry_run_is_the_message_then_the_rewritten_diff(
-    repo: Path, capsys: pytest.CaptureFixture[str]
+    repo: Path, capsysbinary: pytest.CaptureFixture[bytes]
 ) -> None:
     assert port_upstream.main(["--dry-run", "core-edit..clean-merge"]) == 0
-    out = capsys.readouterr().out
-    assert "clean merge" in out and "skipped" in out
-    mail = git_out(repo, "log", "-1", "--pretty=mboxrd", "side-edit")
-    diff = git_out(repo, "diff-tree", "--no-commit-id", "-p", "-M", "--binary", "--root", "side-edit")
-    assert out.endswith(mail + "---\n\n" + diff.replace("mower_sdk/client.py", "mower_sdk/legacy/client.py"))
-    assert out.count("\nFrom ") + out.startswith("From ") == 1  # one mbox entry
+    out = capsysbinary.readouterr().out
+    assert b"clean merge" in out and b"skipped" in out
+    mail = git_raw(repo, "log", "-1", "--pretty=mboxrd", "side-edit")
+    diff = git_raw(repo, "diff-tree", "--no-commit-id", "-p", "-M", "--binary", "--root", "side-edit")
+    assert out.endswith(mail + b"---\n\n" + diff.replace(b"mower_sdk/client.py", b"mower_sdk/legacy/client.py"))
+    assert out.count(b"\nFrom ") + out.startswith(b"From ") == 1  # one mbox entry
 
 
 def test_a_message_that_looks_like_a_patch_is_copied_byte_for_byte(
-    repo: Path, capsys: pytest.CaptureFixture[str]
+    repo: Path, capsysbinary: pytest.CaptureFixture[bytes]
 ) -> None:
     assert port_upstream.main(["--dry-run", "base..quoted-edit"]) == 0
-    out = capsys.readouterr().out
-    mail = git_out(repo, "log", "-1", "--pretty=mboxrd", "quoted-edit")
+    out = capsysbinary.readouterr().out
+    mail = git_raw(repo, "log", "-1", "--pretty=mboxrd", "quoted-edit")
     assert mail in out
-    body = PATHOLOGICAL_MESSAGE.split("\n", 2)[2].replace("From here", ">From here")
+    body = PATHOLOGICAL_MESSAGE.split("\n", 2)[2].replace("From here", ">From here").encode()
     assert body in mail  # git's mboxrd quoting is the only change to the message
-    assert out.count("diff --git a/mower_sdk/legacy/client.py b/mower_sdk/legacy/client.py") == 1
+    assert out.count(b"diff --git a/mower_sdk/legacy/client.py b/mower_sdk/legacy/client.py") == 1
+
+
+def test_crlf_content_is_ported_byte_for_byte(
+    repo: Path, capsysbinary: pytest.CaptureFixture[bytes]
+) -> None:
+    assert port_upstream.main(["--dry-run", "base..crlf-edit"]) == 0
+    assert b"+    crlf = True\r\n" in capsysbinary.readouterr().out
+    git_out(repo, "checkout", "-q", "fork")
+    assert port_upstream.main(["base..crlf-edit"]) == 0
+    assert (repo / "mower_sdk/legacy/client.py").read_bytes() == b"class MowerClient:\r\n    crlf = True\r\n"
 
 
 def test_port_applies_the_series_into_legacy_with_upstream_authorship(
