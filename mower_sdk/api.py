@@ -93,6 +93,23 @@ class MowerAPI:
                 f"{ERROR_MESSAGES['API_REQUEST_FAILED']}: {str(e)}"
             ) from e
 
+    @staticmethod
+    def _unwrap(response: dict[str, Any]) -> Any:
+        """Check the reply envelope and return its data.
+
+        Raises:
+            MowerAPIError: If the envelope's code is not 1, with the reply's desc
+
+        Returns:
+            response["data"]: {} when the key is missing and None when the reply
+            carries an explicit null, exactly as each endpoint read it before
+        """
+        if response.get("code") != 1:
+            raise MowerAPIError(
+                f"{ERROR_MESSAGES['API_REQUEST_FAILED']}: {response.get('desc')}"
+            )
+        return response.get("data", {})
+
     async def async_get_devices(self) -> list[Device]:
         """Fetch the device list asynchronously.
 
@@ -103,11 +120,7 @@ class MowerAPI:
             MowerAPIError: If the request fails
         """
         response = await self._async_request("GET", "/openapi/smarthome/authList")
-        if response.get("code") != 1:
-            raise MowerAPIError(
-                f"{ERROR_MESSAGES['API_REQUEST_FAILED']}: {response.get('desc')}"
-            )
-        payload = response.get("data", {}).get("payload", {})
+        payload = self._unwrap(response).get("payload", {})
         devices_data = payload.get("devices", [])
         return [Device.from_dict(device_data) for device_data in devices_data]
 
@@ -121,11 +134,7 @@ class MowerAPI:
             MowerAPIError: If the request fails
         """
         response = await self._async_request("GET", "/openapi/mqtt/userInfo/get/v2")
-        if response.get("code") != 1:
-            raise MowerAPIError(
-                f"{ERROR_MESSAGES['API_REQUEST_FAILED']}: {response.get('desc')}"
-            )
-        return response.get("data", {})
+        return self._unwrap(response)
 
     def get_devices(self) -> list[Device]:
         """Fetch the device list synchronously.
@@ -163,11 +172,7 @@ class MowerAPI:
             "/openapi/smarthome/getVehicleStatus",
             data={"devices": [{"id": device_id} for device_id in device_ids]},
         )
-        if response.get("code") != 1:
-            raise MowerAPIError(
-                f"{ERROR_MESSAGES['API_REQUEST_FAILED']}: {response.get('desc')}"
-            )
-        payload = response.get("data", {}).get("payload", {})
+        payload = self._unwrap(response).get("payload", {})
         devices_data = payload.get("devices", [])
         result: dict[str, DeviceStatus] = {}
         for status_data in devices_data:
@@ -274,11 +279,8 @@ class MowerAPI:
                 ]
             },
         )
-        if response.get("code") != 1:
-            raise MowerAPIError(
-                f"{ERROR_MESSAGES['API_REQUEST_FAILED']}: {response.get('desc')}"
-            )
-        payload = response.get("data", {}).get("payload", {})
+        data = self._unwrap(response)
+        payload = data.get("payload", {})
         command_results = payload.get("commands", [])
         for result in command_results:
             if result.get("status") == "ERROR":
@@ -290,7 +292,7 @@ class MowerAPI:
                     f"{ERROR_MESSAGES['COMMAND_FAILED']}: {error_code}",
                     error_code=error_code,
                 )
-        return response.get("data", {})
+        return data
 
     def send_command(
         self, device_id: str, command: MowerCommand
@@ -330,20 +332,9 @@ class MowerAPI:
             "/openapi/smarthome/responseCommands",
             data={"devices": devices},
         )
-        if response.get("code") != 1:
-            raise MowerAPIError(
-                f"{ERROR_MESSAGES['API_REQUEST_FAILED']}: {response.get('desc')}"
-            )
-        payload = response.get("data", {}).get("payload", {})
+        payload = self._unwrap(response).get("payload", {})
         return payload.get("devices", [])
 
     def query_command_results(self, devices: list[dict[str, str]]) -> list[dict[str, Any]]:
         """Query command execution results synchronously."""
         return asyncio.run(self.async_query_command_results(devices))
-
-    def __del__(self):
-        """Clean up resources."""
-        if hasattr(self, "_session") and self._session and not self._session.closed:
-            # Note: await cannot be used in __del__; this only attempts to close.
-            # A better approach is a context manager or an explicit close call.
-            pass
