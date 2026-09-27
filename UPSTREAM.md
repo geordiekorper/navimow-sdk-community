@@ -49,9 +49,11 @@ The forks reviewed on 2026-09-26, in the order their pieces are applied:
 ## Moved files
 
 Phase 1 moves everything outside the live path into `mower_sdk.legacy` with
-`git mv`, so history and merge-back survive, and leaves a deprecating re-export
-at the old location. Commits are named by their Phase 1 label and, once known,
-their sha; `git log --follow` on the new path finds each one.
+`git mv`, so the history of every moved line can still be traced, and leaves a
+deprecating re-export at the old location. The move does not by itself keep
+`git merge` working; upstream changes are ported with the tool described under
+"Porting upstream commits" below. Commits are named by their Phase 1 label and,
+once known, their sha; `git log --follow` on the new path finds each one.
 
 Every old path is a shim: it emits one `DeprecationWarning` per legacy module
 per process, on the first deprecated access through any old path, and then

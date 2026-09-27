@@ -35,10 +35,14 @@ behaves differently, except as listed here.
   message says that every name in that legacy module is deprecated. Importing
   `mower_sdk.legacy.<module>` directly never warns. A fresh
   `from mower_sdk import *` makes nine warning calls, one per legacy module
-  behind the names in `__all__`. Under an error filter every deprecated access
-  raises. `DeprecationWarning` is hidden by default outside `__main__` and
-  test runners; because the warning is attributed to the caller, filter by
-  message or category rather than by module name.
+  behind the names in `__all__`. A legacy module is recorded as warned only
+  when its warning completes, so with an error filter active before that,
+  every deprecated access to it raises; a module whose warning has already
+  completed, or was ignored by a filter, stays silent whatever filter is
+  installed later, and a name already resolved is cached and never warns
+  again. `DeprecationWarning` is hidden by default outside `__main__` and test
+  runners; because the warning is attributed to the caller, filter by message
+  or category rather than by module name.
 - **`MowerAPI`'s synchronous wrappers are deprecated.** `get_devices`,
   `get_mqtt_user_info`, `get_device_status`, `send_command` and
   `query_command_results` stay, because the legacy `MowerClient` calls them,
