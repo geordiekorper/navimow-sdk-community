@@ -191,6 +191,41 @@ print(json.dumps(caught))
     assert [w["message"] for w in result] == [message_for("event")]
 
 
+def test_a_handler_reaching_the_same_legacy_module_does_not_warn_again(tmp_path: Path) -> None:
+    """A warning handler that touches a legacy name re-enters the helper on the same thread."""
+    _, result = run_snippet(
+        tmp_path,
+        """\
+import mower_sdk
+
+nested = []
+
+
+def handler(message, category, filename, lineno, file=None, line=None):
+    _record(message, category, filename, lineno, file, line)
+    if len(caught) == 1:
+        # Same legacy module (errors) while its first warning is being emitted: silent.
+        nested.append(mower_sdk.COMMAND_ERRORS is mower_sdk.legacy.errors.COMMAND_ERRORS)
+        # Another legacy module: its own first warning, nested.
+        importlib.import_module("mower_sdk.utils")
+
+
+import importlib
+warnings.showwarning = handler
+import mower_sdk.legacy.errors
+mower_sdk.MowerAuthError
+mower_sdk.COMMAND_ERRORS
+import mower_sdk.utils
+print(json.dumps({"messages": [c["message"] for c in caught], "nested": nested}))
+""",
+    )
+    assert result["messages"] == [
+        message_for("errors", "mower_sdk.MowerAuthError"),
+        message_for("utils"),
+    ]
+    assert result["nested"] == [True]
+
+
 def test_under_an_error_filter_every_deprecated_access_raises(tmp_path: Path) -> None:
     _, result = run_snippet(
         tmp_path,
