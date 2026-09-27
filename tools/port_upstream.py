@@ -14,15 +14,16 @@ commit by commit instead:
    whose content was split between core and ``legacy/`` by extraction, listed
    in ``tools/upstream_path_map.json``), it stops before applying anything and
    lists those commits for manual classification. It does not try to track the
-   extracted line ranges through upstream edits. Merge commits are inspected
-   too, because no patch can carry a merge. A merge is skipped only when its
-   tree is exactly what git's own clean merge of its two parents produces
-   (``git merge-tree --write-tree``): then it only joins its parents, and the
-   commits it joins are in the series and carry its changes. Any other merge
-   is refused the same way: one whose parents conflict (so the commit resolves
-   them by hand), one whose tree differs from the clean merge (a change of its
-   own, or a parent's changes discarded, as with ``-s ours``), an octopus
-   merge, and every merge when git is too old to check.
+   extracted line ranges through upstream edits. The series is the
+   first-parent line of the range: a merge commit is one step on it, carrying
+   its net change against its first parent, and the commits it merged are
+   squashed into that step (the scan lists them). Applying the steps in order
+   reproduces the tree of every commit on the line exactly, so nothing can be
+   lost or duplicated, whatever the merge did; the cost is that a merged
+   branch's individual commits keep their provenance only through the merge
+   message. A step whose net change is empty (an empty commit, or a merge
+   that kept its first parent's version) is skipped. The start of the range
+   should lie on the first-parent line of its end, as the fork point does.
 2. Otherwise it builds an mbox with one entry per commit: git's own mail
    header and message (``git log --pretty=mboxrd``), a ``---`` separator, and
    the commit's diff (``git diff-tree -p``) with the ``a/`` and ``b/`` paths of
@@ -39,8 +40,8 @@ commit by commit instead:
    ``git am --continue``; ``git am --abort`` restores the branch.
 
 Exit status: 0 applied (or dry run), 1 ``git am`` stopped on a conflict,
-2 refused because a commit touches a mixed file or is a merge with changes
-of its own, 3 usage, git error or nothing to apply.
+2 refused because a step touches a mixed file, 3 usage, git error or nothing
+to apply.
 """
 
 from __future__ import annotations
@@ -93,36 +94,29 @@ def encode_map(moved: dict[str, str]) -> dict[bytes, bytes]:
 
 
 def commits_in(range_spec: str) -> list[tuple[str, list[str]]]:
-    """The commits of the range, oldest first, each with its parents."""
-    out = git("rev-list", "--reverse", "--parents", range_spec).stdout
+    """The first-parent line of the range, oldest first, each commit with its parents.
+
+    A merge is one step on that line, ported as its net change against its
+    first parent; the commits it merged are not visited.
+    """
+    out = git("rev-list", "--reverse", "--first-parent", "--parents", range_spec).stdout
     return [(fields[0], fields[1:]) for line in out.splitlines() if (fields := line.split())]
 
 
-def files_touched(commit: str) -> list[str]:
-    """Files a non-merge commit changes against its parent."""
-    out = git("diff-tree", "--no-commit-id", "--name-only", "-r", "--root", commit).stdout
+def trees_of(commit: str, parents: list[str]) -> list[str]:
+    """diff-tree arguments for the commit's change against its first parent."""
+    return [parents[0], commit] if parents else ["--root", commit]
+
+
+def files_touched(commit: str, parents: list[str]) -> list[str]:
+    """Files the commit changes against its first parent."""
+    out = git("diff-tree", "--no-commit-id", "--name-only", "-r", *trees_of(commit, parents)).stdout
     return [line for line in out.splitlines() if line]
 
 
-def merge_verdict(commit: str, parents: list[str]) -> str | None:
-    """None when the merge only joins its parents and can be skipped; otherwise why it cannot.
-
-    The merge is compared with git's own clean merge of its parents. A patch
-    series cannot carry a merge, so a merge that is not that clean merge has
-    to be handled by hand.
-    """
-    if len(parents) != 2:
-        return f"octopus merge with {len(parents)} parents"
-    result = git("merge-tree", "--write-tree", parents[0], parents[1], check=False)
-    if result.returncode not in (0, 1):
-        return "git merge-tree --write-tree is unavailable (git 2.38 or newer is needed to check merges)"
-    if result.returncode == 1:
-        return "its parents conflict, so the commit resolves them by hand"
-    expected = result.stdout.split()[0]
-    actual = git("rev-parse", f"{commit}^{{tree}}").stdout.strip()
-    if expected != actual:
-        return "its tree is not the clean merge of its parents (a change of its own, or a parent's changes discarded)"
-    return None
+def merged_commits(parents: list[str]) -> list[str]:
+    """The commits a merge brought in: reachable from its other parents, not from its first."""
+    return git("rev-list", f"^{parents[0]}", *parents[1:]).stdout.split()
 
 
 def subject(commit: str) -> str:
@@ -221,14 +215,16 @@ def mail_for(commit: str) -> bytes:
     return mail if mail.endswith(b"\n") else mail + b"\n"
 
 
-def diff_for(commit: str) -> bytes:
-    """The commit's diff against its parent, renames detected, binary changes included."""
-    return git_bytes("diff-tree", "--no-commit-id", "-p", "-M", "--binary", "--root", commit).stdout
+def diff_for(commit: str, parents: list[str]) -> bytes:
+    """The commit's diff against its first parent, renames detected, binary changes included."""
+    return git_bytes(
+        "diff-tree", "--no-commit-id", "-p", "-M", "--binary", *trees_of(commit, parents)
+    ).stdout
 
 
-def patch_for(commit: str, moved: dict[bytes, bytes]) -> bytes:
+def patch_for(commit: str, parents: list[str], moved: dict[bytes, bytes]) -> bytes:
     """One mbox entry: the mail, a separator, and the rewritten diff."""
-    return mail_for(commit) + b"---\n\n" + rewrite_diff(diff_for(commit), moved)
+    return mail_for(commit) + b"---\n\n" + rewrite_diff(diff_for(commit, parents), moved)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -250,44 +246,48 @@ def main(argv: list[str] | None = None) -> int:
         return 3
 
     # 1. Scan the whole series before touching anything.
-    refused: list[tuple[str, str]] = []
-    to_apply = 0
+    refused: list[tuple[str, list[str]]] = []
+    to_apply: list[tuple[str, list[str]]] = []
     for commit, parents in commits:
-        if len(parents) > 1:
-            reason = merge_verdict(commit, parents)
-            if reason:
-                refused.append((commit, "merge commit: " + reason))
-                print(f"{subject(commit)}: merge commit that cannot be ported as a patch")
-            else:
-                print(f"{subject(commit)}: merge commit that only joins its parents, skipped")
+        touched = files_touched(commit, parents)
+        if not touched:
+            print(f"{subject(commit)}: no change against its first parent, skipped")
             continue
-        to_apply += 1
-        touched = files_touched(commit)
+        if len(parents) > 1:
+            squashed = merged_commits(parents)
+            print(
+                f"{subject(commit)}: merge commit, ported as its net change against its "
+                f"first parent, squashing {len(squashed)} commit(s):"
+            )
+            for sha in squashed:
+                print(f"    {subject(sha)}")
+        to_apply.append((commit, parents))
         hits = [path for path in touched if path in mixed]
         if hits:
-            refused.append((commit, "touches a mixed file: " + ", ".join(hits)))
+            refused.append((commit, hits))
         moved_hits = [f"{path} -> {moved[path]}" for path in touched if path in moved]
         print(f"{subject(commit)}: " + (", ".join(moved_hits) if moved_hits else "no moved file"))
     if refused:
         print(
-            f"\nrefused: {len(refused)} commit(s) need manual classification; nothing was "
-            "applied. A commit touching a mixed file has to be split by hand into the core "
-            "file and the extracted file; a merge commit that is not the clean merge of its "
-            "parents has to be applied by hand, because no patch can carry a merge:",
+            f"\nrefused: {len(refused)} commit(s) touch a mixed file whose content was split "
+            "between core and mower_sdk/legacy/; nothing was applied. Classify each hunk by "
+            "hand (core file or extracted file) and apply it manually:",
             file=sys.stderr,
         )
-        for commit, reason in refused:
-            print(f"  {subject(commit)}: {reason}", file=sys.stderr)
+        for commit, hits in refused:
+            print(f"  {subject(commit)}: {', '.join(hits)}", file=sys.stderr)
         return 2
     if not to_apply:
-        print(f"nothing to port: {args.range} holds only merge commits", file=sys.stderr)
+        print(
+            f"nothing to port: no commit on the first-parent line of {args.range} changes "
+            "anything against its first parent",
+            file=sys.stderr,
+        )
         return 3
 
     # 2. Build the series: git's message for each commit, and its diff rewritten.
     moved_bytes = encode_map(moved)
-    rewritten = b"".join(
-        patch_for(commit, moved_bytes) for commit, parents in commits if len(parents) < 2
-    )
+    rewritten = b"".join(patch_for(commit, parents, moved_bytes) for commit, parents in to_apply)
     if args.dry_run:
         sys.stdout.flush()
         sys.stdout.buffer.write(rewritten)
@@ -317,7 +317,7 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 1
-    print(f"applied {to_apply} commit(s) from {args.range}")
+    print(f"applied {len(to_apply)} commit(s) from {args.range}")
     return 0
 
 
