@@ -240,6 +240,9 @@ def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
        \\-- side-edit --/           /                /
        \\-- utils-edit ------------/                /
        \\-- discarded-edit -------------------------/
+       \\-- dup-a ---- dup-merge      (dup-a and dup-b insert the same line)
+       \\-- dup-b --/
+       \\-- crlf-edit   (a CRLF file)
        \\-- quoted-edit  (a commit whose message looks like a patch)
        \\-- fork: client.py moved to legacy/client.py with a shim, as Phase 1 did
     """
@@ -293,6 +296,16 @@ def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     run("merge", "-q", "-s", "ours", "--no-ff", "-m", "ours merge", "side3")
     run("tag", "ours-merge")
 
+    run("checkout", "-q", "-b", "dup-a", "base")
+    write("mower_sdk/client.py", "class MowerClient:\n    shared = 1\n")
+    run("commit", "-q", "-am", "shared insertion, side a")
+    run("checkout", "-q", "-b", "dup-b", "base")
+    write("mower_sdk/client.py", "class MowerClient:\n    shared = 1\n")
+    run("commit", "-q", "-am", "shared insertion, side b")
+    run("checkout", "-q", "dup-a")
+    run("merge", "-q", "--no-ff", "-m", "merge of the same insertion", "dup-b")
+    run("tag", "dup-merge")
+
     run("checkout", "-q", "-b", "crlf", "base")
     (tmp_path / "mower_sdk" / "client.py").write_bytes(b"class MowerClient:\r\n    crlf = True\r\n")
     run("commit", "-q", "-am", "crlf edit")
@@ -325,83 +338,106 @@ def git_raw(repo: Path, *args: str) -> bytes:
     return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, check=True).stdout
 
 
-def test_commits_in_reports_parents(repo: Path) -> None:
+def test_commits_in_follows_the_first_parent_line(repo: Path) -> None:
     commits = port_upstream.commits_in("base..clean-merge")
-    assert [len(parents) for _, parents in commits] == [1, 1, 2]
-    sha, parents = commits[-1]
-    assert sha == git_out(repo, "rev-parse", "clean-merge").strip()
-    assert parents == [git_out(repo, "rev-parse", "core-edit").strip(), git_out(repo, "rev-parse", "side-edit").strip()]
+    assert [git_out(repo, "log", "-1", "--format=%s", sha).strip() for sha, _ in commits] == [
+        "core edit",
+        "clean merge",
+    ]
+    assert [len(parents) for _, parents in commits] == [1, 2]
+    assert commits[1][1][0] == commits[0][0]  # the merge's first parent is the previous step
 
 
 @pytest.mark.usefixtures("repo")
-def test_files_touched_lists_a_commits_changes() -> None:
-    assert port_upstream.files_touched("side-edit") == ["mower_sdk/client.py"]
-    assert port_upstream.files_touched("base") == [
+def test_files_touched_and_merged_commits_are_against_the_first_parent() -> None:
+    def parents(commit: str) -> list[str]:
+        return port_upstream.git("rev-list", "--parents", "-n1", commit).stdout.split()[1:]
+
+    assert port_upstream.files_touched("side-edit", parents("side-edit")) == ["mower_sdk/client.py"]
+    assert port_upstream.files_touched("base", []) == [
         "mower_sdk/client.py", "mower_sdk/mqtt.py", "mower_sdk/utils.py"
     ]
-
-
-def parents_of(repo: Path, commit: str) -> list[str]:
-    return git_out(repo, "rev-list", "--parents", "-n1", commit).split()[1:]
-
-
-def test_merge_verdicts(repo: Path) -> None:
-    # Exactly git's clean merge of its parents: the side-branch commit carries the change.
-    assert port_upstream.merge_verdict("clean-merge", parents_of(repo, "clean-merge")) is None
-    # A clean merge was possible, but the commit's tree differs: a resolution by hand.
-    assert "not the clean merge" in port_upstream.merge_verdict("evil-merge", parents_of(repo, "evil-merge"))
-    # -s ours discarded a change to a file both sides touched: the parents conflict.
-    assert "conflict" in port_upstream.merge_verdict("ours-merge", parents_of(repo, "ours-merge"))
-    assert "octopus" in port_upstream.merge_verdict("clean-merge", ["a", "b", "c"])
-
-
-def test_an_ours_merge_that_discards_an_unconflicting_change_is_refused(
-    repo: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """The merge is clean for git, yet its tree keeps the first parent's version."""
-    git_out(repo, "checkout", "-q", "-b", "side4", "ours-merge")
-    (repo / "mower_sdk" / "newfile.py").write_text("x = 1\n")
-    git_out(repo, "add", "-A")
-    git_out(repo, "commit", "-q", "-m", "new file on a side branch")
-    git_out(repo, "checkout", "-q", "main")
-    git_out(repo, "merge", "-q", "-s", "ours", "--no-ff", "-m", "ours merge of an unconflicting change", "side4")
-    assert "not the clean merge" in port_upstream.merge_verdict("HEAD", parents_of(repo, "HEAD"))
-    assert port_upstream.main(["--dry-run", "ours-merge..HEAD"]) == 2
-    assert "merge commit: its tree is not the clean merge" in capsys.readouterr().err
+    assert port_upstream.files_touched("clean-merge", parents("clean-merge")) == ["mower_sdk/client.py"]
+    assert port_upstream.files_touched("evil-merge", parents("evil-merge")) == ["mower_sdk/utils.py"]
+    assert port_upstream.files_touched("ours-merge", parents("ours-merge")) == []
+    assert port_upstream.files_touched("dup-merge", parents("dup-merge")) == []
+    (squashed,) = port_upstream.merged_commits(parents("clean-merge"))
+    assert port_upstream.subject(squashed).endswith(" side edit")
+    assert port_upstream.merged_commits(parents("ours-merge")) == [
+        port_upstream.git("rev-parse", "side3").stdout.strip()
+    ]
 
 
 @pytest.mark.usefixtures("repo")
 def test_scan_refuses_a_mixed_file_before_applying_anything(capsys: pytest.CaptureFixture[str]) -> None:
     assert port_upstream.main(["base..clean-merge"]) == 2
     captured = capsys.readouterr()
-    assert "touches a mixed file: mower_sdk/mqtt.py" in captured.err
-    assert "clean merge" in captured.out and "skipped" in captured.out
+    assert "core edit: mower_sdk/mqtt.py" in captured.err
+    assert "clean merge: merge commit, ported as its net change against its first parent, squashing 1 commit(s):" in captured.out
+    assert "    " in captured.out and "side edit" in captured.out
 
 
 @pytest.mark.usefixtures("repo")
-def test_scan_refuses_a_merge_with_changes_of_its_own(capsys: pytest.CaptureFixture[str]) -> None:
-    assert port_upstream.main(["clean-merge..evil-merge"]) == 2
+def test_a_merge_resolved_by_hand_is_ported_as_its_net_change(
+    capsysbinary: pytest.CaptureFixture[bytes],
+) -> None:
+    assert port_upstream.main(["--dry-run", "clean-merge..evil-merge"]) == 0
+    out = capsysbinary.readouterr().out
+    assert b"squashing 1 commit(s):" in out and b"utils edit" in out
+    assert out.count(b"\nFrom ") + out.startswith(b"From ") == 1
+    assert b"diff --git a/mower_sdk/legacy/utils.py b/mower_sdk/legacy/utils.py\n" in out
+    assert b"+    return data or {}  # resolved by hand\n" in out
+
+
+@pytest.mark.usefixtures("repo")
+def test_a_merge_that_kept_its_first_parent_is_skipped(capsys: pytest.CaptureFixture[str]) -> None:
+    assert port_upstream.main(["--dry-run", "evil-merge..ours-merge"]) == 3
     captured = capsys.readouterr()
-    assert "merge commit: its tree is not the clean merge of its parents" in captured.err
-    assert "utils edit" in captured.out
-
-
-@pytest.mark.usefixtures("repo")
-def test_a_range_of_only_merges_is_nothing_to_port(capsys: pytest.CaptureFixture[str]) -> None:
-    assert port_upstream.main(["--dry-run", "clean-merge^!"]) == 3
-    assert "holds only merge commits" in capsys.readouterr().err
+    assert "ours merge: no change against its first parent, skipped" in captured.out
+    assert "discarded edit" not in captured.out  # never visited, so never ported
+    assert "nothing to port" in captured.err
 
 
 def test_dry_run_is_the_message_then_the_rewritten_diff(
     repo: Path, capsysbinary: pytest.CaptureFixture[bytes]
 ) -> None:
-    assert port_upstream.main(["--dry-run", "core-edit..clean-merge"]) == 0
+    assert port_upstream.main(["--dry-run", "base..side-edit"]) == 0
     out = capsysbinary.readouterr().out
-    assert b"clean merge" in out and b"skipped" in out
     mail = git_raw(repo, "log", "-1", "--pretty=mboxrd", "side-edit")
     diff = git_raw(repo, "diff-tree", "--no-commit-id", "-p", "-M", "--binary", "--root", "side-edit")
     assert out.endswith(mail + b"---\n\n" + diff.replace(b"mower_sdk/client.py", b"mower_sdk/legacy/client.py"))
     assert out.count(b"\nFrom ") + out.startswith(b"From ") == 1  # one mbox entry
+
+
+def test_a_merge_is_ported_as_one_step_with_its_net_change(
+    repo: Path, capsysbinary: pytest.CaptureFixture[bytes]
+) -> None:
+    assert port_upstream.main(["--dry-run", "core-edit..clean-merge"]) == 0
+    out = capsysbinary.readouterr().out
+    mail = git_raw(repo, "log", "-1", "--pretty=mboxrd", "clean-merge")
+    diff = git_raw(repo, "diff-tree", "--no-commit-id", "-p", "-M", "--binary", "core-edit", "clean-merge")
+    assert out.endswith(mail + b"---\n\n" + diff.replace(b"mower_sdk/client.py", b"mower_sdk/legacy/client.py"))
+    assert out.count(b"\nFrom ") + out.startswith(b"From ") == 1
+    assert b"squashing 1 commit(s):" in out and b"side edit" in out
+
+    git_out(repo, "checkout", "-q", "fork")
+    assert port_upstream.main(["core-edit..clean-merge"]) == 0
+    assert git_out(repo, "log", "-1", "--format=%an: %s") == "Upstream: clean merge\n"
+    assert git_out(repo, "diff", "--name-only", "fork-move", "HEAD") == "mower_sdk/legacy/client.py\n"
+    assert (repo / "mower_sdk/legacy/client.py").read_text() == "class MowerClient:\n    token_updates = 0\n"
+
+
+def test_the_same_insertion_on_both_sides_of_a_merge_is_ported_once(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A clean merge of two identical insertions holds one copy; so does the port."""
+    git_out(repo, "checkout", "-q", "fork")
+    assert port_upstream.main(["base..dup-merge"]) == 0
+    captured = capsys.readouterr()
+    assert "merge of the same insertion: no change against its first parent, skipped" in captured.out
+    assert "applied 1 commit(s)" in captured.out
+    assert git_out(repo, "log", "--format=%s", "fork-move..HEAD") == "shared insertion, side a\n"
+    assert (repo / "mower_sdk/legacy/client.py").read_text() == "class MowerClient:\n    shared = 1\n"
 
 
 def test_a_message_that_looks_like_a_patch_is_copied_byte_for_byte(
