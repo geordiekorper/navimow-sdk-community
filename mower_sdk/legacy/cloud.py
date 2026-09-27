@@ -7,7 +7,7 @@ import json
 import logging
 from typing import Any
 
-from mower_sdk.event import DataEvent
+from mower_sdk.legacy.event import DataEvent
 from mower_sdk.models import (
     DeviceAttributesMessage,
     DeviceEventMessage,

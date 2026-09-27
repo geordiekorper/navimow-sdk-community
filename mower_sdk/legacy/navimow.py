@@ -6,14 +6,14 @@ import asyncio
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-from mower_sdk.cloud import NavimowCloud
-from mower_sdk.device import NavimowCloudDevice
+from mower_sdk.legacy.cloud import NavimowCloud
+from mower_sdk.legacy.device import NavimowCloudDevice
 from mower_sdk.models import Device
 from mower_sdk.mqtt import NavimowMQTT
-from mower_sdk.state_manager import StateManager
+from mower_sdk.legacy.state_manager import StateManager
 
 if TYPE_CHECKING:
-    from mower_sdk.client import MowerClient
+    from mower_sdk.legacy.client import MowerClient
 
 
 class NavimowDeviceManager:

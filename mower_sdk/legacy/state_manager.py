@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from mower_sdk.event import DataEvent
+from mower_sdk.legacy.event import DataEvent
 from mower_sdk.models import (
     Device,
     DeviceAttributesMessage,
