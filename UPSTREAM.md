@@ -83,12 +83,53 @@ checks that, with docstrings and decorators included. No core module imports
 `mower_sdk.legacy`: `mower_sdk.mqtt.parse_json`, which core no longer uses, is
 served lazily from `mower_sdk/legacy/utils.py` like the extracted names.
 
+## Porting upstream commits
+
+`git merge upstream/main` does not work for the moved files. A merge compares
+only the merge base and the two tips; at our tip each old path still exists as
+a shim, so git treats upstream's edit and our shim as two edits of the same
+file, conflicts in every shim, and nothing reaches `mower_sdk/legacy/`. (This
+was measured on a clone of this repository with git 2.55.0.)
+
+`tools/port_upstream.py <range>` ports a series commit by commit instead:
+
+1. It scans the whole series first. If any commit touches a mixed file, one
+   whose content was split between core and `legacy/` by extraction
+   (`mower_sdk/mqtt.py`, `mower_sdk/models.py`, `mower_sdk/errors.py`), it
+   stops before applying anything and lists those commits. Classify each hunk
+   by hand, core file or extracted file, and apply it manually. The tool does
+   not try to track the extracted line ranges through upstream edits.
+2. Otherwise it writes the series with `git format-patch`, rewrites the `a/`
+   and `b/` paths of the moved files through `tools/upstream_path_map.json`,
+   and applies it with `git am -3`, so each commit lands in `legacy/` with its
+   author, date and message, and the shims are untouched.
+3. A conflict stops `git am`. Translated docstrings are the usual cause; that
+   conflict would occur without any move, and the tool does not remove it.
+   Resolve it, `git add` the file and run `git am --continue`;
+   `git am --abort` restores the branch.
+
+`python tools/port_upstream.py --dry-run <range>` scans and prints the
+rewritten series without applying it. Port from the last commit already taken
+(the fork point `6596aa0` until then):
+
+```bash
+git fetch upstream
+python tools/port_upstream.py 6596aa0..upstream/main
+```
+
+The ported commits keep upstream's authorship, so git history records the
+provenance; note the last ported upstream commit here when a port is made.
+The map must be extended in the same commit as any later move.
+
 ## Rules that keep a merge-back possible
 
 - The import name stays `mower_sdk`; only the distribution name changed.
 - Every public name upstream published still resolves. `tests/upstream_exports.json`,
   generated from the fork point, is the inventory and `tests/test_public_api_compat.py`
   enforces it in CI.
-- Files move with `git mv`, never by copy and delete.
+- Files move with `git mv`, never by copy and delete, so `git log --follow`
+  and `git blame -C` show the history of moved lines (default `git blame` on
+  the extracted files starts at the extraction commit). The move alone does
+  not keep `git merge` working: see the section above.
 - Changes that do not depend on the fork identity are written so they can be
   offered upstream as they are.
