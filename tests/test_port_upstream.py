@@ -220,6 +220,29 @@ GIT_ENV = {
     "GIT_CONFIG_GLOBAL": os.devnull,
     "GIT_CONFIG_NOSYSTEM": "1",
 }
+DUP_BASE = """\
+TCP = {
+    "a": 1,
+}
+
+
+def make():
+    pass
+"""
+DUP_INSERTED = """\
+TCP = {
+    "a": 1,
+}
+
+
+WSS = {
+    "b": 2,
+}
+
+
+def make():
+    pass
+"""
 PATHOLOGICAL_MESSAGE = """\
 quoted edit
 
@@ -240,7 +263,8 @@ def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
        \\-- side-edit --/           /                /
        \\-- utils-edit ------------/                /
        \\-- discarded-edit -------------------------/
-       \\-- dup-a ---- dup-merge      (dup-a and dup-b insert the same line)
+       \\-- dup-base -- dup-a ---- dup-merge   (dup-a and dup-b insert the same block)
+                  \\-- dup-b --/
        \\-- dup-b --/
        \\-- crlf-edit   (a CRLF file)
        \\-- quoted-edit  (a commit whose message looks like a patch)
@@ -296,12 +320,18 @@ def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     run("merge", "-q", "-s", "ours", "--no-ff", "-m", "ours merge", "side3")
     run("tag", "ours-merge")
 
+    # Both sides insert the same block, whose tail repeats the context before it,
+    # so the hunk still matches (at an offset) once the block is there.
     run("checkout", "-q", "-b", "dup-a", "base")
-    write("mower_sdk/client.py", "class MowerClient:\n    shared = 1\n")
+    write("mower_sdk/client.py", DUP_BASE)
+    run("commit", "-q", "-am", "base with a second block")
+    run("tag", "dup-base")
+    write("mower_sdk/client.py", DUP_INSERTED)
     run("commit", "-q", "-am", "shared insertion, side a")
-    run("checkout", "-q", "-b", "dup-b", "base")
-    write("mower_sdk/client.py", "class MowerClient:\n    shared = 1\n")
+    run("checkout", "-q", "-b", "dup-b", "dup-base")
+    write("mower_sdk/client.py", DUP_INSERTED)
     run("commit", "-q", "-am", "shared insertion, side b")
+    run("tag", "dup-b")
     run("checkout", "-q", "dup-a")
     run("merge", "-q", "--no-ff", "-m", "merge of the same insertion", "dup-b")
     run("tag", "dup-merge")
@@ -430,14 +460,31 @@ def test_a_merge_is_ported_as_one_step_with_its_net_change(
 def test_the_same_insertion_on_both_sides_of_a_merge_is_ported_once(
     repo: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """A clean merge of two identical insertions holds one copy; so does the port."""
+    """A clean merge of two identical insertions holds one copy; so does the port.
+
+    The inserted block's tail repeats the context before it, so side b's patch
+    still applies, at an offset, once side a's is in; replaying both would
+    insert the block twice. Only the first-parent walk keeps the second copy
+    out.
+    """
+    side_b = git_raw(repo, "format-patch", "--stdout", "-1", "dup-b")
+    git_out(repo, "checkout", "-q", "dup-a")
+    check = subprocess.run(
+        ["git", "-C", str(repo), "apply", "--check", "--verbose"], input=side_b, capture_output=True
+    )
+    assert check.returncode == 0 and b"offset" in check.stderr  # the duplicate would go in
+
     git_out(repo, "checkout", "-q", "fork")
     assert port_upstream.main(["base..dup-merge"]) == 0
     captured = capsys.readouterr()
     assert "merge of the same insertion: no change against its first parent, skipped" in captured.out
-    assert "applied 1 commit(s)" in captured.out
-    assert git_out(repo, "log", "--format=%s", "fork-move..HEAD") == "shared insertion, side a\n"
-    assert (repo / "mower_sdk/legacy/client.py").read_text() == "class MowerClient:\n    shared = 1\n"
+    assert "applied 2 commit(s)" in captured.out
+    assert git_out(repo, "log", "--format=%s", "fork-move..HEAD") == (
+        "shared insertion, side a\nbase with a second block\n"
+    )
+    content = (repo / "mower_sdk/legacy/client.py").read_bytes()
+    assert content == DUP_INSERTED.encode()
+    assert content.count(b"WSS = {") == 1
 
 
 def test_a_message_that_looks_like_a_patch_is_copied_byte_for_byte(
