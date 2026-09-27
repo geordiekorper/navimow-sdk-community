@@ -50,11 +50,25 @@ The forks reviewed on 2026-09-26, in the order their pieces are applied:
 
 Phase 1 moves everything outside the live path into `mower_sdk.legacy` with
 `git mv`, so history and merge-back survive, and leaves a deprecating re-export
-at the old location. Nothing has moved yet.
+at the old location. Commits are named by their Phase 1 label; `git log --follow`
+on the new path finds each one.
 
 | At the fork point | Now | Moved in | Old import still works |
 |---|---|---|---|
-| _none yet_ | | | |
+| `mower_sdk/client.py` | `mower_sdk/legacy/client.py` | Phase 1 C3 (whole file) | not yet: the shim follows in C4 |
+| `mower_sdk/cloud.py` | `mower_sdk/legacy/cloud.py` | Phase 1 C3 (whole file) | not yet: the shim follows in C4 |
+| `mower_sdk/device.py` | `mower_sdk/legacy/device.py` | Phase 1 C3 (whole file) | not yet: the shim follows in C4 |
+| `mower_sdk/event.py` | `mower_sdk/legacy/event.py` | Phase 1 C3 (whole file) | not yet: the shim follows in C4 |
+| `mower_sdk/navimow.py` | `mower_sdk/legacy/navimow.py` | Phase 1 C3 (whole file) | not yet: the shim follows in C4 |
+| `mower_sdk/state_manager.py` | `mower_sdk/legacy/state_manager.py` | Phase 1 C3 (whole file) | not yet: the shim follows in C4 |
+| `mower_sdk/utils.py` | `mower_sdk/legacy/utils.py` | Phase 1 C3 (whole file) | not yet: the shim follows in C4 |
+
+The moved files received no edit beyond imports of sibling legacy modules
+retargeted to `mower_sdk.legacy.*`; imports of core classes (`MowerAPI`,
+`NavimowMQTT`, the models) still come from core. One core import goes the
+other way for now: `mower_sdk/mqtt.py` reads `parse_json` from
+`mower_sdk.legacy.utils` until C5 moves its only caller, `MowerMQTT`, into
+`legacy/` as well.
 
 ## Rules that keep a merge-back possible
 
