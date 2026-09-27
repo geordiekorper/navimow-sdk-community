@@ -1,9 +1,9 @@
 """Star imports from mower_sdk.mqtt, mower_sdk.models and mower_sdk.errors.
 
-Until Phase 1 only the package-level star import was tested. These three
+Before the legacy move only the package-level star import was tested. These three
 modules now serve their moved names through ``__getattr__``, and names served
 that way are not module globals, so each module needs an ``__all__`` for a
-star import to carry them. Per Phase 1 Q7 the ``__all__`` lists exactly the
+star import to carry them. Each ``__all__`` lists exactly the
 inventory names: what upstream defined in the module plus the aliases callers
 picked up. The imported helpers that a bare star import used to leak (``json``,
 ``asyncio``, ``dataclass`` and the like) no longer arrive; plain attribute

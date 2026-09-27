@@ -48,12 +48,12 @@ The forks reviewed on 2026-09-26, in the order their pieces are applied:
 
 ## Moved files
 
-Phase 1 moves everything outside the live path into `mower_sdk.legacy` with
-`git mv`, so the history of every moved line can still be traced, and leaves a
-deprecating re-export at the old location. The move does not by itself keep
-`git merge` working; upstream changes are ported with the tool described under
-"Porting upstream commits" below. Commits are named by their Phase 1 label and,
-once known, their sha; `git log --follow` on the new path finds each one.
+Everything outside the live path was moved into `mower_sdk.legacy` with
+`git mv`, so the history of every moved line can still be traced, and a
+deprecating re-export was left at the old location. The move does not by itself
+keep `git merge` working; upstream changes are ported with the tool described
+under "Porting upstream commits" below. `git log --follow` on a new path finds
+the commit that moved or extracted it.
 
 Every old path is a shim: it emits one `DeprecationWarning` per legacy module
 per process, on the first deprecated access through any old path, and then
@@ -61,18 +61,18 @@ re-exports the legacy module with a star import. Importing
 `mower_sdk.legacy.<module>` directly never warns. The policy lives in
 `mower_sdk/_deprecation.py`.
 
-| At the fork point | Now | Moved in | Old import still works |
+| At the fork point | Now | How | Old import still works |
 |---|---|---|---|
-| `mower_sdk/client.py` | `mower_sdk/legacy/client.py` | Phase 1 C3, `9ceceed` (whole file) | yes: a shim at the old path warns once per process (Phase 1 C4, `96c6696`) |
-| `mower_sdk/cloud.py` | `mower_sdk/legacy/cloud.py` | Phase 1 C3, `9ceceed` (whole file) | yes: a shim at the old path warns once per process (Phase 1 C4, `96c6696`) |
-| `mower_sdk/device.py` | `mower_sdk/legacy/device.py` | Phase 1 C3, `9ceceed` (whole file) | yes: a shim at the old path warns once per process (Phase 1 C4, `96c6696`) |
-| `mower_sdk/event.py` | `mower_sdk/legacy/event.py` | Phase 1 C3, `9ceceed` (whole file) | yes: a shim at the old path warns once per process (Phase 1 C4, `96c6696`) |
-| `mower_sdk/navimow.py` | `mower_sdk/legacy/navimow.py` | Phase 1 C3, `9ceceed` (whole file) | yes: a shim at the old path warns once per process (Phase 1 C4, `96c6696`) |
-| `mower_sdk/state_manager.py` | `mower_sdk/legacy/state_manager.py` | Phase 1 C3, `9ceceed` (whole file) | yes: a shim at the old path warns once per process (Phase 1 C4, `96c6696`) |
-| `mower_sdk/utils.py` | `mower_sdk/legacy/utils.py` | Phase 1 C3, `9ceceed` (whole file) | yes: a shim at the old path warns once per process (Phase 1 C4, `96c6696`) |
-| `mower_sdk/mqtt.py` lines 49–454: `MowerMQTT` | `mower_sdk/legacy/mqtt_v1.py` | Phase 1 C5 (extraction) | yes: `mower_sdk.mqtt.MowerMQTT` is served lazily and warns once per process |
-| `mower_sdk/models.py` lines 192–271: `ThingParams`, `ThingStatusMessage`, `ThingPropertiesMessage`, `ThingEventMessage` | `mower_sdk/legacy/thing_models.py` | Phase 1 C5 (extraction) | yes: served lazily from `mower_sdk.models`, one warning per process |
-| `mower_sdk/errors.py` lines 44–58: `MowerAuthError`; lines 94–112: `COMMAND_ERRORS` | `mower_sdk/legacy/errors.py` | Phase 1 C5 (extraction) | yes: served lazily from `mower_sdk.errors`, one warning per process |
+| `mower_sdk/client.py` | `mower_sdk/legacy/client.py` | whole file, `git mv` | yes: a shim at the old path warns once per process |
+| `mower_sdk/cloud.py` | `mower_sdk/legacy/cloud.py` | whole file, `git mv` | yes: a shim at the old path warns once per process |
+| `mower_sdk/device.py` | `mower_sdk/legacy/device.py` | whole file, `git mv` | yes: a shim at the old path warns once per process |
+| `mower_sdk/event.py` | `mower_sdk/legacy/event.py` | whole file, `git mv` | yes: a shim at the old path warns once per process |
+| `mower_sdk/navimow.py` | `mower_sdk/legacy/navimow.py` | whole file, `git mv` | yes: a shim at the old path warns once per process |
+| `mower_sdk/state_manager.py` | `mower_sdk/legacy/state_manager.py` | whole file, `git mv` | yes: a shim at the old path warns once per process |
+| `mower_sdk/utils.py` | `mower_sdk/legacy/utils.py` | whole file, `git mv` | yes: a shim at the old path warns once per process |
+| `mower_sdk/mqtt.py` lines 49–454: `MowerMQTT` | `mower_sdk/legacy/mqtt_v1.py` | extracted | yes: `mower_sdk.mqtt.MowerMQTT` is served lazily and warns once per process |
+| `mower_sdk/models.py` lines 192–271: `ThingParams`, `ThingStatusMessage`, `ThingPropertiesMessage`, `ThingEventMessage` | `mower_sdk/legacy/thing_models.py` | extracted | yes: served lazily from `mower_sdk.models`, one warning per process |
+| `mower_sdk/errors.py` lines 44–58: `MowerAuthError`; lines 94–112: `COMMAND_ERRORS` | `mower_sdk/legacy/errors.py` | extracted | yes: served lazily from `mower_sdk.errors`, one warning per process |
 
 The moved files received no edit beyond imports of sibling legacy modules
 retargeted to `mower_sdk.legacy.*`; imports of core classes (`MowerAPI`,

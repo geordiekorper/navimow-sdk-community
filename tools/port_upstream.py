@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Port a series of upstream commits into the files Phase 1 moved.
+"""Port a series of upstream commits into the files that moved to mower_sdk/legacy/.
 
     python tools/port_upstream.py <range>              e.g. 6596aa0..upstream/main
     python tools/port_upstream.py --dry-run <range>    scan and print, apply nothing

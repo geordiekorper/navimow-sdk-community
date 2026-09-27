@@ -7,8 +7,7 @@ throughout.
 
 ## [Unreleased]
 
-Phase 1 of the fork plan: the legacy quarantine. Nothing upstream published is
-deleted, and every public name still imports from its old path. Nothing on the
+The legacy quarantine. Nothing upstream published is deleted, and every public name still imports from its old path. Nothing on the
 live path (`MowerAPI`, `NavimowMQTT`, `NavimowSDK`, the models, the errors)
 behaves differently, except as listed here.
 
@@ -95,8 +94,8 @@ behaves differently, except as listed here.
 
 ## [0.2.0a1] - 2026-09-27
 
-First pre-release of the community edition, for TestPyPI only. Phase 0 of the
-fork plan: fork and guard. No line of executable code differs from upstream
+First pre-release of the community edition, for TestPyPI only: the fork, its
+metadata and its guards. No line of executable code differs from upstream
 0.1.2 (`6596aa0`) except `__version__`.
 
 ### Changed

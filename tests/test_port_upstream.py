@@ -268,7 +268,7 @@ def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
        \\-- dup-b --/
        \\-- crlf-edit   (a CRLF file)
        \\-- quoted-edit  (a commit whose message looks like a patch)
-       \\-- fork: client.py moved to legacy/client.py with a shim, as Phase 1 did
+       \\-- fork: client.py moved to legacy/client.py with a shim, as this repository did
     """
     for name, value in GIT_ENV.items():
         monkeypatch.setenv(name, value)
