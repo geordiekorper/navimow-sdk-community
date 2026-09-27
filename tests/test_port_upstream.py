@@ -153,3 +153,121 @@ def test_hunk_counting_handles_omitted_counts_and_empty_context_lines() -> None:
     assert "+ mower_sdk/client.py | 1 +\n" in rewritten  # added line inside the hunk: untouched
     assert rewritten.count("mower_sdk/legacy/client.py") == 5  # diffstat, diff --git (twice), --- and +++
     assert rewritten.endswith("-old\n+new\n--- a/mower_sdk/client.py\n-- \n2.55.0\n")
+
+
+# ---- the scan, on a temporary repository ----------------------------------------------------
+
+GIT_ENV = {
+    "GIT_AUTHOR_NAME": "Upstream",
+    "GIT_AUTHOR_EMAIL": "upstream@example.invalid",
+    "GIT_COMMITTER_NAME": "Upstream",
+    "GIT_COMMITTER_EMAIL": "upstream@example.invalid",
+    "GIT_CONFIG_GLOBAL": "/dev/null",
+    "GIT_CONFIG_NOSYSTEM": "1",
+}
+
+
+@pytest.fixture
+def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A small repository shaped like upstream's history, with the tool pointed at it.
+
+    base -> (main) "core edit" touches mower_sdk/mqtt.py
+         -> (side) "side edit" touches mower_sdk/client.py
+    clean-merge: main + side, no changes of its own
+    evil-merge:  a second merge of another side branch, with an extra edit in the merge
+    """
+    import os
+    import subprocess
+
+    def run(*args: str, cwd: Path = tmp_path) -> str:
+        return subprocess.run(
+            ["git", "-C", str(cwd), *args],
+            capture_output=True,
+            text=True,
+            check=True,
+            env={**os.environ, **GIT_ENV},
+        ).stdout.strip()
+
+    def write(path: str, text: str) -> None:
+        target = tmp_path / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+
+    run("init", "-q", "-b", "main")
+    write("mower_sdk/client.py", "class MowerClient:\n    pass\n")
+    write("mower_sdk/mqtt.py", "class NavimowMQTT:\n    pass\n")
+    write("mower_sdk/utils.py", "def parse_json(data):\n    return data\n")
+    run("add", "-A")
+    run("commit", "-q", "-m", "base")
+    run("tag", "base")
+
+    run("checkout", "-q", "-b", "side")
+    write("mower_sdk/client.py", "class MowerClient:\n    token_updates = 0\n")
+    run("commit", "-q", "-am", "side edit")
+    run("tag", "side-edit")
+
+    run("checkout", "-q", "main")
+    write("mower_sdk/mqtt.py", "class NavimowMQTT:\n    keepalive = 60\n")
+    run("commit", "-q", "-am", "core edit")
+    run("tag", "core-edit")
+    run("merge", "-q", "--no-ff", "-m", "clean merge", "side")
+    run("tag", "clean-merge")
+
+    run("checkout", "-q", "-b", "side2", "base")
+    write("mower_sdk/utils.py", "def parse_json(data):\n    return data or {}\n")
+    run("commit", "-q", "-am", "utils edit")
+    run("checkout", "-q", "main")
+    run("merge", "-q", "--no-ff", "--no-commit", "side2")
+    write("mower_sdk/utils.py", "def parse_json(data):\n    return data or {}  # resolved by hand\n")
+    run("add", "-A")
+    run("commit", "-q", "-m", "evil merge")
+    run("tag", "evil-merge")
+
+    monkeypatch.setattr(port_upstream, "REPO_ROOT", tmp_path)
+    return tmp_path
+
+
+@pytest.mark.usefixtures("repo")
+def test_commits_in_reports_merges() -> None:
+    commits = port_upstream.commits_in("base..clean-merge")
+    assert [is_merge for _, is_merge in commits] == [False, False, True]
+
+
+@pytest.mark.usefixtures("repo")
+def test_files_touched_for_a_merge_lists_only_changes_of_its_own() -> None:
+    assert port_upstream.files_touched("clean-merge", is_merge=True) == []
+    assert port_upstream.files_touched("evil-merge", is_merge=True) == ["mower_sdk/utils.py"]
+    assert port_upstream.files_touched("side-edit", is_merge=False) == ["mower_sdk/client.py"]
+
+
+@pytest.mark.usefixtures("repo")
+def test_scan_refuses_a_mixed_file_before_applying_anything(capsys: pytest.CaptureFixture[str]) -> None:
+    assert port_upstream.main(["base..clean-merge"]) == 2
+    captured = capsys.readouterr()
+    assert "touches a mixed file: mower_sdk/mqtt.py" in captured.err
+    assert "clean merge" in captured.out and "skipped" in captured.out
+
+
+@pytest.mark.usefixtures("repo")
+def test_scan_refuses_a_merge_with_changes_of_its_own(capsys: pytest.CaptureFixture[str]) -> None:
+    assert port_upstream.main(["clean-merge..evil-merge"]) == 2
+    captured = capsys.readouterr()
+    assert "merge commit with changes of its own: mower_sdk/utils.py" in captured.err
+    assert "utils edit" in captured.out
+
+
+@pytest.mark.usefixtures("repo")
+def test_dry_run_of_a_clean_merge_and_its_side_commit(capsys: pytest.CaptureFixture[str]) -> None:
+    # Only the side branch, its edit and the clean merge: no mixed file in the way.
+    assert port_upstream.main(["--dry-run", "core-edit..clean-merge"]) == 0
+    captured = capsys.readouterr()
+    assert "clean merge" in captured.out and "skipped" in captured.out
+    assert captured.out.count("\nFrom ") + captured.out.startswith("From ") == 1  # one patch
+    assert "diff --git a/mower_sdk/legacy/client.py b/mower_sdk/legacy/client.py" in captured.out
+    assert "token_updates" in captured.out
+
+
+@pytest.mark.usefixtures("repo")
+def test_a_range_of_only_merges_is_nothing_to_port(capsys: pytest.CaptureFixture[str]) -> None:
+    assert port_upstream.main(["--dry-run", "clean-merge^!"]) == 3
+    assert "holds only merge commits" in capsys.readouterr().err
