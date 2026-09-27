@@ -281,17 +281,49 @@ def git_out(repo: Path, *args: str) -> str:
     ).stdout
 
 
-@pytest.mark.usefixtures("repo")
-def test_commits_in_reports_merges() -> None:
+def test_commits_in_reports_parents(repo: Path) -> None:
     commits = port_upstream.commits_in("base..clean-merge")
-    assert [is_merge for _, is_merge in commits] == [False, False, True]
+    assert [len(parents) for _, parents in commits] == [1, 1, 2]
+    sha, parents = commits[-1]
+    assert sha == git_out(repo, "rev-parse", "clean-merge").strip()
+    assert parents == [git_out(repo, "rev-parse", "core-edit").strip(), git_out(repo, "rev-parse", "side-edit").strip()]
 
 
 @pytest.mark.usefixtures("repo")
-def test_files_touched_for_a_merge_lists_only_changes_of_its_own() -> None:
-    assert port_upstream.files_touched("clean-merge", is_merge=True) == []
-    assert port_upstream.files_touched("evil-merge", is_merge=True) == ["mower_sdk/utils.py"]
-    assert port_upstream.files_touched("side-edit", is_merge=False) == ["mower_sdk/client.py"]
+def test_files_touched_lists_a_commits_changes() -> None:
+    assert port_upstream.files_touched("side-edit") == ["mower_sdk/client.py"]
+    assert port_upstream.files_touched("base") == [
+        "mower_sdk/client.py", "mower_sdk/mqtt.py", "mower_sdk/utils.py"
+    ]
+
+
+def parents_of(repo: Path, commit: str) -> list[str]:
+    return git_out(repo, "rev-list", "--parents", "-n1", commit).split()[1:]
+
+
+def test_merge_verdicts(repo: Path) -> None:
+    # Exactly git's clean merge of its parents: the side-branch commit carries the change.
+    assert port_upstream.merge_verdict("clean-merge", parents_of(repo, "clean-merge")) is None
+    # A clean merge was possible, but the commit's tree differs: a resolution by hand.
+    assert "not the clean merge" in port_upstream.merge_verdict("evil-merge", parents_of(repo, "evil-merge"))
+    # -s ours discarded a change to a file both sides touched: the parents conflict.
+    assert "conflict" in port_upstream.merge_verdict("ours-merge", parents_of(repo, "ours-merge"))
+    assert "octopus" in port_upstream.merge_verdict("clean-merge", ["a", "b", "c"])
+
+
+def test_an_ours_merge_that_discards_an_unconflicting_change_is_refused(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The merge is clean for git, yet its tree keeps the first parent's version."""
+    git_out(repo, "checkout", "-q", "-b", "side4", "ours-merge")
+    (repo / "mower_sdk" / "newfile.py").write_text("x = 1\n")
+    git_out(repo, "add", "-A")
+    git_out(repo, "commit", "-q", "-m", "new file on a side branch")
+    git_out(repo, "checkout", "-q", "main")
+    git_out(repo, "merge", "-q", "-s", "ours", "--no-ff", "-m", "ours merge of an unconflicting change", "side4")
+    assert "not the clean merge" in port_upstream.merge_verdict("HEAD", parents_of(repo, "HEAD"))
+    assert port_upstream.main(["--dry-run", "ours-merge..HEAD"]) == 2
+    assert "merge commit: its tree is not the clean merge" in capsys.readouterr().err
 
 
 @pytest.mark.usefixtures("repo")
@@ -306,7 +338,7 @@ def test_scan_refuses_a_mixed_file_before_applying_anything(capsys: pytest.Captu
 def test_scan_refuses_a_merge_with_changes_of_its_own(capsys: pytest.CaptureFixture[str]) -> None:
     assert port_upstream.main(["clean-merge..evil-merge"]) == 2
     captured = capsys.readouterr()
-    assert "merge commit with changes of its own: mower_sdk/utils.py" in captured.err
+    assert "merge commit: its tree is not the clean merge of its parents" in captured.err
     assert "utils edit" in captured.out
 
 

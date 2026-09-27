@@ -101,6 +101,17 @@ was measured on a clone of this repository with git 2.55.0.)
    stops before applying anything and lists those commits. Classify each hunk
    by hand, core file or extracted file, and apply it manually. The tool does
    not try to track the extracted line ranges through upstream edits.
+   Merge commits are inspected in the same pass, because no patch can carry a
+   merge. A merge is skipped only when its tree is exactly what git's own
+   clean merge of its two parents produces (`git merge-tree --write-tree`,
+   git 2.38 or newer): it then only joins its parents, and the commits it
+   joins are in the series and carry its changes. Any other merge is refused
+   before anything is applied and has to be handled by hand: one whose parents
+   conflict, so the commit resolves them itself; one whose tree differs from
+   the clean merge, whether by a change of its own or by discarding a
+   parent's changes (`-s ours`); an octopus merge; and every merge when git
+   is too old to check. A range that holds only merge commits is "nothing to
+   port" (exit status 3).
 2. Otherwise it builds an mbox with one entry per commit: git's own mail
    header and message (`git log --pretty=mboxrd`), a `---` separator, and the
    commit's diff (`git diff-tree -p`) with the `a/` and `b/` paths of the moved

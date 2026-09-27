@@ -15,11 +15,14 @@ commit by commit instead:
    in ``tools/upstream_path_map.json``), it stops before applying anything and
    lists those commits for manual classification. It does not try to track the
    extracted line ranges through upstream edits. Merge commits are inspected
-   too: ``git format-patch`` writes no patch for a merge, so a merge whose
-   tree differs from all of its parents (a conflict resolution or other change
-   made in the merge itself) is refused the same way, while a merge that only
-   joins its parents is skipped, because the commits it joins are in the
-   series and carry its changes.
+   too, because no patch can carry a merge. A merge is skipped only when its
+   tree is exactly what git's own clean merge of its two parents produces
+   (``git merge-tree --write-tree``): then it only joins its parents, and the
+   commits it joins are in the series and carry its changes. Any other merge
+   is refused the same way: one whose parents conflict (so the commit resolves
+   them by hand), one whose tree differs from the clean merge (a change of its
+   own, or a parent's changes discarded, as with ``-s ours``), an octopus
+   merge, and every merge when git is too old to check.
 2. Otherwise it builds an mbox with one entry per commit: git's own mail
    header and message (``git log --pretty=mboxrd``), a ``---`` separator, and
    the commit's diff (``git diff-tree -p``) with the ``a/`` and ``b/`` paths of
@@ -73,17 +76,37 @@ def load_map() -> tuple[dict[str, str], list[str]]:
     return dict(data["moved"]), list(data["mixed"])
 
 
-def commits_in(range_spec: str) -> list[tuple[str, bool]]:
-    """The commits of the range, oldest first, each with whether it is a merge."""
+def commits_in(range_spec: str) -> list[tuple[str, list[str]]]:
+    """The commits of the range, oldest first, each with its parents."""
     out = git("rev-list", "--reverse", "--parents", range_spec).stdout
-    return [(fields[0], len(fields) > 2) for line in out.splitlines() if (fields := line.split())]
+    return [(fields[0], fields[1:]) for line in out.splitlines() if (fields := line.split())]
 
 
-def files_touched(commit: str, is_merge: bool) -> list[str]:
-    """Files the commit changes; for a merge, only those that differ from all its parents."""
-    options = ["-c"] if is_merge else ["--root"]
-    out = git("diff-tree", "--no-commit-id", "--name-only", "-r", *options, commit).stdout
+def files_touched(commit: str) -> list[str]:
+    """Files a non-merge commit changes against its parent."""
+    out = git("diff-tree", "--no-commit-id", "--name-only", "-r", "--root", commit).stdout
     return [line for line in out.splitlines() if line]
+
+
+def merge_verdict(commit: str, parents: list[str]) -> str | None:
+    """None when the merge only joins its parents and can be skipped; otherwise why it cannot.
+
+    The merge is compared with git's own clean merge of its parents. A patch
+    series cannot carry a merge, so a merge that is not that clean merge has
+    to be handled by hand.
+    """
+    if len(parents) != 2:
+        return f"octopus merge with {len(parents)} parents"
+    result = git("merge-tree", "--write-tree", parents[0], parents[1], check=False)
+    if result.returncode not in (0, 1):
+        return "git merge-tree --write-tree is unavailable (git 2.38 or newer is needed to check merges)"
+    if result.returncode == 1:
+        return "its parents conflict, so the commit resolves them by hand"
+    expected = result.stdout.split()[0]
+    actual = git("rev-parse", f"{commit}^{{tree}}").stdout.strip()
+    if expected != actual:
+        return "its tree is not the clean merge of its parents (a change of its own, or a parent's changes discarded)"
+    return None
 
 
 def subject(commit: str) -> str:
@@ -199,16 +222,17 @@ def main(argv: list[str] | None = None) -> int:
     # 1. Scan the whole series before touching anything.
     refused: list[tuple[str, str]] = []
     to_apply = 0
-    for commit, is_merge in commits:
-        touched = files_touched(commit, is_merge)
-        if is_merge:
-            if touched:
-                refused.append((commit, "merge commit with changes of its own: " + ", ".join(touched)))
-                print(f"{subject(commit)}: merge commit with changes of its own")
+    for commit, parents in commits:
+        if len(parents) > 1:
+            reason = merge_verdict(commit, parents)
+            if reason:
+                refused.append((commit, "merge commit: " + reason))
+                print(f"{subject(commit)}: merge commit that cannot be ported as a patch")
             else:
-                print(f"{subject(commit)}: merge commit without changes of its own, skipped")
+                print(f"{subject(commit)}: merge commit that only joins its parents, skipped")
             continue
         to_apply += 1
+        touched = files_touched(commit)
         hits = [path for path in touched if path in mixed]
         if hits:
             refused.append((commit, "touches a mixed file: " + ", ".join(hits)))
@@ -218,8 +242,8 @@ def main(argv: list[str] | None = None) -> int:
         print(
             f"\nrefused: {len(refused)} commit(s) need manual classification; nothing was "
             "applied. A commit touching a mixed file has to be split by hand into the core "
-            "file and the extracted file; a merge commit with changes of its own has to be "
-            "applied by hand, because git format-patch writes no patch for a merge:",
+            "file and the extracted file; a merge commit that is not the clean merge of its "
+            "parents has to be applied by hand, because no patch can carry a merge:",
             file=sys.stderr,
         )
         for commit, reason in refused:
@@ -230,7 +254,7 @@ def main(argv: list[str] | None = None) -> int:
         return 3
 
     # 2. Build the series: git's message for each commit, and its diff rewritten.
-    rewritten = "".join(patch_for(commit, moved) for commit, is_merge in commits if not is_merge)
+    rewritten = "".join(patch_for(commit, moved) for commit, parents in commits if len(parents) < 2)
     if args.dry_run:
         sys.stdout.write(rewritten)
         return 0
