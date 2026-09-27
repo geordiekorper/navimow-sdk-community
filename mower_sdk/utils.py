@@ -1,6 +1,6 @@
-"""工具函数模块。
+"""Utility functions.
 
-提供 SDK 中使用的各种工具函数。
+Helpers used across the SDK.
 """
 
 import json
@@ -10,14 +10,14 @@ from typing import Any
 
 
 def setup_logger(name: str = "mower_sdk", level: int = logging.INFO) -> logging.Logger:
-    """设置并返回日志记录器。
+    """Configure and return a logger.
 
     Args:
-        name: 日志记录器名称
-        level: 日志级别
+        name: Logger name
+        level: Log level
 
     Returns:
-        配置好的日志记录器
+        The configured logger
     """
     logger = logging.getLogger(name)
     logger.setLevel(level)
@@ -35,16 +35,16 @@ def setup_logger(name: str = "mower_sdk", level: int = logging.INFO) -> logging.
 
 
 def parse_json(data: str | bytes) -> dict[str, Any] | list[Any]:
-    """解析 JSON 字符串。
+    """Parse a JSON string.
 
     Args:
-        data: JSON 字符串或字节
+        data: JSON as a string or bytes
 
     Returns:
-        解析后的字典或列表
+        The parsed dictionary or list
 
     Raises:
-        ValueError: 如果 JSON 解析失败
+        ValueError: If the JSON cannot be parsed
     """
     if isinstance(data, bytes):
         data = data.decode("utf-8")
@@ -52,24 +52,24 @@ def parse_json(data: str | bytes) -> dict[str, Any] | list[Any]:
 
 
 def timestamp_to_datetime(timestamp: int) -> datetime:
-    """将时间戳转换为 datetime 对象。
+    """Convert a Unix timestamp to a datetime.
 
     Args:
-        timestamp: Unix 时间戳（秒）
+        timestamp: Unix timestamp in seconds
 
     Returns:
-        datetime 对象
+        A datetime object
     """
     return datetime.fromtimestamp(timestamp)
 
 
 def datetime_to_timestamp(dt: datetime) -> int:
-    """将 datetime 对象转换为时间戳。
+    """Convert a datetime to a Unix timestamp.
 
     Args:
-        dt: datetime 对象
+        dt: A datetime object
 
     Returns:
-        Unix 时间戳（秒）
+        Unix timestamp in seconds
     """
     return int(dt.timestamp())

@@ -1,6 +1,6 @@
-"""数据模型模块。
+"""Data models.
 
-定义 SDK 中使用的所有数据模型，包括枚举类型和数据类。
+Defines every data model the SDK uses: enums and dataclasses.
 """
 
 from dataclasses import dataclass
@@ -71,55 +71,55 @@ def _extract_battery_value(data: dict[str, Any]) -> int:
 
 
 class MowerStatus(Enum):
-    """割草机状态枚举。"""
+    """Mower status."""
 
-    IDLE = "idle"  # 空闲
-    MOWING = "mowing"  # 割草中
-    PAUSED = "paused"  # 已暂停
-    DOCKED = "docked"  # 已回充
-    CHARGING = "charging"  # 充电中
-    ERROR = "error"  # 错误
-    RETURNING = "returning"  # 返回中
-    UNKNOWN = "unknown"  # 未知状态
+    IDLE = "idle"  # Idle
+    MOWING = "mowing"  # Mowing
+    PAUSED = "paused"  # Paused
+    DOCKED = "docked"  # Docked
+    CHARGING = "charging"  # Charging
+    ERROR = "error"  # Error
+    RETURNING = "returning"  # Returning to the dock
+    UNKNOWN = "unknown"  # Unknown state
 
 
 class MowerCommand(Enum):
-    """割草机控制指令枚举。"""
+    """Mower control commands."""
 
-    START = "start"  # 开始割草
-    PAUSE = "pause"  # 暂停割草
-    DOCK = "dock"  # 返回充电站
-    RESUME = "resume"  # 恢复割草
-    STOP = "stop"  # 停止
+    START = "start"  # Start mowing
+    PAUSE = "pause"  # Pause mowing
+    DOCK = "dock"  # Return to the charging station
+    RESUME = "resume"  # Resume mowing
+    STOP = "stop"  # Stop
 
 
 class MowerError(Enum):
-    """割草机错误类型枚举。"""
+    """Mower error types."""
 
-    NONE = "none"  # 无错误
-    STUCK = "stuck"  # 卡住
-    LIFTED = "lifted"  # 被抬起
-    RAIN = "rain"  # 雨天
-    BATTERY_LOW = "battery_low"  # 电池电量低
-    SENSOR_ERROR = "sensor_error"  # 传感器错误
-    MOTOR_ERROR = "motor_error"  # 电机错误
-    BLADE_ERROR = "blade_error"  # 刀片错误
-    UNKNOWN = "unknown"  # 未知错误
+    NONE = "none"  # No error
+    STUCK = "stuck"  # Stuck
+    LIFTED = "lifted"  # Lifted
+    RAIN = "rain"  # Rain
+    BATTERY_LOW = "battery_low"  # Battery low
+    SENSOR_ERROR = "sensor_error"  # Sensor error
+    MOTOR_ERROR = "motor_error"  # Motor error
+    BLADE_ERROR = "blade_error"  # Blade error
+    UNKNOWN = "unknown"  # Unknown error
 
 
 @dataclass
 class Device:
-    """设备信息数据类。
+    """Device information.
 
     Attributes:
-        id: 设备 ID
-        name: 设备名称
-        model: 设备型号
-        firmware_version: 固件版本
-        serial_number: 序列号
-        mac_address: MAC 地址（可选）
-        online: 是否在线
-        extra: 额外信息（可选）
+        id: Device ID
+        name: Device name
+        model: Device model
+        firmware_version: Firmware version
+        serial_number: Serial number
+        mac_address: MAC address (optional)
+        online: Whether the device is online
+        extra: Extra information (optional)
     """
 
     id: str
@@ -136,13 +136,13 @@ class Device:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Device":
-        """从字典创建 Device 实例。
+        """Create a Device from a dictionary.
 
         Args:
-            data: 包含设备信息的字典
+            data: Dictionary holding the device information
 
         Returns:
-            Device 实例
+            A Device instance
         """
         product_key = data.get("productKey") or data.get("product_key")
         device_name = data.get("deviceName") or data.get("device_name") or data.get("name")
@@ -163,10 +163,10 @@ class Device:
         )
 
     def to_dict(self) -> dict[str, Any]:
-        """转换为字典。
+        """Convert to a dictionary.
 
         Returns:
-            包含设备信息的字典
+            Dictionary holding the device information
         """
         result = {
             "id": self.id,
@@ -271,20 +271,20 @@ class ThingEventMessage:
 
 @dataclass
 class DeviceStatus:
-    """设备状态数据类。
+    """Device status.
 
     Attributes:
-        device_id: 设备 ID
-        status: 设备状态（MowerStatus 枚举值）
-        battery: 电池电量（0-100）
-        position: 位置信息（可选，格式：{"lat": float, "lng": float}）
-        error_code: 错误代码（MowerError 枚举值）
-        error_message: 错误消息（可选）
-        mowing_time: 本次割草时长（秒，可选）
-        total_mowing_time: 总割草时长（秒，可选）
-        signal_strength: 信号强度（可选）
-        timestamp: 状态更新时间戳（可选）
-        extra: 额外信息（可选）
+        device_id: Device ID
+        status: Device status (a MowerStatus value)
+        battery: Battery level (0-100)
+        position: Position (optional, as {"lat": float, "lng": float})
+        error_code: Error code (a MowerError value)
+        error_message: Error message (optional)
+        mowing_time: Duration of the current mowing session in seconds (optional)
+        total_mowing_time: Total mowing time in seconds (optional)
+        signal_strength: Signal strength (optional)
+        timestamp: Timestamp of the status update (optional)
+        extra: Extra information (optional)
     """
 
     device_id: str
@@ -301,13 +301,13 @@ class DeviceStatus:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "DeviceStatus":
-        """从字典创建 DeviceStatus 实例。
+        """Create a DeviceStatus from a dictionary.
 
         Args:
-            data: 包含设备状态的字典
+            data: Dictionary holding the device status
 
         Returns:
-            DeviceStatus 实例
+            A DeviceStatus instance
         """
         status_source = data.get("status") or data.get("state") or data.get("vehicleState")
         normalized_state = _normalize_state_value(status_source)
@@ -351,10 +351,10 @@ class DeviceStatus:
         )
 
     def to_dict(self) -> dict[str, Any]:
-        """转换为字典。
+        """Convert to a dictionary.
 
         Returns:
-            包含设备状态的字典
+            Dictionary holding the device status
         """
         result = {
             "device_id": self.device_id,

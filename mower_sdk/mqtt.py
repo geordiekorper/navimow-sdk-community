@@ -1,6 +1,6 @@
-"""MQTT 客户端模块。
+"""MQTT client module.
 
-提供 MQTT 连接、订阅和设备状态更新功能。
+Provides MQTT connection, subscription and device status updates.
 """
 
 import asyncio
@@ -47,19 +47,19 @@ def _format_auth_headers(headers: dict[str, str] | None) -> str:
 
 
 class MowerMQTT:
-    """MQTT 客户端。
+    """MQTT client.
 
-    提供 MQTT 连接、订阅和设备状态更新功能，支持同步和异步接口。
+    Provides MQTT connection, subscription and device status updates, with synchronous and asynchronous interfaces.
 
     Attributes:
-        broker: MQTT broker 地址
-        port: MQTT broker 端口
-        username: MQTT 用户名（可选）
-        password: MQTT 密码（可选）
-        status_cache: 设备状态缓存
-        _async_client: 异步 MQTT 客户端
-        _sync_client: 同步 MQTT 客户端
-        _callbacks: 回调函数字典
+        broker: MQTT broker address
+        port: MQTT broker port
+        username: MQTT username (optional)
+        password: MQTT password (optional)
+        status_cache: Device status cache
+        _async_client: Asynchronous MQTT client
+        _sync_client: Synchronous MQTT client
+        _callbacks: Callback registry
     """
 
     def __init__(
@@ -74,13 +74,13 @@ class MowerMQTT:
         reconnect_min_delay: int = 1,
         reconnect_max_delay: int = 60,
     ):
-        """初始化 MQTT 客户端。
+        """Initialize the MQTT client.
 
         Args:
-            broker: MQTT broker 地址
-            port: MQTT broker 端口
-            username: MQTT 用户名（可选）
-            password: MQTT 密码（可选）
+            broker: MQTT broker address
+            port: MQTT broker port
+            username: MQTT username (optional)
+            password: MQTT password (optional)
         """
         self.broker = broker
         self.port = port
@@ -88,8 +88,8 @@ class MowerMQTT:
         self.password = password
         self.ws_path = ws_path
         self.auth_headers = auth_headers
-        # KeepAlive 是 MQTT 协议层保活（PINGREQ/PINGRESP），优先于应用层“心跳消息”。
-        # 这里默认 40 分钟，确保在“1 小时无流量断连”的 broker/LB 前有协议层流量。
+        # Keepalive is the MQTT protocol-level liveness check (PINGREQ/PINGRESP), preferred over application-level heartbeat messages.
+        # The default is 40 minutes, so protocol traffic reaches a broker or load balancer that drops connections idle for an hour.
         self.keepalive_seconds = max(30, int(keepalive_seconds))
         self.reconnect_min_delay = max(0, int(reconnect_min_delay))
         self.reconnect_max_delay = max(self.reconnect_min_delay, int(reconnect_max_delay))
@@ -111,7 +111,7 @@ class MowerMQTT:
         auth_headers: dict[str, str] | None,
         port: int = 443,
     ) -> None:
-        """配置 WSS 连接参数。"""
+        """Configure the WSS connection parameters."""
         parsed = urlparse(mqtt_host)
         host = parsed.hostname or mqtt_host
         self.broker = host
@@ -131,7 +131,7 @@ class MowerMQTT:
             client.ws_set_options(path=self.ws_path, headers=self.auth_headers or {})
         if self._use_tls:
             client.tls_set()
-        # 断线自动重连退避（paho 在 loop_start + connect_async 场景下会按该策略重连）
+        # Reconnect backoff after a dropped connection (paho applies it with loop_start + connect_async).
         client.reconnect_delay_set(
             min_delay=self.reconnect_min_delay, max_delay=self.reconnect_max_delay
         )
@@ -147,37 +147,37 @@ class MowerMQTT:
         return client
 
     def _get_status_topic(self, device_id: str) -> str:
-        """获取设备状态 topic。
+        """Return the device status topic.
 
         Args:
-            device_id: 设备 ID
+            device_id: Device ID
 
         Returns:
-            Topic 路径
+            Topic path
         """
-        # TODO: 根据实际 MQTT topic 格式调整
+        # TODO: adjust to the real MQTT topic format
         return f"device/{device_id}/status"
 
     def _get_event_topic(self, device_id: str) -> str:
-        """获取设备事件 topic。
+        """Return the device event topic.
 
         Args:
-            device_id: 设备 ID
+            device_id: Device ID
 
         Returns:
-            Topic 路径
+            Topic path
         """
-        # TODO: 根据实际 MQTT topic 格式调整
+        # TODO: adjust to the real MQTT topic format
         return f"device/{device_id}/event"
 
     async def async_connect(self) -> None:
-        """异步连接 MQTT broker。
+        """Connect to the MQTT broker asynchronously.
 
         Raises:
-            MowerMQTTError: 如果连接失败
+            MowerMQTTError: If the connection fails
         """
         try:
-            # 连接在订阅时执行，这里仅确保配置有效
+            # The connection is made on subscribe; this only marks the configuration as valid
             self._connected = True
         except Exception as e:
             raise MowerMQTTError(
@@ -185,10 +185,10 @@ class MowerMQTT:
             ) from e
 
     def connect(self) -> None:
-        """同步连接 MQTT broker。
+        """Connect to the MQTT broker synchronously.
 
         Raises:
-            MowerMQTTError: 如果连接失败
+            MowerMQTTError: If the connection fails
         """
         try:
             self._sync_client = self._build_client()
@@ -236,20 +236,20 @@ class MowerMQTT:
         on_status_update: Callable[[DeviceStatus], None] | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
-        """异步订阅设备状态和事件。
+        """Subscribe to a device's status and events asynchronously.
 
         Args:
-            device_id: 设备 ID
-            on_status_update: 状态更新回调函数
-            on_event: 事件回调函数
+            device_id: Device ID
+            on_status_update: Status update callback
+            on_event: Event callback
 
         Raises:
-            MowerMQTTError: 如果订阅失败
+            MowerMQTTError: If the subscription fails
         """
         status_topic = self._get_status_topic(device_id)
         event_topic = self._get_event_topic(device_id)
 
-        # 保存回调函数
+        # Store the callbacks
         self._callbacks[device_id] = {
             "status": on_status_update,
             "event": on_event,
@@ -354,15 +354,15 @@ class MowerMQTT:
         on_status_update: Callable[[DeviceStatus], None] | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
-        """同步订阅设备状态和事件。
+        """Subscribe to a device's status and events synchronously.
 
         Args:
-            device_id: 设备 ID
-            on_status_update: 状态更新回调函数
-            on_event: 事件回调函数
+            device_id: Device ID
+            on_status_update: Status update callback
+            on_event: Event callback
 
         Raises:
-            MowerMQTTError: 如果订阅失败
+            MowerMQTTError: If the subscription fails
         """
         if not self._sync_client:
             self.connect()
@@ -388,7 +388,7 @@ class MowerMQTT:
                 )
 
                 if topic == status_topic:
-                    # 处理状态更新
+                    # Handle a status update
                     status = DeviceStatus.from_dict(payload)
                     self.status_cache[device_id] = status
 
@@ -396,12 +396,12 @@ class MowerMQTT:
                         on_status_update(status)
 
                 elif topic == event_topic:
-                    # 处理事件
+                    # Handle an event
                     if on_event:
                         on_event(payload)
 
             except Exception as e:
-                # 记录错误但继续处理
+                # Log the error and keep processing
                 print(f"Error processing MQTT message: {e}")
 
         try:
@@ -414,7 +414,7 @@ class MowerMQTT:
             self._sync_client.subscribe(status_topic)
             self._sync_client.subscribe(event_topic)
 
-            # 保存回调函数
+            # Store the callbacks
             self._callbacks[device_id] = {
                 "status": on_status_update,
                 "event": on_event,
@@ -425,18 +425,18 @@ class MowerMQTT:
             ) from e
 
     def get_cached_status(self, device_id: str) -> DeviceStatus | None:
-        """获取缓存的设备状态。
+        """Return the cached device status.
 
         Args:
-            device_id: 设备 ID
+            device_id: Device ID
 
         Returns:
-            设备状态，如果不存在则返回 None
+            Device status, or None if none is cached
         """
         return self.status_cache.get(device_id)
 
     async def async_disconnect(self) -> None:
-        """异步断开 MQTT 连接。"""
+        """Disconnect from the MQTT broker asynchronously."""
         if self._async_client:
             self._async_client.loop_stop()
             self._async_client.disconnect()
@@ -446,7 +446,7 @@ class MowerMQTT:
         self._async_client = None
 
     def disconnect(self) -> None:
-        """同步断开 MQTT 连接。"""
+        """Disconnect from the MQTT broker synchronously."""
         if self._sync_client:
             self._sync_client.loop_stop()
             self._sync_client.disconnect()
@@ -519,7 +519,7 @@ class NavimowMQTT:
         return self.client.is_connected()
 
     def _build_new_client(self) -> mqtt_client.Client:
-        """重建 paho MQTT client，使用当前最新的凭据和配置。"""
+        """Rebuild the paho MQTT client with the latest credentials and configuration."""
         transport = "websockets" if self.ws_path else "tcp"
         client = mqtt_client.Client(client_id=self._client_id, transport=transport)
         if self.username and self.password:
@@ -542,10 +542,10 @@ class NavimowMQTT:
         password: str | None = None,
         auth_headers: dict[str, str] | None = None,
     ) -> None:
-        """更新 MQTT 凭据。若当前已连接，只更新存储值，待下次重连时生效；若已断开，则立即重连。
+        """Update the MQTT credentials. While connected, only store the new values and apply them at the next reconnect; while disconnected, reconnect immediately.
 
-        paho-mqtt 的 ws_set_options 只在建立连接前有效，因此重连时需要重建 client。
-        已连接时不主动断开，避免因 OAuth token 轮换导致每小时强制断连。
+        paho-mqtt's ws_set_options only takes effect before a connection is established, so a reconnect needs a rebuilt client.
+        An established connection is not dropped on purpose, so hourly OAuth token rotation does not force an hourly disconnect.
         """
         changed = False
         if username is not None and username != self.username:
@@ -562,8 +562,8 @@ class NavimowMQTT:
             return
 
         if self.client.is_connected():
-            # 当前连接正常，新凭据已存储，待 broker 下次断连后重连时自动生效。
-            # 不主动断开，避免 token 每小时轮换触发不必要的重连和"设备不可用"。
+            # The connection is healthy; the new credentials are stored and apply when the broker next disconnects and we reconnect.
+            # Do not disconnect on purpose: hourly token rotation would otherwise cause needless reconnects and "device unavailable".
             _LOGGER.info(
                 "NavimowMQTT credentials updated while connected (will apply on next reconnect): broker=%s port=%s",
                 self.broker,
@@ -571,7 +571,7 @@ class NavimowMQTT:
             )
             return
 
-        # 当前已断开，立即用新凭据重建 client 并重连。
+        # Disconnected: rebuild the client with the new credentials and reconnect now.
         _LOGGER.info(
             "NavimowMQTT credentials updated while disconnected, rebuilding and reconnecting: broker=%s port=%s",
             self.broker,

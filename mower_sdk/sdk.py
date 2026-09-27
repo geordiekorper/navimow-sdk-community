@@ -81,10 +81,10 @@ class NavimowSDK:
         password: str | None = None,
         auth_headers: dict[str, str] | None = None,
     ) -> None:
-        """更新 MQTT 凭据。若与当前值不同，将重建 paho client 并重连。
+        """Update the MQTT credentials. If they differ from the current values, the paho client is rebuilt and reconnected.
 
-        用于 OAuth token 刷新后同步更新 MQTT WebSocket 认证头，
-        以及更新服务端下发的 MQTT username/password。
+        Used after an OAuth token refresh to update the MQTT WebSocket auth header,
+        and to update the MQTT username/password issued by the server.
         """
         self._mqtt.update_credentials(
             username=username,

@@ -1,6 +1,6 @@
-"""割草机平台 Python SDK。
+"""Python SDK for the Navimow mower cloud platform.
 
-提供与云端割草机平台交互的功能，包括 REST API 和 MQTT 支持。
+Provides access to the cloud mower platform over its REST API and MQTT feed.
 """
 
 from mower_sdk.api import MowerAPI
@@ -37,11 +37,11 @@ from mower_sdk.state_manager import StateManager
 __version__ = "0.2.0.dev0"
 
 __all__ = [
-    # 主客户端
+    # Main clients
     "MowerClient",
     "Navimow",
     "NavimowSDK",
-    # 子模块
+    # Submodules
     "MowerAPI",
     "MowerMQTT",
     "NavimowMQTT",
@@ -49,7 +49,7 @@ __all__ = [
     "NavimowCloudDevice",
     "StateManager",
     "DataEvent",
-    # 数据模型
+    # Data models
     "Device",
     "DeviceStateMessage",
     "DeviceEventMessage",
@@ -62,7 +62,7 @@ __all__ = [
     "ThingStatusMessage",
     "ThingPropertiesMessage",
     "ThingEventMessage",
-    # 异常
+    # Exceptions
     "MowerAPIError",
     "MowerMQTTError",
     "ERROR_MESSAGES",
