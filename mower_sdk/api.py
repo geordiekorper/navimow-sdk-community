@@ -5,6 +5,7 @@ Provides access to the mower platform's REST API.
 
 import asyncio
 import uuid
+import warnings
 from typing import Any
 
 import aiohttp
@@ -13,10 +14,24 @@ from mower_sdk.errors import MowerAPIError, ERROR_MESSAGES
 from mower_sdk.models import Device, DeviceStatus, MowerCommand
 
 
+def _warn_sync_wrapper(name: str) -> None:
+    """Warn that a synchronous MowerAPI wrapper was called; attributed to its caller."""
+    warnings.warn(
+        f"MowerAPI.{name} is deprecated: use MowerAPI.async_{name}. The synchronous "
+        "wrapper calls asyncio.run and cannot be used inside a running event loop.",
+        DeprecationWarning,
+        stacklevel=3,
+    )
+
+
 class MowerAPI:
     """REST API client.
 
     Provides synchronous and asynchronous interfaces to the mower platform API.
+    The synchronous methods (get_devices, get_mqtt_user_info, get_device_status,
+    send_command, query_command_results) are deprecated: each wraps its async_*
+    counterpart in asyncio.run, so it cannot run inside a running event loop,
+    and it emits a DeprecationWarning when called.
 
     Attributes:
         base_url: API base URL
@@ -139,16 +154,25 @@ class MowerAPI:
     def get_devices(self) -> list[Device]:
         """Fetch the device list synchronously.
 
+        Deprecated: use async_get_devices. This wrapper calls asyncio.run and
+        cannot be used inside a running event loop.
+
         Returns:
             List of devices
 
         Raises:
             MowerAPIError: If the request fails
         """
+        _warn_sync_wrapper("get_devices")
         return asyncio.run(self.async_get_devices())
 
     def get_mqtt_user_info(self) -> dict[str, Any]:
-        """Fetch the MQTT connection information synchronously."""
+        """Fetch the MQTT connection information synchronously.
+
+        Deprecated: use async_get_mqtt_user_info. This wrapper calls asyncio.run
+        and cannot be used inside a running event loop.
+        """
+        _warn_sync_wrapper("get_mqtt_user_info")
         return asyncio.run(self.async_get_mqtt_user_info())
 
     async def async_get_device_statuses(
@@ -215,6 +239,9 @@ class MowerAPI:
     def get_device_status(self, device_id: str) -> DeviceStatus:
         """Fetch a device's status synchronously.
 
+        Deprecated: use async_get_device_status. This wrapper calls asyncio.run
+        and cannot be used inside a running event loop.
+
         Args:
             device_id: Device ID
 
@@ -224,6 +251,7 @@ class MowerAPI:
         Raises:
             MowerAPIError: If the request fails or the device is not found
         """
+        _warn_sync_wrapper("get_device_status")
         return asyncio.run(self.async_get_device_status(device_id))
 
     async def async_send_command(
@@ -299,6 +327,9 @@ class MowerAPI:
     ) -> dict[str, Any]:
         """Send a control command synchronously.
 
+        Deprecated: use async_send_command. This wrapper calls asyncio.run and
+        cannot be used inside a running event loop.
+
         Args:
             device_id: Device ID
             command: Control command
@@ -309,6 +340,7 @@ class MowerAPI:
         Raises:
             MowerAPIError: If the request fails or the command fails
         """
+        _warn_sync_wrapper("send_command")
         return asyncio.run(self.async_send_command(device_id, command))
 
     async def async_query_command_results(
@@ -336,5 +368,10 @@ class MowerAPI:
         return payload.get("devices", [])
 
     def query_command_results(self, devices: list[dict[str, str]]) -> list[dict[str, Any]]:
-        """Query command execution results synchronously."""
+        """Query command execution results synchronously.
+
+        Deprecated: use async_query_command_results. This wrapper calls
+        asyncio.run and cannot be used inside a running event loop.
+        """
+        _warn_sync_wrapper("query_command_results")
         return asyncio.run(self.async_query_command_results(devices))
