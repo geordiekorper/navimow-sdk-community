@@ -69,6 +69,10 @@ line-length = 100
 target-version = "py311"
 
 [tool.ruff.lint]
-# The rule set the fork report used. CI runs it advisory until Phase 1 fixes
-# the two F821 names in upstream's code (state_manager.py, navimow.py).
+# The rule set the fork report used. CI runs it as a blocking check.
 select = ["F", "ARG", "B", "UP", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+# Legacy code moved verbatim from upstream keeps only the F rules, so it is
+# never reformatted or modernised here; that keeps merge-back diffs small.
+"mower_sdk/legacy/**" = ["ARG", "B", "SIM", "UP"]

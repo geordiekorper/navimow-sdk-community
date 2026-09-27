@@ -1,11 +1,13 @@
-# Phase 0 CI: the verification steps of the packaging commits and of the
-# public-API compatibility test, made permanent. Four jobs:
-#   test    the compat test from the source tree on every supported Python
+# CI: the verification steps of the packaging commits, the public-API
+# compatibility test and the legacy quarantine, made permanent. Four jobs:
+#   test    the test suite from the source tree on every supported Python,
+#           plus the core-isolation test with DeprecationWarning as an error
 #   bounds  the oldest and newest allowed aiohttp and paho-mqtt, plus a
 #           construction check that must run inside an event loop (3.14)
-#   wheel   build, install into a fresh venv, test from another directory,
-#           so a wheel that omits a package fails here and nowhere else
-#   ruff    advisory until Phase 1 fixes the two undefined names (Q6)
+#   wheel   build, check that mower_sdk and mower_sdk.legacy ship, install
+#           into a fresh venv, test from another directory, so a wheel that
+#           omits a package fails here and nowhere else
+#   ruff    blocking; legacy code keeps only the F rules (pyproject.toml)
 name: CI
 
 on:
@@ -40,8 +42,10 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Install the package and pytest
         run: python -m pip install -e . pytest
-      - name: Run the public-API compatibility test
+      - name: Run the test suite
         run: python -m pytest
+      - name: Core isolation with DeprecationWarning as an error
+        run: python -W error::DeprecationWarning -m pytest tests/test_core_isolation.py
 
   bounds:
     name: dependency bounds (py${{ matrix.python-version }}, ${{ matrix.label }})
@@ -66,7 +70,7 @@ jobs:
         run: |
           python -m pip install --upgrade . ${{ matrix.pins }} pytest
           python -m pip list --format=freeze | grep -iE '^(aiohttp|paho-mqtt)=='
-      - name: Run the public-API compatibility test
+      - name: Run the test suite
         run: python -m pytest
       - name: Construct the MQTT classes inside a running event loop
         run: |
@@ -77,13 +81,16 @@ jobs:
           import aiohttp
           import paho.mqtt
 
-          from mower_sdk import MowerMQTT, NavimowMQTT, NavimowSDK
+          from mower_sdk import NavimowMQTT, NavimowSDK
+          # The legacy client is imported from its legacy path on purpose, so this
+          # smoke test does not go through a deprecated path.
+          from mower_sdk.legacy.mqtt_v1 import MowerMQTT
 
 
           async def main() -> None:
               # MowerMQTT builds its paho client lazily; NavimowMQTT builds it in __init__.
               MowerMQTT("broker.invalid")._build_client()
-              NavimowMQTT("broker.invalid", 8883, None, None, records=[])
+              NavimowMQTT("broker.invalid", 8883, None, None, records=[])._build_new_client()
               NavimowSDK("broker.invalid", 8883)
               print(
                   f"constructed on Python {sys.version.split()[0]}, "
@@ -107,7 +114,7 @@ jobs:
         run: |
           python -m pip install build
           python -m build
-      - name: Check that the wheel ships the package and nothing else
+      - name: Check that the wheel ships the package, the legacy subpackage and nothing else
         run: |
           python - <<'PY'
           import glob
@@ -120,8 +127,16 @@ jobs:
           stray = [n for n in names if not (n.startswith("mower_sdk/") or ".dist-info/" in n)]
           if stray:
               sys.exit(f"unexpected files in {wheel}: {stray}")
-          if "mower_sdk/__init__.py" not in names:
-              sys.exit(f"{wheel} does not contain mower_sdk")
+          required = ["mower_sdk/__init__.py", "mower_sdk/legacy/__init__.py"] + [
+              f"mower_sdk/legacy/{module}.py"
+              for module in (
+                  "client", "cloud", "device", "errors", "event", "mqtt_v1",
+                  "navimow", "state_manager", "thing_models", "utils",
+              )
+          ]
+          missing = [n for n in required if n not in names]
+          if missing:
+              sys.exit(f"{wheel} does not contain {missing}")
           PY
       - name: Install the wheel into a fresh venv and test it from another directory
         run: |
@@ -167,7 +182,7 @@ jobs:
           PY
 
   ruff:
-    name: ruff (advisory until Phase 1)
+    name: ruff
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -176,10 +191,7 @@ jobs:
         with:
           python-version: "3.14"
       - run: python -m pip install ruff
-      # Rule set: [tool.ruff.lint] in pyproject.toml. Upstream's untouched code
-      # has two F821 names (state_manager.py, navimow.py) that Phase 1 fixes
-      # while moving the files; until then findings are annotations, not
-      # failures.
+      # Rule set: [tool.ruff.lint] in pyproject.toml; mower_sdk/legacy/ keeps
+      # only the F rules through per-file-ignores. Any finding fails the job.
       - name: ruff check
         run: ruff check --output-format github .
-        continue-on-error: true

@@ -85,6 +85,9 @@ behaves differently, except as listed here.
   refuses series that touch the mixed files; `tools/check_extraction.py`
   verifies that the extracted code is verbatim. Both are described in
   `UPSTREAM.md`.
+- CI: ruff is blocking, with legacy code keeping only the `F` rules so it is
+  never reformatted; the wheel job checks that `mower_sdk.legacy` and its ten
+  modules ship; the core-isolation test runs with `-W error::DeprecationWarning`.
 
 ## [0.2.0a1] - 2026-09-27
 
