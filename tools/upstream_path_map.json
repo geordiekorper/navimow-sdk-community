@@ -1,0 +1,17 @@
+{
+  "description": "Path map for tools/port_upstream.py. 'moved' maps each whole-file move into mower_sdk/legacy/ from its upstream path to its path here; a patch touching the upstream path is rewritten to the new one. 'mixed' names the core files whose content was split by extraction (MowerMQTT into legacy/mqtt_v1.py, the Thing* classes into legacy/thing_models.py, MowerAuthError and COMMAND_ERRORS into legacy/errors.py): a series touching any of them is refused for manual classification.",
+  "moved": {
+    "mower_sdk/client.py": "mower_sdk/legacy/client.py",
+    "mower_sdk/cloud.py": "mower_sdk/legacy/cloud.py",
+    "mower_sdk/device.py": "mower_sdk/legacy/device.py",
+    "mower_sdk/event.py": "mower_sdk/legacy/event.py",
+    "mower_sdk/navimow.py": "mower_sdk/legacy/navimow.py",
+    "mower_sdk/state_manager.py": "mower_sdk/legacy/state_manager.py",
+    "mower_sdk/utils.py": "mower_sdk/legacy/utils.py"
+  },
+  "mixed": [
+    "mower_sdk/mqtt.py",
+    "mower_sdk/models.py",
+    "mower_sdk/errors.py"
+  ]
+}
