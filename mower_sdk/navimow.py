@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 from mower_sdk.cloud import NavimowCloud
 from mower_sdk.device import NavimowCloudDevice
 from mower_sdk.models import Device
 from mower_sdk.mqtt import NavimowMQTT
 from mower_sdk.state_manager import StateManager
+
+if TYPE_CHECKING:
+    from mower_sdk.client import MowerClient
 
 
 class NavimowDeviceManager:
