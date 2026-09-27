@@ -20,10 +20,15 @@ commit by commit instead:
    made in the merge itself) is refused the same way, while a merge that only
    joins its parents is skipped, because the commits it joins are in the
    series and carry its changes.
-2. Otherwise it writes the series with ``git format-patch``, rewrites the
-   ``a/`` and ``b/`` paths of the moved files through the map, and applies it
-   with ``git am -3``, so each commit lands in ``legacy/`` with its author, date
-   and message, and the shims are untouched.
+2. Otherwise it builds an mbox with one entry per commit: git's own mail
+   header and message (``git log --pretty=mboxrd``), a ``---`` separator, and
+   the commit's diff (``git diff-tree -p``) with the ``a/`` and ``b/`` paths of
+   the moved files rewritten through the map. The message and the diff come
+   from separate git commands, so the rewriter only ever sees diff text and
+   the message is copied byte for byte however much it looks like a patch.
+   The mbox is applied with ``git am -3 --patch-format=mboxrd``, so each
+   commit lands in ``legacy/`` with its author, date and message, and the
+   shims are untouched.
 3. A conflict stops ``git am``; translated docstrings are the usual cause and
    would conflict without any move. Resolve it, ``git add`` the file and run
    ``git am --continue``; ``git am --abort`` restores the branch.
@@ -45,17 +50,15 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 MAP_FILE = REPO_ROOT / "tools" / "upstream_path_map.json"
 
-# Patch header lines that carry a path. Only these, and the diffstat lines in
-# the message part of each patch, are rewritten; hunk bodies and commit
-# messages are copied byte for byte.
-PATH_LINES = [
-    re.compile(r"^(diff --git a/)(?P<a>\S+)( b/)(?P<b>\S+)$"),
+# Diff header lines that carry a path. Only these are rewritten; hunk bodies
+# are copied through by counting, and commit messages never reach the rewriter.
+DIFF_GIT_LINE = re.compile(r"^(diff --git a/)(?P<a>\S+)( b/)(?P<b>\S+)$")
+HEADER_LINES = [
     re.compile(r"^(--- a/)(?P<a>.+)$"),
     re.compile(r"^(\+\+\+ b/)(?P<a>.+)$"),
     re.compile(r"^(rename (?:from|to) )(?P<a>.+)$"),
     re.compile(r"^(copy (?:from|to) )(?P<a>.+)$"),
 ]
-DIFFSTAT_LINE = re.compile(r"^( )(?P<a>\S+)(\s+\|\s+\d+.*)$")
 HUNK_HEADER = re.compile(r"^@@ -\d+(?:,(?P<old>\d+))? \+\d+(?:,(?P<new>\d+))? @@")
 
 
@@ -103,21 +106,19 @@ def rewrite_path_line(line: str, patterns: list[re.Pattern[str]], moved: dict[st
     return line
 
 
-def rewrite_series(series: str, moved: dict[str, str]) -> str:
-    """Rewrite the moved paths in a format-patch mbox, and nothing else.
+def rewrite_diff(diff: str, moved: dict[str, str]) -> str:
+    """Rewrite the moved paths in the header lines of a diff, and nothing else.
 
-    Each patch is a mail: headers and commit message, a "---" separator, the
-    diffstat, then one diff per file. A diff has header lines (diff --git,
-    index, mode, rename, copy, --- a/, +++ b/) and hunks; each hunk header
-    says how many old and new lines it holds, so the hunk body is copied
-    through by counting. Only diff header lines and the diffstat are rewritten;
-    hunk bodies and the commit message are never touched, however much they
-    look like a path.
+    A diff is a sequence of per-file sections, each a "diff --git" line, header
+    lines (index, mode, similarity, rename, copy, --- a/, +++ b/) and hunks. A
+    hunk header says how many old and new lines the hunk holds, so hunk bodies
+    are copied through by counting, however much a line in them looks like a
+    header. Binary patches are copied through to the next section.
     """
     out: list[str] = []
-    state = "message"  # message | stat | header | hunk | binary
+    state = "header"  # header | hunk | binary
     old_left = new_left = 0
-    for line in series.splitlines(keepends=True):
+    for line in diff.splitlines(keepends=True):
         body = line.rstrip("\r\n")
         if state == "hunk" and (old_left > 0 or new_left > 0):
             if body.startswith("\\"):  # "\ No newline at end of file"
@@ -131,40 +132,50 @@ def rewrite_series(series: str, moved: dict[str, str]) -> str:
                 new_left -= 1
             out.append(line)
             continue
-        if body.startswith("From ") and state != "message":
-            # The next patch in the mbox.
-            state = "message"
         if body.startswith("diff --git "):
             state = "header"
-            out.append(rewrite_path_line(line, PATH_LINES[:1], moved))
+            out.append(rewrite_path_line(line, [DIFF_GIT_LINE], moved))
             continue
-        if state in ("header", "hunk"):
-            hunk = HUNK_HEADER.match(body)
-            if hunk:
-                state = "hunk"
-                old_left = int(hunk.group("old")) if hunk.group("old") is not None else 1
-                new_left = int(hunk.group("new")) if hunk.group("new") is not None else 1
-                out.append(line)
-                continue
-            if body.startswith("GIT binary patch"):
-                state = "binary"
-                out.append(line)
-                continue
-            if state == "header":
-                out.append(rewrite_path_line(line, PATH_LINES[1:], moved))
-                continue
-            # After a hunk: the trailer ("-- " and the git version) or the next mail.
+        if state == "binary":
             out.append(line)
             continue
-        if state == "message" and body == "---":
-            state = "stat"
+        hunk = HUNK_HEADER.match(body)
+        if hunk:
+            state = "hunk"
+            old_left = int(hunk.group("old")) if hunk.group("old") is not None else 1
+            new_left = int(hunk.group("new")) if hunk.group("new") is not None else 1
             out.append(line)
             continue
-        if state == "stat":
-            out.append(rewrite_path_line(line, [DIFFSTAT_LINE], moved))
+        if body.startswith("GIT binary patch"):
+            state = "binary"
+            out.append(line)
+            continue
+        if state == "header":
+            out.append(rewrite_path_line(line, HEADER_LINES, moved))
             continue
         out.append(line)
     return "".join(out)
+
+
+def mail_for(commit: str) -> str:
+    """git's own mbox entry for the commit: the From line, the headers and the message.
+
+    The mboxrd form quotes message lines that start with "From ", so the entry
+    splits correctly whatever the message holds; git am --patch-format=mboxrd
+    unquotes them.
+    """
+    mail = git("log", "-1", "--pretty=mboxrd", commit).stdout
+    return mail if mail.endswith("\n") else mail + "\n"
+
+
+def diff_for(commit: str) -> str:
+    """The commit's diff against its parent, renames detected, binary changes included."""
+    return git("diff-tree", "--no-commit-id", "-p", "-M", "--binary", "--root", commit).stdout
+
+
+def patch_for(commit: str, moved: dict[str, str]) -> str:
+    """One mbox entry: the mail, a separator, and the rewritten diff."""
+    return mail_for(commit) + "---\n\n" + rewrite_diff(diff_for(commit), moved)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -218,9 +229,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"nothing to port: {args.range} holds only merge commits", file=sys.stderr)
         return 3
 
-    # 2. Rewrite the series.
-    series = git("format-patch", "--stdout", args.range).stdout
-    rewritten = rewrite_series(series, moved)
+    # 2. Build the series: git's message for each commit, and its diff rewritten.
+    rewritten = "".join(patch_for(commit, moved) for commit, is_merge in commits if not is_merge)
     if args.dry_run:
         sys.stdout.write(rewritten)
         return 0
@@ -232,7 +242,7 @@ def main(argv: list[str] | None = None) -> int:
         return 3
 
     # 3. Apply with the three-way fallback; git am reads the mbox from stdin.
-    result = git("am", "-3", input=rewritten, check=False)
+    result = git("am", "-3", "--patch-format=mboxrd", input=rewritten, check=False)
     sys.stdout.write(result.stdout)
     sys.stderr.write(result.stderr)
     if result.returncode != 0:

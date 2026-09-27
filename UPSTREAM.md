@@ -101,10 +101,14 @@ was measured on a clone of this repository with git 2.55.0.)
    stops before applying anything and lists those commits. Classify each hunk
    by hand, core file or extracted file, and apply it manually. The tool does
    not try to track the extracted line ranges through upstream edits.
-2. Otherwise it writes the series with `git format-patch`, rewrites the `a/`
-   and `b/` paths of the moved files through `tools/upstream_path_map.json`,
-   and applies it with `git am -3`, so each commit lands in `legacy/` with its
-   author, date and message, and the shims are untouched.
+2. Otherwise it builds an mbox with one entry per commit: git's own mail
+   header and message (`git log --pretty=mboxrd`), a `---` separator, and the
+   commit's diff (`git diff-tree -p`) with the `a/` and `b/` paths of the moved
+   files rewritten through `tools/upstream_path_map.json`. The message and the
+   diff come from separate git commands, so only diff header lines are ever
+   rewritten; hunk bodies and messages are copied byte for byte. The mbox is
+   applied with `git am -3 --patch-format=mboxrd`, so each commit lands in
+   `legacy/` with its author, date and message, and the shims are untouched.
 3. A conflict stops `git am`. Translated docstrings are the usual cause; that
    conflict would occur without any move, and the tool does not remove it.
    Resolve it, `git add` the file and run `git am --continue`;
