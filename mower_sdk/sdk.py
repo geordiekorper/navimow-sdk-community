@@ -39,6 +39,8 @@ class NavimowSDK:
         - callbacks are invoked from the MQTT thread/event loop context.
           Home Assistant must switch to hass loop via call_soon_threadsafe or
           run_coroutine_threadsafe.
+        - a callback that raises is logged with its traceback and does not
+          stop delivery of the same message to the callbacks after it.
         - the event loop is ``loop`` if given, else the loop running at
           construction, else the loop set as current with
           ``asyncio.set_event_loop()`` at that time, else the same two at the
@@ -193,20 +195,36 @@ class NavimowSDK:
             self._state_cache[msg.device_id] = msg
             self._state_cache_updated_at[msg.device_id] = time.monotonic()
             self._state_cache_received_at[msg.device_id] = datetime.now(UTC)
-            for cb in list(self._state_callbacks):
-                cb(msg)
+            self._dispatch(self._state_callbacks, msg, channel)
             return
         if channel == "event":
             msg = DeviceEventMessage.from_dict(payload_dict)
-            for cb in list(self._event_callbacks):
-                cb(msg)
+            self._dispatch(self._event_callbacks, msg, channel)
             return
         if channel == "attributes":
             msg = DeviceAttributesMessage.from_dict(payload_dict)
             self._attributes_cache[msg.device_id] = msg
             self._attributes_cache_updated_at[msg.device_id] = time.monotonic()
-            for cb in list(self._attributes_callbacks):
-                cb(msg)
+            self._dispatch(self._attributes_callbacks, msg, channel)
+
+    @staticmethod
+    def _dispatch(callbacks: list[Callable[[Any], None]], message: Any, channel: str) -> None:
+        """Call each callback with the message; one that raises is logged and the rest still run.
+
+        Without this, the exception escaped the task _schedule created, the later
+        callbacks were skipped, and the only trace was asyncio's "Task exception
+        was never retrieved" at loop shutdown or garbage collection.
+        """
+        for callback in list(callbacks):
+            try:
+                callback(message)
+            except Exception:
+                _LOGGER.exception(
+                    "Navimow %s callback %r failed for device %s",
+                    channel,
+                    callback,
+                    message.device_id,
+                )
 
     def _send_mqtt_command(self, device_id: str, command: str, params: dict[str, Any]) -> None:
         """Publish a DeviceCommandMessage for device_id, if experimental MQTT commands are allowed.
