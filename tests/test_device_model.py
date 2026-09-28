@@ -1,13 +1,13 @@
-"""Characterisation tests for ``Device.from_dict``.
+"""Tests for ``Device.from_dict``.
 
-Pinned at today's values: the snake_case keys the model defines are read; an
-explicit empty snake_case value is kept; the camelCase spellings
-(``deviceModel``, ``firmwareVersion``, ``serialNumber``, ``macAddress``,
-``isOnline``) and the ``firmware`` key that the device-list reply of an X430
-carries are ignored; and ``product_key``, ``device_name`` and ``iot_id`` are
-filled from their camelCase key, then their snake_case key, then (for the last
-two) ``name`` and ``id``. The camelCase and ``firmware`` cases are pinned so the
-change that starts reading them shows exactly what moved.
+The snake_case keys the model defines are read first; an explicit empty or None
+snake_case value is kept. Only when a snake_case key is absent is its camelCase
+spelling read (``deviceModel``, ``firmwareVersion``, ``serialNumber``,
+``macAddress``, ``isOnline``), and ``firmware_version`` also reads
+``firmware``, the key the device-list reply of an X430 carries, before
+``firmwareVersion``. ``product_key``, ``device_name`` and ``iot_id`` are filled
+from their camelCase key, then their snake_case key, then (for the last two)
+``name`` and ``id``.
 """
 
 from __future__ import annotations
@@ -75,18 +75,64 @@ def test_explicit_empty_snake_case_values_are_kept() -> None:
     assert device.online is False
 
 
-def test_camel_case_keys_are_ignored() -> None:
-    device = Device.from_dict(CAMEL_CASE)
-    assert (device.id, device.name) == ("dev-1", "Lawn")
-    assert (device.model, device.firmware_version, device.serial_number) == ("", "", "")
+def test_camel_case_keys_are_read_when_the_snake_case_key_is_absent() -> None:
+    assert Device.from_dict(CAMEL_CASE) == Device(
+        id="dev-1",
+        name="Lawn",
+        model="i105",
+        firmware_version="1.2.3",
+        serial_number="SN-1",
+        mac_address="00:11:22:33:44:55",
+        online=True,
+        device_name="Lawn",
+        iot_id="dev-1",
+    )
+
+
+def test_explicit_none_snake_case_values_are_kept() -> None:
+    payload = {
+        **CAMEL_CASE,
+        "model": None,
+        "firmware_version": None,
+        "serial_number": None,
+        "mac_address": None,
+        "online": None,
+    }
+    device = Device.from_dict(payload)
+    assert (device.model, device.firmware_version, device.serial_number) == (None, None, None)
     assert device.mac_address is None
-    assert device.online is False
+    assert device.online is None
 
 
-def test_firmware_key_is_ignored() -> None:
+def test_firmware_key_is_read_for_firmware_version() -> None:
     device = Device.from_dict(X430_AUTH_LIST_ENTRY)
     assert (device.id, device.name, device.model) == ("dev-1", "Example mower", "X430")
-    assert device.firmware_version == ""
+    assert device.firmware_version == "00AA"
+
+
+@pytest.mark.parametrize(
+    ("payload", "firmware_version"),
+    [
+        ({"firmware_version": "a", "firmware": "b", "firmwareVersion": "c"}, "a"),
+        ({"firmware": "b", "firmwareVersion": "c"}, "b"),
+        ({"firmwareVersion": "c"}, "c"),
+        ({"firmware_version": "", "firmware": "b", "firmwareVersion": "c"}, ""),
+        ({"firmware_version": None, "firmware": "b"}, None),
+        ({"firmware": "", "firmwareVersion": "c"}, ""),
+        ({}, ""),
+    ],
+    ids=[
+        "snake_case_wins",
+        "firmware_before_camel_case",
+        "camel_case_last",
+        "explicit_empty_snake_case_wins",
+        "explicit_none_snake_case_wins",
+        "explicit_empty_firmware_wins",
+        "missing",
+    ],
+)
+def test_firmware_version_precedence(payload: dict[str, Any], firmware_version: str | None) -> None:
+    assert Device.from_dict(payload).firmware_version == firmware_version
 
 
 @pytest.mark.parametrize(
