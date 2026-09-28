@@ -7,6 +7,8 @@ run over this file.
 from __future__ import annotations
 
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 import check_leaks
@@ -266,3 +268,60 @@ def test_trailers_followed_by_git_comments_are_still_trailers(tmp_path: Path) ->
         + EDITOR_TEMPLATE.format(untracked="nothing")
     )
     assert check_leaks.check_message("MSG", message) == []
+
+
+TOOLS = Path(__file__).resolve().parents[1]
+
+
+@pytest.fixture
+def hooked(repo: Path, tmp_path: Path) -> Path:
+    """The repository with a pre-commit hook running check_leaks, and a second
+    worktree on another branch holding an untracked file and a file tracked
+    only on that branch."""
+    other = tmp_path / "other"
+    run("git", "worktree", "add", "-q", "-b", "feature", str(other), cwd=repo)
+    (other / "feature-only.md").write_text("x", encoding="utf-8")
+    run("git", "add", "feature-only.md", cwd=other)
+    run("git", "commit", "-q", "-m", "docs: feature", cwd=other)
+    (other / "genuinely-untracked.txt").write_text("x", encoding="utf-8")
+    hook = repo / ".git" / "hooks" / "pre-commit"
+    hook.write_text(
+        "#!/bin/sh\n"
+        f'exec "{sys.executable}" "{TOOLS / "check_leaks.py"}" $(git diff --cached --name-only)\n',
+        encoding="utf-8",
+    )
+    hook.chmod(0o755)
+    return repo
+
+
+def _commit(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(["git", "commit", "-q", *args], cwd=repo, capture_output=True, text=True, check=False)
+
+
+def test_inside_a_commit_hook_another_worktrees_untracked_file_is_reported(hooked: Path) -> None:
+    stage(hooked, "README.md", "# Test\n\nSee genuinely-untracked.txt.\n")
+    proc = _commit(hooked, "-m", "docs: x")
+    assert proc.returncode != 0
+    assert "names a file git does not track: genuinely-untracked.txt" in proc.stdout + proc.stderr
+
+
+@pytest.mark.parametrize("all_tracked", [False, True], ids=["commit", "commit -a"])
+def test_inside_a_commit_hook_another_branchs_tracked_file_is_not_reported(
+    hooked: Path, all_tracked: bool
+) -> None:
+    (hooked / "README.md").write_text("# Test\n\nSee feature-only.md.\n", encoding="utf-8")
+    if all_tracked:
+        proc = _commit(hooked, "-a", "-m", "docs: x")  # the hook sees this worktree's index.lock
+    else:
+        run("git", "add", "README.md", cwd=hooked)
+        proc = _commit(hooked, "-m", "docs: x")  # the hook sees a relative GIT_INDEX_FILE
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def test_nothing_to_check_lists_no_worktree(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = []
+    monkeypatch.setattr(check_leaks.gatelib, "untracked_name_regex", lambda: calls.append("scan"))
+    stage(repo, "src/module.py", "VALUE = 1\n")  # staged, but no added line
+    assert check_leaks.check_files(["src/module.py"]) == []
+    assert check_leaks.check_files([]) == []
+    assert calls == []

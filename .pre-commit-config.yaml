@@ -66,6 +66,7 @@ repos:
         language: python
         types: [text]
         exclude: ^\.pre-commit-config\.yaml$  # it holds the patterns themselves
+        require_serial: true  # one run lists every worktree once, not once per batch
       - id: check-message-leaks
         name: local paths, untracked files and project terms in the commit message
         entry: python tools/check_leaks.py --message
