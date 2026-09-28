@@ -72,7 +72,7 @@ def test_the_steps_run_every_check_in_the_right_mode() -> None:
     assert all(step["if"] == "env.BASE != ''" for step in ranged)
     assert '--from-ref "$BASE" --to-ref HEAD' in ranged[0]["run"]
     assert 'gitlint --commits "$BASE..HEAD"' in ranged[1]["run"]
-    assert "for hook in no-local-paths check-message-leaks" in ranged[2]["run"]
+    assert "pre-commit run check-message-leaks" in ranged[2]["run"]
     assert "--hook-stage commit-msg" in ranged[2]["run"]
 
 
@@ -121,7 +121,4 @@ def test_the_message_step_checks_every_non_merge_commit_and_fails_on_one(repo: P
     assert proc.returncode == 1
     assert f"in {bad}" in proc.stdout
     recorded = sorted(calls.read_text(encoding="utf-8").splitlines())
-    assert recorded == sorted([
-        "docs: good|no-local-paths", "docs: good|check-message-leaks",
-        "docs: BAD message|no-local-paths", "docs: BAD message|check-message-leaks",
-    ])
+    assert recorded == sorted(["docs: good|check-message-leaks", "docs: BAD message|check-message-leaks"])

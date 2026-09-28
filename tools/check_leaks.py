@@ -4,8 +4,10 @@ Committed text must stand on its own: it may not name a file that exists
 only in someone's checkout (an ignored or untracked document in any
 worktree), or, when the optional pattern file is present, anything its rules
 forbid. A Markdown link to an ignored document is caught by the name it
-contains, like any other mention. Local paths are a separate pygrep hook in
-.pre-commit-config.yaml.
+contains, like any other mention. Local paths in files are the pygrep hook
+no-local-paths in .pre-commit-config.yaml; in a commit message they are
+checked here, with the same expression, on the lines git commits (comment
+lines and a `git commit -v` diff are not part of the message).
 
 Usage:
   check_leaks.py FILE...           the files pre-commit passes (see gatelib for modes)
@@ -41,9 +43,12 @@ def check_texts(items: list[tuple[str, int, str, bool]], scope: str) -> list[str
     """Check (path, line number, text, is_trailer) items; return the findings."""
     rules = gatelib.load_local_rules()
     untracked = gatelib.untracked_name_regex()
+    local_paths = gatelib.local_path_pattern() if scope == "message" else None
     findings = []
     for path, number, text, is_trailer in items:
         hits = []
+        if local_paths is not None:
+            hits += [f"local path: {m.group(0)}" for m in local_paths.finditer(text)]
         if untracked is not None:
             hits += [f"names a file git does not track: {m.group(0)}" for m in untracked.finditer(text)]
         hits += _local_pattern_hits(rules, text, scope, is_trailer)
