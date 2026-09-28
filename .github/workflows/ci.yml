@@ -16,8 +16,8 @@
 #   ruff    nox -s lint: blocking; legacy code keeps only the F rules
 #           (pyproject.toml)
 #   hygiene the pre-commit hooks over every file and over the changes of the
-#           pull request (or push); gitlint and the message hooks over the
-#           range's commit messages
+#           pull request (or push); gitlint and the message leak check over
+#           the range's commit messages
 name: CI
 
 on:
@@ -150,9 +150,7 @@ jobs:
           status=0
           for sha in $(git rev-list --no-merges "$BASE..HEAD"); do
             git log -1 --format=%B "$sha" > "$RUNNER_TEMP/message"
-            for hook in no-local-paths check-message-leaks; do
-              pre-commit run "$hook" --hook-stage commit-msg \
-                --commit-msg-filename "$RUNNER_TEMP/message" || { echo "in $sha"; status=1; }
-            done
+            pre-commit run check-message-leaks --hook-stage commit-msg \
+              --commit-msg-filename "$RUNNER_TEMP/message" || { echo "in $sha"; status=1; }
           done
           exit "$status"

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -11,6 +12,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+ROOT = Path(__file__).resolve().parents[2]
+
 
 def run(*args: str, cwd: Path) -> str:
     return subprocess.run(args, cwd=cwd, check=True, capture_output=True, text=True).stdout
@@ -18,7 +21,8 @@ def run(*args: str, cwd: Path) -> str:
 
 @pytest.fixture
 def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """A git repository with one commit, as the current directory.
+    """A git repository with one commit (and this repository's pre-commit
+    configuration), as the current directory.
 
     The checks read the environment, so a Claude session, a pre-commit range
     and a pattern file from the caller are all cleared.
@@ -42,6 +46,8 @@ def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     (root / "README.md").write_text("# Test\n", encoding="utf-8")
     (root / "src").mkdir()
     (root / "src" / "module.py").write_text("VALUE = 1\n", encoding="utf-8")
+    # The message check reads the local-path expression from the configuration.
+    shutil.copy(ROOT / ".pre-commit-config.yaml", root / ".pre-commit-config.yaml")
     run("git", "add", ".", cwd=root)
     run("git", "commit", "-q", "-m", "chore: start", cwd=root)
     monkeypatch.chdir(root)

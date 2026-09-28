@@ -160,13 +160,6 @@ def test_files_with_awkward_names_are_checked_under_their_own_name(repo: Path, p
     assert check_leaks.check_files([path]) == [f"{path}:1: names a file git does not track: {name}"]
 
 
-def test_message_comment_lines_are_checked_but_not_below_the_scissors(repo: Path) -> None:
-    name = _untracked(repo)
-    text = f"fix: x\n\nBody.\n# {name}\n# ------------------------ >8 ------------------------\n{name}\n"
-    findings = check_leaks.check_message("MSG", text)
-    assert [f.split(": ")[0] for f in findings] == ["MSG:4"]
-
-
 CONFIG = Path(__file__).resolve().parents[2] / ".pre-commit-config.yaml"
 
 
@@ -184,6 +177,9 @@ CONFIG = Path(__file__).resolve().parents[2] / ".pre-commit-config.yaml"
         (".claude/" + "worktrees/x", True),
         ("/tmp/extract", False),
         ("~/.config/app", False),
+        ("https://example.com/home/docs", False),
+        ("/opt/app/home/config", False),
+        ("file:///" + "Users/alice/x", True),
     ],
 )
 def test_the_local_path_hook_pattern(text: str, local: bool) -> None:
@@ -191,7 +187,7 @@ def test_the_local_path_hook_pattern(text: str, local: bool) -> None:
     config = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
     (hook,) = [h for r in config["repos"] for h in r["hooks"] if h["id"] == "no-local-paths"]
     assert hook["language"] == "pygrep"
-    assert hook["stages"] == ["pre-commit", "commit-msg"]
+    assert "stages" not in hook  # files only; the message check reads the same expression
     assert bool(re.search(hook["entry"], text)) is local
 
 
@@ -215,3 +211,58 @@ def test_local_files_under_dot_claude_are_checked_but_nested_worktrees_are_not(r
     stage(repo, "README.md", "# Test\n\nSee review-agent.md and nested-only.md.\n")
     findings = check_leaks.check_files(["README.md"])
     assert [f.split(": ")[-1] for f in findings] == ["review-agent.md"]
+
+
+EDITOR_TEMPLATE = """
+# Please enter the commit message for your changes. Lines starting
+# with '#' will be ignored, and an empty message aborts the commit.
+#
+# Untracked files:
+#\t{untracked}
+#
+"""
+
+
+def test_git_comment_lines_are_not_part_of_the_message(repo: Path) -> None:
+    name = _untracked(repo)
+    home = "/" + "Users/alice/notes"
+    message = "docs: x\n\nBody.\n" + EDITOR_TEMPLATE.format(untracked=name) + f"# {home}\n"
+    assert check_leaks.check_message("MSG", message) == []
+
+
+@pytest.mark.usefixtures("repo")
+def test_a_verbose_diff_below_the_scissors_is_not_part_of_the_message() -> None:
+    home = "/" + "Users/alice/notes"
+    message = (
+        "docs: x\n\nBody.\n# ------------------------ >8 ------------------------\n"
+        f"diff --git a/x b/x\n+PATH = '{home}'\n"
+    )
+    assert check_leaks.check_message("MSG", message) == []
+
+
+def test_the_message_is_checked_for_local_paths_and_untracked_names(repo: Path) -> None:
+    name = _untracked(repo)
+    home = "/" + "Users/alice/notes"
+    findings = check_leaks.check_message("MSG", f"docs: x\n\nSee {home} and {name}.\n")
+    assert [f.split(": ", 1)[1] for f in findings] == [
+        "local path: /" + "Users/alice", f"names a file git does not track: {name}",
+    ]
+
+
+def test_another_comment_character_is_honoured(repo: Path) -> None:
+    run("git", "config", "core.commentChar", ";", cwd=repo)
+    name = _untracked(repo)
+    message = f"docs: x\n\n# a line git keeps: {name}\n; a comment: {name}\n"
+    assert [f.split(":")[1] for f in check_leaks.check_message("MSG", message)] == ["3"]
+
+
+@pytest.mark.usefixtures("repo")
+def test_trailers_followed_by_git_comments_are_still_trailers(tmp_path: Path) -> None:
+    (tmp_path / "patterns.txt").write_text(
+        "message\tauthor-name\tnotrailers\tAlice Example\n", encoding="utf-8"
+    )
+    message = (
+        "fix: x\n\nBody.\n\nCo-authored-by: Alice Example <a@example.com>\n"
+        + EDITOR_TEMPLATE.format(untracked="nothing")
+    )
+    assert check_leaks.check_message("MSG", message) == []

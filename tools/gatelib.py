@@ -27,7 +27,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-SCISSORS = "# ------------------------ >8 ------------------------"
+SCISSORS = "------------------------ >8 ------------------------"
 
 
 def git(*args: str, cwd: str | Path | None = None, check: bool = True) -> str:
@@ -232,6 +232,25 @@ def untracked_name_regex() -> re.Pattern[str] | None:
     return re.compile(r"(?<![\w.-])(?:" + alternation + r")(?![\w-]|\.[\w-])")
 
 
+# --- the local-path pattern ------------------------------------------------
+
+
+def local_path_pattern() -> re.Pattern[str]:
+    """The no-local-paths pygrep hook's expression, read from .pre-commit-config.yaml.
+
+    One definition serves the file hook (pygrep) and the message check, which
+    has to read the message as git commits it and so cannot be a pygrep hook.
+    """
+    import yaml  # only the message check needs it; the hook installs it
+
+    config = yaml.safe_load((repo_root() / ".pre-commit-config.yaml").read_text(encoding="utf-8"))
+    for repository in config["repos"]:
+        for hook in repository["hooks"]:
+            if hook["id"] == "no-local-paths":
+                return re.compile(hook["entry"])
+    raise SystemExit("no-local-paths is not defined in .pre-commit-config.yaml")
+
+
 # --- which lines to check ----------------------------------------------------
 
 _HUNK = re.compile(r"^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
@@ -312,12 +331,27 @@ def changed_files() -> list[tuple[str, str]]:
     return list(zip(fields[0::2], fields[1::2], strict=True))
 
 
-def message_lines(text: str) -> list[tuple[int, str]]:
-    """Every line of a commit message file above git's scissors line."""
+def comment_char() -> str:
+    """git's comment character for messages (core.commentChar; "auto" reads as "#")."""
+    configured = git("config", "--get", "core.commentChar", check=False).strip()
+    return configured if configured and configured != "auto" else "#"
+
+
+def message_lines(text: str, comment: str | None = None) -> list[tuple[int, str]]:
+    """The lines git commits from a message file, with their line numbers.
+
+    Comment lines and everything from the scissors line on (the diff that
+    `git commit -v` appends) are dropped, as git's default cleanup does for
+    a commit made in the editor: git's own template lists untracked files in
+    comment lines, which are not part of the message.
+    """
+    comment = comment or comment_char()
     lines = []
     for number, line in enumerate(text.splitlines(), 1):
-        if line.startswith(SCISSORS):
+        if line.startswith(f"{comment} {SCISSORS}"):
             break
+        if line.startswith(comment):
+            continue
         lines.append((number, line))
     return lines
 
