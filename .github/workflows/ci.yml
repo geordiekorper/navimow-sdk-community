@@ -3,7 +3,9 @@
 #   test    the test suite from the source tree on every supported Python,
 #           plus the core-isolation test with DeprecationWarning as an error
 #   bounds  the oldest and newest allowed aiohttp and paho-mqtt, plus a
-#           construction check that must run inside an event loop (3.14)
+#           construction check that must run inside an event loop (3.14) and
+#           a credential update in both connection states, since paho's
+#           setters are what could differ between its versions
 #   wheel   build, check that mower_sdk and mower_sdk.legacy ship, install
 #           into a fresh venv, test from another directory, so a wheel that
 #           omits a package fails here and nowhere else
@@ -72,7 +74,7 @@ jobs:
           python -m pip list --format=freeze | grep -iE '^(aiohttp|paho-mqtt)=='
       - name: Run the test suite
         run: python -m pytest
-      - name: Construct the MQTT classes inside a running event loop
+      - name: Construct the MQTT classes inside a running event loop and update credentials in both states
         run: |
           python - <<'PY'
           import asyncio
@@ -92,8 +94,33 @@ jobs:
               MowerMQTT("broker.invalid")._build_client()
               NavimowMQTT("broker.invalid", 8883, None, None, records=[])._build_new_client()
               NavimowSDK("broker.invalid", 8883)
+
+              # update_credentials calls paho's username_pw_set and ws_set_options on the
+              # live client while connected and rebuilds the client while disconnected; the
+              # setters' signatures and where they store their values are what could differ
+              # between paho versions. Nothing connects: the paho client is told it is
+              # connected through a stub, and the rebuilt client's connect is stubbed out.
+              mqtt = NavimowMQTT(
+                  "wss://broker.invalid", 443, "user", "secret", records=[],
+                  ws_path="/mqtt", auth_headers={"Authorization": "Bearer old"},
+              )
+              live = mqtt.client
+              live.is_connected = lambda: True
+              mqtt.update_credentials(password="rotated", auth_headers={"Authorization": "Bearer new"})
+              assert mqtt.client is live, "connected: the live client is kept"
+              assert (live._username, live._password) == (b"user", b"rotated"), "connected: merged pair set"
+              assert live._websocket_path == "/mqtt", "connected: path set"
+              assert live._websocket_extra_headers == {"Authorization": "Bearer new"}, "connected: headers set"
+
+              live.is_connected = lambda: False
+              mqtt.connect_async = lambda: None  # the rebuilt client would otherwise try to connect
+              mqtt.update_credentials(username="user2")
+              rebuilt = mqtt.client
+              assert rebuilt is not live, "disconnected: the client is rebuilt"
+              assert (rebuilt._username, rebuilt._password) == (b"user2", b"rotated"), "disconnected: rebuilt pair"
+              assert rebuilt._websocket_extra_headers == {"Authorization": "Bearer new"}, "disconnected: rebuilt headers"
               print(
-                  f"constructed on Python {sys.version.split()[0]}, "
+                  f"constructed and updated credentials on Python {sys.version.split()[0]}, "
                   f"aiohttp {aiohttp.__version__}, paho-mqtt {paho.mqtt.__version__}"
               )
 
