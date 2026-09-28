@@ -538,3 +538,37 @@ class MowerAPI:
         """
         _warn_sync_wrapper("query_command_results")
         return asyncio.run(self.async_query_command_results(devices))
+
+    async def async_get_command_result(
+        self, device_id: str, cmd_num: str | None = None
+    ) -> dict[str, Any] | None:
+        """Query the command execution result of one device asynchronously.
+
+        Wraps async_query_command_results for the single-device case. The query
+        is {"id": device_id}, with cmdNum added only when cmd_num is given.
+        Returns the reply entry whose id equals device_id, or None when the
+        reply has none; an entry without an id never matches.
+
+        The endpoint is known from this SDK's code only: no cited capture shows
+        a reply, so its shape is unconfirmed, and where a cmdNum would come from
+        is undocumented (no captured sendCommands reply carries one; see
+        CommandReceipt.command_number).
+
+        Args:
+            device_id: Device ID
+            cmd_num: Command number to query a specific command (optional)
+
+        Returns:
+            The device's result entry, or None
+
+        Raises:
+            MowerAPIError: If the request fails
+        """
+        query: dict[str, str] = {"id": device_id}
+        if cmd_num is not None:
+            query["cmdNum"] = cmd_num
+        results = await self.async_query_command_results([query])
+        for entry in results:
+            if isinstance(entry, dict) and entry.get("id") == device_id:
+                return entry
+        return None
