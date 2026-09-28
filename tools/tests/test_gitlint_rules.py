@@ -226,3 +226,69 @@ def test_the_range_form_applies_every_rule_to_each_commit(repo: Path) -> None:
         commits["docs(c): order"]: ["UC4", "UC6"],
         commits["docs(d): credit"]: ["UC6"],
     }
+
+
+LEGACY = "\nLegacy-edit: upstream's fix for a crash, taken as is\n"
+
+
+@pytest.mark.parametrize(
+    ("change", "trailer", "expected"),
+    [
+        ("edit", False, ["UC7"]),
+        ("edit", True, []),
+        ("delete-inventory", False, ["UC7"]),
+        ("delete-inventory", True, []),
+        ("none", True, ["UC7"]),
+    ],
+)
+def test_a_protected_change_needs_a_legacy_edit_trailer(repo: Path, change: str, trailer: bool,
+                                                         expected: list[str]) -> None:
+    stage(repo, "mower_sdk/legacy/client.py", "OLD = 1\n")
+    stage(repo, "tests/upstream_exports.json", "{}\n")
+    run("git", "commit", "-q", "-m", "chore: layout", cwd=repo)
+    if change == "edit":
+        stage(repo, "mower_sdk/legacy/client.py", "OLD = 2\n")
+    elif change == "delete-inventory":
+        run("git", "rm", "-q", "tests/upstream_exports.json", cwd=repo)
+    else:
+        stage(repo, "README.md", "# Test\n\nMore.\n")
+    message = "chore(legacy): x\n\nWhy the change is made, and what it does.\n" + (LEGACY if trailer else "")
+    assert lint(repo, message) == expected
+
+
+@pytest.mark.parametrize("trailer", [False, True])
+def test_moving_code_out_of_legacy_needs_the_trailer(repo: Path, trailer: bool) -> None:
+    stage(repo, "mower_sdk/legacy/client.py", "OLD = 1\n")
+    run("git", "commit", "-q", "-m", "chore: layout", cwd=repo)
+    (repo / "mower_sdk" / "core").mkdir()
+    run("git", "mv", "mower_sdk/legacy/client.py", "mower_sdk/core/client.py", cwd=repo)
+    message = "chore(legacy): x\n\nWhy the change is made, and what it does.\n" + (LEGACY if trailer else "")
+    assert lint(repo, message) == ([] if trailer else ["UC7"])
+    run("git", "commit", "-q", "-m", message, cwd=repo)
+    # The same commit in range mode (one commit: gitlint prints no header).
+    assert gitlint(repo, "--commits", "HEAD~1..HEAD") == ([] if trailer else ["UC7"])
+
+
+def test_a_legacy_edit_trailer_needs_a_reason(repo: Path) -> None:
+    stage(repo, "mower_sdk/legacy/client.py", "OLD = 1\n")
+    assert "UC7" in lint(repo, "chore(legacy): x\n\nWhy the change is made, and what it does.\n\nLegacy-edit: \n")
+
+
+def test_the_range_form_checks_each_commit_for_its_trailer(repo: Path) -> None:
+    base = run("git", "rev-parse", "HEAD", cwd=repo).strip()
+    body = "Why the change is made, and what it does."
+    stage(repo, "mower_sdk/legacy/client.py", "OLD = 1\n")
+    run("git", "commit", "-q", "-m", f"chore(legacy): sanctioned\n\n{body}\n{LEGACY}", cwd=repo)
+    stage(repo, "mower_sdk/legacy/client.py", "OLD = 2\n")
+    run("git", "commit", "-q", "-m", f"chore(legacy): unsanctioned\n\n{body}", cwd=repo)
+    unsanctioned = run("git", "rev-parse", "--short=10", "HEAD", cwd=repo).strip()
+    proc = subprocess.run([*GITLINT, "--commits", f"{base}..HEAD"], cwd=repo,
+                          capture_output=True, text=True, check=False)
+    assert per_commit(proc.stderr) == {unsanctioned: ["UC7"]}
+
+
+def test_a_revert_commit_is_linted(repo: Path) -> None:
+    stage(repo, "README.md", "# Test\n\nMore.\n")
+    assert "CT1" in lint(repo, 'Revert "feat(sdk): x"\n\nThis reverts commit 0123456789abcdef.\n')
+    assert lint(repo, "revert: feat(sdk): x\n\nThis reverts commit 0123456789abcdef.\n") == []
+    assert lint(repo, "revert: feat(sdk): x\n") == []  # no body needed

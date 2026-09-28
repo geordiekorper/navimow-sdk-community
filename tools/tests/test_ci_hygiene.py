@@ -71,6 +71,8 @@ def test_the_steps_run_every_check_in_the_right_mode() -> None:
     ]
     assert all(step["if"] == "env.BASE != ''" for step in ranged)
     assert '--from-ref "$BASE" --to-ref HEAD' in ranged[0]["run"]
+    # The file-level guards cannot read the Legacy-edit trailer that gitlint checks.
+    assert ranged[0]["env"] == {"SKIP": "no-legacy-edits,no-inventory-edits,no-protected-deletions"}
     assert 'gitlint --commits "$BASE..HEAD"' in ranged[1]["run"]
     assert "pre-commit run check-message-leaks" in ranged[2]["run"]
     assert "--hook-stage commit-msg" in ranged[2]["run"]
