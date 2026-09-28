@@ -25,10 +25,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import gatelib  # noqa: E402
 
 def _local_pattern_hits(
-    rules: gatelib.LocalRules, text: str, scope: str, is_trailer: bool
+    patterns: list[gatelib.LocalPattern], text: str, scope: str, is_trailer: bool
 ) -> list[str]:
     hits = []
-    for pattern in rules.patterns:
+    for pattern in patterns:
         if pattern.scope not in (scope, "both"):
             continue
         if is_trailer and pattern.skip_trailers:
@@ -41,7 +41,7 @@ def _local_pattern_hits(
 
 def check_texts(items: list[tuple[str, int, str, bool]], scope: str) -> list[str]:
     """Check (path, line number, text, is_trailer) items; return the findings."""
-    rules = gatelib.load_local_rules()
+    patterns = gatelib.load_local_rules()
     if not items:
         return []  # nothing to read: skip listing every worktree
     untracked = gatelib.untracked_name_regex()
@@ -53,7 +53,7 @@ def check_texts(items: list[tuple[str, int, str, bool]], scope: str) -> list[str
             hits += [f"local path: {m.group(0)}" for m in local_paths.finditer(text)]
         if untracked is not None:
             hits += [f"names a file git does not track: {m.group(0)}" for m in untracked.finditer(text)]
-        hits += _local_pattern_hits(rules, text, scope, is_trailer)
+        hits += _local_pattern_hits(patterns, text, scope, is_trailer)
         findings += [f"{path}:{number}: {hit}" for hit in hits]
     return findings
 

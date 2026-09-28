@@ -7,7 +7,6 @@ gitlint's built-in and contrib rules cover the subject and body format
 from __future__ import annotations
 
 import re
-import subprocess
 import sys
 from pathlib import Path
 
@@ -36,22 +35,20 @@ def _changed_paths(commit) -> list[str]:
     "dir/{old => new}/file" rename notation on whitespace and so mangles
     moved paths.
     """
-    if commit.sha:
-        args = ["git", "diff-tree", "--no-commit-id", "-r", "--root", "--no-renames", "--name-only", "-z", commit.sha]
-    else:
-        args = ["git", "diff", "--cached", "--no-renames", "--name-only", "-z"]
-    out = subprocess.run(args, cwd=commit.context.repository_path, capture_output=True, text=True, check=True).stdout
-    return [path for path in out.split("\0") if path]
+    paths = getattr(commit, "_gate_changed_paths", None)  # read once per commit, for every rule
+    if paths is None:
+        args = (["diff-tree", "--no-commit-id", "-r", "--root", commit.sha] if commit.sha
+                else ["diff", "--cached"])
+        out = gatelib.git(*args, "--no-renames", "--name-only", "-z", cwd=commit.context.repository_path)
+        paths = [path for path in out.split("\0") if path]
+        commit._gate_changed_paths = paths
+    return paths
 
 
 def _diff(commit, path: str) -> str:
     """The change to ``path``: the staged one, or the commit's own when linting a range."""
-    args = ["git", "diff", "--cached", "--", path]
-    if commit.sha:
-        args = ["git", "show", "--format=", commit.sha, "--", path]
-    return subprocess.run(
-        args, cwd=commit.context.repository_path, capture_output=True, text=True, check=False
-    ).stdout
+    args = ["show", "--format=", commit.sha] if commit.sha else ["diff", "--cached"]
+    return gatelib.git(*args, "--", path, cwd=commit.context.repository_path, check=False)
 
 
 class NoTrackerTrailer(CommitRule):
@@ -118,7 +115,7 @@ class TrailerOrder(CommitRule):
             for number, line in enumerate(body[:start], 2)
             if _CO_AUTHOR.match(line)
         ]
-        trailers = _trailers(commit)
+        trailers = [line for line in body[start:] if line.strip()]
         assistant = [i for i, line in enumerate(trailers) if _ASSISTANT.match(line)]
         if assistant and any(_CO_AUTHOR.match(line) for line in trailers[assistant[-1] + 1:]):
             violations.append(RuleViolation(self.id, "the assistant attribution must be the last co-author"))
@@ -162,10 +159,6 @@ class ForkAuthorProvenance(CommitRule):
 _LEGACY_EDIT = re.compile(r"^Legacy-edit:(.*)$")
 
 
-def _protected(path: str) -> bool:
-    return path.startswith("mower_sdk/legacy/") or path == "tests/upstream_exports.json"
-
-
 class LegacyEditTrailer(CommitRule):
     """A change to a protected path says why, in a Legacy-edit trailer.
 
@@ -181,7 +174,7 @@ class LegacyEditTrailer(CommitRule):
 
     def validate(self, commit):
         reasons = [m.group(1).strip() for line in _trailers(commit) if (m := _LEGACY_EDIT.match(line))]
-        touched = [path for path in _changed_paths(commit) if _protected(path)]
+        touched = [path for path in _changed_paths(commit) if gatelib.is_protected(path)]
         if touched and not reasons:
             return [RuleViolation(
                 self.id, f"a change to a protected path ({touched[0]}) needs a 'Legacy-edit: <reason>' trailer",
