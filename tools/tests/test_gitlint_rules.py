@@ -134,6 +134,19 @@ def test_the_assistant_attribution_is_the_last_trailer(code: Path) -> None:
     assert "UC4" in lint(code, swapped)
 
 
+def test_a_sign_off_after_the_assistant_attribution_passes(code: Path) -> None:
+    # git commit -s appends Signed-off-by after the existing trailers.
+    assert lint(code, GOOD + "Signed-off-by: Test <test@example.com>\n") == []
+
+
+def test_a_cherry_pick_line_keeps_the_trailer_block(code: Path, repo: Path) -> None:
+    # git cherry-pick -x appends this line to the last paragraph.
+    picked = GOOD + "(cherry picked from commit 0123456789abcdef0123456789abcdef01234567)\n"
+    assert lint(code, picked) == []
+    run("git", "reset", "-q", "UPSTREAM.md", cwd=repo)
+    assert lint(code, picked) == ["UC6"]  # the fork credit is still read as a trailer
+
+
 def test_the_version_changes_only_in_a_release_commit(repo: Path) -> None:
     stage(repo, "mower_sdk/__init__.py", '__version__ = "9.9"\n')
     assert "UC5" in lint(repo, "build(sdk): x\n\nWhy.\n")

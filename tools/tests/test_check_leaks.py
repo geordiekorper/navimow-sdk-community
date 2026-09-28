@@ -259,6 +259,18 @@ def test_another_comment_character_is_honoured(repo: Path) -> None:
 
 
 @pytest.mark.usefixtures("repo")
+def test_a_cherry_pick_line_keeps_the_trailer_block(tmp_path: Path) -> None:
+    (tmp_path / "patterns.txt").write_text(
+        "message\tauthor-name\tnotrailers\tAlice Example\n", encoding="utf-8"
+    )
+    message = (
+        "fix: x\n\nBody.\n\nCo-authored-by: Alice Example <a@example.com>\n"
+        "(cherry picked from commit 0123456789abcdef0123456789abcdef01234567)\n"
+    )
+    assert check_leaks.check_message("MSG", message) == []
+
+
+@pytest.mark.usefixtures("repo")
 def test_trailers_followed_by_git_comments_are_still_trailers(tmp_path: Path) -> None:
     (tmp_path / "patterns.txt").write_text(
         "message\tauthor-name\tnotrailers\tAlice Example\n", encoding="utf-8"
