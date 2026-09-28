@@ -15,7 +15,7 @@ from mower_sdk.models import (
     DeviceEventMessage,
     DeviceStateMessage,
 )
-from mower_sdk.mqtt import NavimowMQTT
+from mower_sdk.mqtt import NavimowMQTT, _resolve_event_loop
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -28,6 +28,12 @@ class NavimowSDK:
         - callbacks are invoked from the MQTT thread/event loop context.
           Home Assistant must switch to hass loop via call_soon_threadsafe or
           run_coroutine_threadsafe.
+        - the event loop is ``loop`` if given, else the loop running at
+          construction, else the loop set as current with
+          ``asyncio.set_event_loop()`` at that time, else the same two at the
+          first ``connect()``. A facade constructed and connected with no
+          running or current loop must be given ``loop=``; a callback that
+          arrives while no loop is bound is dropped with a warning.
     """
 
     def __init__(
@@ -44,7 +50,7 @@ class NavimowSDK:
         reconnect_min_delay: int = 1,
         reconnect_max_delay: int = 60,
     ) -> None:
-        self._loop = loop or asyncio.get_event_loop()
+        self._loop = _resolve_event_loop(loop)
         self._mqtt = NavimowMQTT(
             broker=broker,
             port=port,

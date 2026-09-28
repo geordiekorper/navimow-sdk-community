@@ -6,9 +6,9 @@ imports, every public name a module defined still resolves, every incidental
 alias marked ``keep`` still resolves to the same object it aliased, and the
 package still re-exports what it did.
 
-Nothing is constructed here on purpose. On Python 3.14 the MQTT classes raise
-``RuntimeError`` when instantiated outside a running event loop, so the test
-imports and reads attributes only.
+Nothing is constructed here on purpose: the test imports and reads attributes
+only, so it checks the import surface and nothing else (paho 2.x, for one,
+warns about the callback API version whenever a client is built).
 """
 
 from __future__ import annotations
