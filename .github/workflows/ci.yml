@@ -239,7 +239,8 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.14"
-      - run: python -m pip install ruff
+      # The same version as the ruff hook in .pre-commit-config.yaml.
+      - run: python -m pip install ruff==0.16.9
       # Rule set: [tool.ruff.lint] in pyproject.toml; mower_sdk/legacy/ keeps
       # only the F rules through per-file-ignores. Any finding fails the job.
       - name: ruff check
