@@ -29,30 +29,69 @@ To see what has changed since the fork point: `git log 6596aa0..main` for the co
 ## Commits taken from elsewhere
 
 Every commit whose content originates in another fork, with the origin commit
-and its author. Later phases extend this table with the AndiHOK91, Armandur and
-randax pieces.
+and its author. Each commit is re-implemented on this tree rather than
+cherry-picked, credited with a co-author trailer, and adds its own row here in
+the same commit. The randax pieces will extend the table when they are taken.
 
 | Commit here | Origin | Author | What was taken |
 |---|---|---|---|
 | `da27124` | [DrTree/navimow-sdk](https://github.com/DrTree/navimow-sdk) `520b11e38846f719326964e7d35705a4b58db463`, 2026-05-27 | DrTree, credited with a co-author trailer | The English translation of docstrings and comments. Docstrings were retranslated from the Chinese because 520b11e flattened their layout and dropped words; its comment translations were reused where accurate. |
-| feat(api): bound every REST request at 20 s by default | [AndiHOK91/navimow-sdk](https://github.com/AndiHOK91/navimow-sdk) `bd17c307f6744161d7a551fcabfa4252a2ec1e13`, 2026-09-04 | AndiHOK91, credited with a co-author trailer | `request_timeout=20.0` on `MowerAPI`, kept as an `aiohttp.ClientTimeout` and passed to every request, `None` leaving the session's policy in force; `TimeoutError` folded into `MowerAPIError` with the cause attached. Re-implemented on the current tree. The HTTP response body stays in the error text; bd17c30 dropped it. |
-| fix(mqtt): apply credentials changed while connected to the live client | [AndiHOK91/navimow-sdk](https://github.com/AndiHOK91/navimow-sdk) `bd17c307f6744161d7a551fcabfa4252a2ec1e13`, 2026-09-04 | AndiHOK91, credited with a co-author trailer | In the connected branch of `NavimowMQTT.update_credentials`, `username_pw_set` and `ws_set_options` are called on the live paho client, so the next automatic reconnect uses the new values without a rebuild. Re-implemented on the current tree with the merged stored values, so a partial update keeps the current username. |
-| fix(mqtt,sdk): resolve the event loop without asyncio.get_event_loop() | [AndiHOK91/navimow-sdk](https://github.com/AndiHOK91/navimow-sdk) `825ee3a01ee8a570e1a9fed0cecb08d2259c32e6`, 2026-09-04 | AndiHOK91, credited with a co-author trailer | `_resolve_event_loop()` (the explicit loop, else the running loop, else `None`) in place of `asyncio.get_event_loop()` in the `NavimowMQTT` and `NavimowSDK` constructors. Added here: a loop set as current with `asyncio.set_event_loop()` and not yet running is honoured without creating one, `connect_async()` binds the running or current loop when none was bound at construction, and a callback that arrives while no loop is bound is closed and logged at warning level. |
-| feat(models): battery is int or None, with capacityRemaining read first | [AndiHOK91/navimow-sdk](https://github.com/AndiHOK91/navimow-sdk) `bd17c307f6744161d7a551fcabfa4252a2ec1e13`, 2026-09-04 | AndiHOK91, credited with a co-author trailer, for the type change; the reader itself is this fork's own | `DeviceStatus.battery` is `int \| None`, None instead of a false 0 when the payload carries no readable value. Not taken: the 0–100 bounds check of `825ee3a`; out-of-range numbers pass through. |
-| feat(models): read camelCase discovery keys, and firmware, when the snake_case key is absent | [AndiHOK91/navimow-sdk](https://github.com/AndiHOK91/navimow-sdk) `bd17c307f6744161d7a551fcabfa4252a2ec1e13`, 2026-09-04 | AndiHOK91, credited with a co-author trailer | `Device.from_dict` reads `deviceModel`, `firmwareVersion`, `serialNumber`, `macAddress` and `isOnline`. Re-implemented so the fallback applies only when the snake_case key is absent (bd17c30's `or` overwrote an explicit empty value), and with `firmware`, the key an X430's device list carries, read before `firmwareVersion`. |
-| feat(sdk): cache ages and receipt times for state and attributes | [AndiHOK91/navimow-sdk](https://github.com/AndiHOK91/navimow-sdk) `bd17c307f6744161d7a551fcabfa4252a2ec1e13` and `825ee3a01ee8a570e1a9fed0cecb08d2259c32e6`, 2026-09-04 | AndiHOK91, credited with a co-author trailer | `NavimowSDK.get_cached_state_age`, `get_cached_attributes_age` (monotonic seconds) and `get_cached_state_received_at` (UTC `datetime`), recorded when a state or attributes message is cached. Not taken from `825ee3a`: `StatusSnapshot`, `StatusSource`, `get_cached_status_snapshot()`, `invalidate_cached_status()` and `async_get_fresh_status()`; the reconciliation policy stays with the consumer. |
-| feat(sdk): refuse the MQTT command methods unless allow_experimental_mqtt_commands is set | [AndiHOK91/navimow-sdk](https://github.com/AndiHOK91/navimow-sdk) `825ee3a01ee8a570e1a9fed0cecb08d2259c32e6`, 2026-09-04 | AndiHOK91, credited with a co-author trailer | `MowerUnsupportedOperationError` and `NavimowSDK(allow_experimental_mqtt_commands=False)`: `start_mowing`, `pause`, `return_to_base` and `set_blade_height` refuse by default, since the broker accepts the publish and no mower has been seen to act on it (upstream issue #20). Community-only: it reverses an upstream default. The four bodies collapse into one helper; `NavimowMQTT.publish_command` stays ungated. |
-| feat(api): command receipts with the cloud's three-way verdict | [AndiHOK91/navimow-sdk](https://github.com/AndiHOK91/navimow-sdk) `825ee3a01ee8a570e1a9fed0cecb08d2259c32e6`, 2026-09-04 | AndiHOK91, credited with a co-author trailer, for the shape; the verdict logic is this fork's own | `CommandReceipt`, `async_send_command_receipt()` and the private split of the send path. Changed on the way in: the verdict is three-way (`CommandVerdict`: accepted, already_in_state, unknown) instead of `accepted=True` for any reply that did not raise, and the command-number extractor reads scalars only under recognised keys, never a bare scalar from a list; the result list is read as its dict entries, so a null or malformed `commands` gives no results rather than an exception, and the receipt is hashable (`results` left out of the hash). Not taken: `CommandConfirmation`, `async_send_command_confirmed()` and the synchronous wrappers. |
-| fix(sdk): one failing consumer callback no longer stops the others | [AndiHOK91/navimow-sdk](https://github.com/AndiHOK91/navimow-sdk) `825ee3a01ee8a570e1a9fed0cecb08d2259c32e6`, 2026-09-04 | AndiHOK91, credited with a co-author trailer | In `NavimowSDK._on_mqtt_message`, each state, event and attributes callback runs in its own `try`; an exception is logged with its traceback and the next callback still runs. |
-| feat(api): async_get_command_result for the single-device case | [Armandur/navimow-sdk](https://github.com/Armandur/navimow-sdk) `b3f363da408d2faab7bcc5c7d6cad81dd682056c`, 2026-07-03 | Rasmus Pettersson Vik, credited with a co-author trailer | `MowerAPI.async_get_command_result(device_id, cmd_num=None)`, the single-device wrapper over `async_query_command_results`, with `cmdNum` sent only when given. Two defects fixed on the way in: an entry without an id matched, and the first entry was returned when none matched. Not taken: the synchronous wrapper `get_command_result`, the version bump and the bilingual docstrings (superseded by the translation). |
+| `2737bca` | [AndiHOK91/navimow-sdk](https://github.com/AndiHOK91/navimow-sdk) `bd17c307f6744161d7a551fcabfa4252a2ec1e13`, 2026-09-04 | AndiHOK91, credited with a co-author trailer | `request_timeout=20.0` on `MowerAPI`, kept as an `aiohttp.ClientTimeout` and passed to every request, `None` leaving the session's policy in force; `TimeoutError` folded into `MowerAPIError` with the cause attached. Re-implemented on the current tree. The HTTP response body stays in the error text; bd17c30 dropped it. |
+| `5e2dafd` | [AndiHOK91/navimow-sdk](https://github.com/AndiHOK91/navimow-sdk) `bd17c307f6744161d7a551fcabfa4252a2ec1e13`, 2026-09-04 | AndiHOK91, credited with a co-author trailer | In the connected branch of `NavimowMQTT.update_credentials`, `username_pw_set` and `ws_set_options` are called on the live paho client, so the next automatic reconnect uses the new values without a rebuild. Re-implemented on the current tree with the merged stored values, so a partial update keeps the current username. |
+| `fcd51d1` | [AndiHOK91/navimow-sdk](https://github.com/AndiHOK91/navimow-sdk) `825ee3a01ee8a570e1a9fed0cecb08d2259c32e6`, 2026-09-04 | AndiHOK91, credited with a co-author trailer | `_resolve_event_loop()` (the explicit loop, else the running loop, else `None`) in place of `asyncio.get_event_loop()` in the `NavimowMQTT` and `NavimowSDK` constructors. Added here: a loop set as current with `asyncio.set_event_loop()` and not yet running is honoured without creating one, `connect_async()` binds the running or current loop when none was bound at construction, and a callback that arrives while no loop is bound is closed and logged at warning level. |
+| `4724e47` | [AndiHOK91/navimow-sdk](https://github.com/AndiHOK91/navimow-sdk) `bd17c307f6744161d7a551fcabfa4252a2ec1e13`, 2026-09-04 | AndiHOK91, credited with a co-author trailer, for the type change; the reader itself is this fork's own | `DeviceStatus.battery` is `int \| None`, None instead of a false 0 when the payload carries no readable value. Not taken: the 0–100 bounds check of `825ee3a`; out-of-range numbers pass through. |
+| `8d9d808` | [AndiHOK91/navimow-sdk](https://github.com/AndiHOK91/navimow-sdk) `bd17c307f6744161d7a551fcabfa4252a2ec1e13`, 2026-09-04 | AndiHOK91, credited with a co-author trailer | `Device.from_dict` reads `deviceModel`, `firmwareVersion`, `serialNumber`, `macAddress` and `isOnline`. Re-implemented so the fallback applies only when the snake_case key is absent (bd17c30's `or` overwrote an explicit empty value), and with `firmware`, the key an X430's device list carries, read before `firmwareVersion`. |
+| `0ad181b` | [AndiHOK91/navimow-sdk](https://github.com/AndiHOK91/navimow-sdk) `bd17c307f6744161d7a551fcabfa4252a2ec1e13` and `825ee3a01ee8a570e1a9fed0cecb08d2259c32e6`, 2026-09-04 | AndiHOK91, credited with a co-author trailer | `NavimowSDK.get_cached_state_age`, `get_cached_attributes_age` (monotonic seconds) and `get_cached_state_received_at` (UTC `datetime`), recorded when a state or attributes message is cached. Not taken from `825ee3a`: `StatusSnapshot`, `StatusSource`, `get_cached_status_snapshot()`, `invalidate_cached_status()` and `async_get_fresh_status()`; the reconciliation policy stays with the consumer. |
+| `db7e0b0` | [AndiHOK91/navimow-sdk](https://github.com/AndiHOK91/navimow-sdk) `825ee3a01ee8a570e1a9fed0cecb08d2259c32e6`, 2026-09-04 | AndiHOK91, credited with a co-author trailer | `MowerUnsupportedOperationError` and `NavimowSDK(allow_experimental_mqtt_commands=False)`: `start_mowing`, `pause`, `return_to_base` and `set_blade_height` refuse by default, since the broker accepts the publish and no mower has been seen to act on it (upstream issue #20). Community-only: it reverses an upstream default. The four bodies collapse into one helper; `NavimowMQTT.publish_command` stays ungated. |
+| `621e538` | [AndiHOK91/navimow-sdk](https://github.com/AndiHOK91/navimow-sdk) `825ee3a01ee8a570e1a9fed0cecb08d2259c32e6`, 2026-09-04 | AndiHOK91, credited with a co-author trailer, for the shape; the verdict logic is this fork's own | `CommandReceipt`, `async_send_command_receipt()` and the private split of the send path. Changed on the way in: the verdict is three-way (`CommandVerdict`: accepted, already_in_state, unknown) instead of `accepted=True` for any reply that did not raise, and the command-number extractor reads scalars only under recognised keys, never a bare scalar from a list; the result list is read as its dict entries, so a null or malformed `commands` gives no results rather than an exception, and the receipt is hashable (`results` left out of the hash). Not taken: `CommandConfirmation`, `async_send_command_confirmed()` and the synchronous wrappers. |
+| `a62f1ed` | [AndiHOK91/navimow-sdk](https://github.com/AndiHOK91/navimow-sdk) `825ee3a01ee8a570e1a9fed0cecb08d2259c32e6`, 2026-09-04 | AndiHOK91, credited with a co-author trailer | In `NavimowSDK._on_mqtt_message`, each state, event and attributes callback runs in its own `try`; an exception is logged with its traceback and the next callback still runs. |
+| `8b0eed1` | [Armandur/navimow-sdk](https://github.com/Armandur/navimow-sdk) `b3f363da408d2faab7bcc5c7d6cad81dd682056c`, 2026-07-03 | Rasmus Pettersson Vik, credited with a co-author trailer | `MowerAPI.async_get_command_result(device_id, cmd_num=None)`, the single-device wrapper over `async_query_command_results`, with `cmdNum` sent only when given. Two defects fixed on the way in: an entry without an id matched, and the first entry was returned when none matched. Not taken: the synchronous wrapper `get_command_result`, the version bump and the bilingual docstrings (superseded by the translation). |
+
+What was left from the forks whose pieces are taken above, and why, so the
+patches need not be re-evaluated:
+
+- AndiHOK91 `bd17c30`: dropping the HTTP response body from `MowerAPIError`
+  (the body carries codes such as `failedToSendCommands` that users need to
+  see; if anything, it will be truncated, with the error taxonomy); the rewrite
+  of the connection logs around `_configured()` and `_device_tag()` (what is
+  logged, and at which level, is decided together with redacting the client id
+  and the account id); the test suite and GitHub Actions matrix (CI already
+  existed here; the test cases were re-written per commit in this repository's
+  conventions rather than copied).
+- AndiHOK91 `825ee3a`: the 0–100 battery bounds check (out-of-range values
+  pass through unchanged, so a bad number is not hidden); `StatusSnapshot`,
+  `StatusSource`, `get_cached_status_snapshot()`, `invalidate_cached_status()`
+  and `async_get_fresh_status()` (the MQTT-versus-REST reconciliation policy
+  belongs to the consumer, which has to account for the REST cache lag itself,
+  and the state-to-status conversion they need is planned with the
+  native health hooks; the cache ages and receipt time give consumers the same
+  freshness facts); `CommandConfirmation` and `async_send_command_confirmed()`
+  (its defaults poll REST every 2 s for 10 s, but the REST status cache lags the
+  mower by one to two minutes, so the poll mostly reports failure); the
+  `_loop_started` guard, `last_message_age`, `_connected_at` and
+  `get_mqtt_health()` (planned with the native health hooks and `rebuild()`,
+  which touch the same lines); `api=` on `NavimowSDK` (planned with the
+  broker-credential refresh helper); the copy of the caller's `extra` dict in
+  `DeviceStatus.from_dict` (a real defect, tracked separately); the narrowed
+  `except` with a debug log in the disconnected branch of `update_credentials`
+  (planned with `rebuild()`, which replaces that branch); the synchronous
+  wrappers `send_command_receipt()` and `send_command_confirmed()` (the
+  existing synchronous wrappers are deprecated, so no new ones are added); the
+  removal of `MowerAPI.__del__` (already done here).
+- AndiHOK91 `4186016` and `5ad98eb`: the SPDX header and the version bump (the
+  license metadata was corrected here separately; the version has one source).
+- Armandur `14eba24` and its merge `b299b7e`: the English translation of
+  comments (superseded by the DrTree translation taken above). Armandur
+  `b3f363d`: the synchronous wrapper `get_command_result()` and the version
+  bump.
 
 The forks reviewed on 2026-09-26, in the order their pieces are applied:
 
 | Fork | Ahead of upstream | Last push | Plan |
 |---|---:|---|---|
 | DrTree | 2 | 2026-05-27 | taken, above |
-| AndiHOK91 | 4 | 2026-09-04 | second, after the legacy move: request timeouts, battery `None`, command receipts, MQTT-command gate |
-| Armandur | 3 | 2026-07-03 | third: one REST helper only; its bilingual docstrings are superseded by the translation |
+| AndiHOK91 | 4 | 2026-09-04 | taken in part, above: request timeout, battery `None`, live-client credential update, event-loop resolution, cache ages, MQTT-command gate, command receipts, callback isolation, camelCase discovery keys; what was left is listed above |
+| Armandur | 3 | 2026-07-03 | taken, above: the single-device command-result helper; its bilingual docstrings are superseded by the translation |
 | randax | 43 | 2026-08-30 | fourth, by feature, re-implemented on the cleaned core: location channel, paho-mqtt 2 callbacks, loop affinity |
 | monik3r | 2 | 2026-05-12 | not taken: debug logging and placeholder topics on the legacy client |
 
