@@ -37,3 +37,28 @@ repos:
     rev: v0.16.9
     hooks:
       - id: ruff-check
+
+  - repo: local
+    hooks:
+      # Paths that exist only on someone's machine: home directories (CI
+      # runner homes excepted), macOS private and per-user temporary
+      # directories, and Claude Code worktrees. Generic scratch paths such as
+      # /tmp or ~/ in a usage example are allowed. Also run on the message.
+      - id: no-local-paths
+        name: no local paths
+        language: pygrep
+        entry: '/Users/[A-Za-z0-9._-]+|/home/(?!runner\b)[a-z_][a-z0-9_-]*\b|/private/(tmp|var)/|/var/folders/|(?i:\b[a-z]:\\\\?users\\)|~/(Projects|Library|\.claude)\b|\.claude/worktrees'
+        types: [text]
+        exclude: ^\.pre-commit-config\.yaml$
+        stages: [pre-commit, commit-msg]
+      - id: check-leaks
+        name: references to untracked files and project-specific terms
+        entry: python tools/check_leaks.py
+        language: python
+        types: [text]
+        exclude: ^\.pre-commit-config\.yaml$  # it holds the patterns themselves
+      - id: check-message-leaks
+        name: the same in the commit message
+        entry: python tools/check_leaks.py --message
+        language: python
+        stages: [commit-msg]
