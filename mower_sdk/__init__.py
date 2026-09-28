@@ -16,6 +16,7 @@ from mower_sdk.api import MowerAPI
 from mower_sdk.errors import (
     MowerAPIError,
     MowerMQTTError,
+    MowerUnsupportedOperationError,
     ERROR_MESSAGES,
 )
 from mower_sdk.models import (
@@ -79,6 +80,7 @@ __all__ = [
     # Exceptions
     "MowerAPIError",
     "MowerMQTTError",
+    "MowerUnsupportedOperationError",
     "ERROR_MESSAGES",
     "COMMAND_ERRORS",
 ]
