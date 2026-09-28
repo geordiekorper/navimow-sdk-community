@@ -7,6 +7,8 @@ throughout.
 
 ## [Unreleased]
 
+## [0.2.0a2] - 2026-09-28
+
 Two things: the legacy quarantine, and the first patches taken from other
 forks, with the fixes users asked for. Nothing upstream published is deleted,
 and every public name still imports from its old path. The live path
@@ -225,5 +227,6 @@ metadata and its guards. No line of executable code differs from upstream
 - `UPSTREAM.md`, recording the fork point, the remotes, provenance and the
   rules that keep a merge-back possible.
 
-[Unreleased]: https://github.com/geordiekorper/navimow-sdk-community/compare/v0.2.0a1...HEAD
+[Unreleased]: https://github.com/geordiekorper/navimow-sdk-community/compare/v0.2.0a2...HEAD
+[0.2.0a2]: https://github.com/geordiekorper/navimow-sdk-community/compare/v0.2.0a1...v0.2.0a2
 [0.2.0a1]: https://github.com/geordiekorper/navimow-sdk-community/releases/tag/v0.2.0a1
