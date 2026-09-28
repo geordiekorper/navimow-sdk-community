@@ -27,6 +27,13 @@ def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     # below at the caller's repository instead of this one.
     for name in [n for n in os.environ if n.startswith("GIT_") and n != "GIT_EXEC_PATH"]:
         monkeypatch.delenv(name)
+    # The developer's own git configuration (commit signing, a global hooks
+    # path, a commit template, another comment character) must not reach the
+    # throwaway repositories: an empty global file, and no system file.
+    global_config = tmp_path / "gitconfig"
+    global_config.write_text("", encoding="utf-8")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(global_config))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
     root = tmp_path / "repo"
     root.mkdir()
     run("git", "init", "-q", "-b", "main", cwd=root)
