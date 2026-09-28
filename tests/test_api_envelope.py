@@ -3,7 +3,9 @@
 A fake aiohttp session, with no network, drives all five endpoints through the
 cases the envelope check decides: success, ``code != 1``, a missing ``data``
 key against an explicit ``"data": null``, ``alreadyInState`` suppression, a
-command ``ERROR``, and the mapping from HTTP 404 to ``DEVICE_NOT_FOUND``.
+command ``ERROR``, and the mapping from HTTP 404 to ``DEVICE_NOT_FOUND``. It
+also records the ``timeout`` keyword each request carries, so the request
+timeout's default, a custom value and ``None`` can be checked.
 
 Every expectation is what the code does today, pinned so the envelope refactor
 can show that nothing observable changed. That includes the ugly cases: an
@@ -60,6 +62,11 @@ class FakeResponse:
         return self._text
 
 
+# Recorded as a request's ``timeout`` when the keyword was not passed at all, which
+# aiohttp treats differently from ``timeout=None`` (no timeout at all).
+NOT_PASSED = object()
+
+
 class FakeSession:
     """Records every request and hands out the queued responses in order."""
 
@@ -75,9 +82,17 @@ class FakeSession:
         json: Any = None,
         params: Any = None,
         headers: dict[str, str] | None = None,
+        timeout: Any = NOT_PASSED,
     ) -> FakeResponse:
         self.requests.append(
-            {"method": method, "url": url, "json": json, "params": params, "headers": headers}
+            {
+                "method": method,
+                "url": url,
+                "json": json,
+                "params": params,
+                "headers": headers,
+                "timeout": timeout,
+            }
         )
         return self.responses.pop(0)
 
@@ -370,6 +385,41 @@ def test_aiohttp_client_error_is_wrapped() -> None:
         run(api.async_get_mqtt_user_info())
     assert info.value.message == f"{ERROR_MESSAGES['API_REQUEST_FAILED']}: connection refused"
     assert info.value.status_code is None
+    assert info.value.__cause__ is cause
+
+
+@pytest.mark.parametrize(("name", "args"), ENDPOINT_NAMES)
+def test_every_request_carries_the_default_timeout(name: str, args: tuple) -> None:
+    api, session = api_with(FakeResponse(ok({})))
+    run(getattr(api, name)(*args))
+    assert session.requests[0]["timeout"] == aiohttp.ClientTimeout(total=20.0)
+
+
+def test_a_custom_request_timeout_is_passed() -> None:
+    session = FakeSession(FakeResponse(ok({})))
+    api = MowerAPI(session=session, token=TOKEN, base_url=BASE_URL, request_timeout=5)  # type: ignore[arg-type]
+    run(api.async_get_devices())
+    assert session.requests[0]["timeout"] == aiohttp.ClientTimeout(total=5)
+
+
+def test_request_timeout_none_passes_no_timeout_keyword() -> None:
+    """Without the keyword aiohttp applies the session's own timeout policy."""
+    session = FakeSession(FakeResponse(ok({})))
+    api = MowerAPI(session=session, token=TOKEN, base_url=BASE_URL, request_timeout=None)  # type: ignore[arg-type]
+    run(api.async_get_devices())
+    assert session.requests[0]["timeout"] is NOT_PASSED
+
+
+def test_timeout_is_wrapped_with_its_cause() -> None:
+    # aiohttp raises asyncio.TimeoutError when a ClientTimeout expires; from
+    # Python 3.11 that name is the builtin TimeoutError.
+    cause = TimeoutError()
+    api, _ = api_with(FakeResponse(error=cause))
+    with pytest.raises(MowerAPIError) as info:
+        run(api.async_get_devices())
+    assert info.value.message == f"{ERROR_MESSAGES['API_REQUEST_FAILED']}: TimeoutError"
+    assert info.value.status_code is None
+    assert info.value.error_code is None
     assert info.value.__cause__ is cause
 
 

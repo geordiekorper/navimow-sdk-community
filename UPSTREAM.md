@@ -35,6 +35,7 @@ randax pieces.
 | Commit here | Origin | Author | What was taken |
 |---|---|---|---|
 | `da27124` | [DrTree/navimow-sdk](https://github.com/DrTree/navimow-sdk) `520b11e38846f719326964e7d35705a4b58db463`, 2026-05-27 | DrTree, credited with a co-author trailer | The English translation of docstrings and comments. Docstrings were retranslated from the Chinese because 520b11e flattened their layout and dropped words; its comment translations were reused where accurate. |
+| feat(api): bound every REST request at 20 s by default | [AndiHOK91/navimow-sdk](https://github.com/AndiHOK91/navimow-sdk) `bd17c307f6744161d7a551fcabfa4252a2ec1e13`, 2026-09-04 | AndiHOK91, credited with a co-author trailer | `request_timeout=20.0` on `MowerAPI`, kept as an `aiohttp.ClientTimeout` and passed to every request, `None` leaving the session's policy in force; `TimeoutError` folded into `MowerAPIError` with the cause attached. Re-implemented on the current tree. The HTTP response body stays in the error text; bd17c30 dropped it. |
 
 The forks reviewed on 2026-09-26, in the order their pieces are applied:
 
