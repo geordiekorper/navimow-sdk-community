@@ -492,6 +492,44 @@ def test_update_credentials(fake_paho: type[FakeClient]) -> None:
     run(test)
 
 
+@pytest.mark.parametrize(
+    ("update", "expected"),
+    [
+        ({"password": "rotated"}, ("user", "rotated", {"Authorization": "Bearer tok"})),
+        ({"username": "user2"}, ("user2", "secret", {"Authorization": "Bearer tok"})),
+        (
+            {"auth_headers": {"Authorization": "Bearer new"}},
+            ("user", "secret", {"Authorization": "Bearer new"}),
+        ),
+    ],
+    ids=["password_only", "username_only", "headers_only"],
+)
+def test_update_credentials_partial_update_while_connected(
+    fake_paho: type[FakeClient], update: dict[str, Any], expected: tuple[Any, Any, Any]
+) -> None:
+    """A partial update while connected merges into the stored values and touches no paho call.
+
+    A token refresh typically sends a password-only or headers-only update, so the
+    untouched values must survive the merge.
+    """
+
+    async def test() -> None:
+        mqtt = make(WS_KWARGS)
+        client = mqtt.client
+        client.connected = True
+        calls_before = list(client.calls)
+
+        mqtt.update_credentials(**update)
+
+        assert (mqtt.username, mqtt.password, mqtt.auth_headers) == expected
+        assert client.calls == calls_before  # the live client is left alone
+        assert client.connected is True
+        assert mqtt.client is client
+        assert fake_paho.instances == [client]
+
+    run(test)
+
+
 def test_construction_does_not_call_an_overridden_build_new_client(fake_paho: type[FakeClient]) -> None:
     class Overriding(NavimowMQTT):
         build_calls = 0
