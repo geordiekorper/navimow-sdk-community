@@ -1,7 +1,7 @@
 # CI: the verification steps of the packaging commits, the public-API
 # compatibility test and the legacy quarantine, made permanent. The checks
 # themselves are nox sessions (noxfile.py), so what CI runs can be run
-# locally with the same command. Four jobs:
+# locally with the same command. Five jobs:
 #   test    nox -s tests-X and tools-X: the test suite from the source tree
 #           on every supported Python, plus the core-isolation test with
 #           DeprecationWarning as an error, and the commit checks' own tests
@@ -15,6 +15,9 @@
 #           a wheel that omits a package fails here and nowhere else
 #   ruff    nox -s lint: blocking; legacy code keeps only the F rules
 #           (pyproject.toml)
+#   hygiene the pre-commit hooks over every file and over the changes of the
+#           pull request (or push); gitlint and the message hooks over the
+#           range's commit messages
 name: CI
 
 on:
@@ -102,3 +105,54 @@ jobs:
       # only the F rules through per-file-ignores. Any finding fails the job.
       - name: ruff check
         run: nox -s lint -- --output-format github .
+
+  hygiene:
+    name: hygiene
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+      - name: Install pre-commit and gitlint
+        run: python -m pip install pre-commit==4.6.2 gitlint==0.19.1
+      # The commits this run is about: a pull request's own commits, or the
+      # ones a push to main added. Without a usable base (a manual run, a new
+      # branch, a force push) only the whole-tree checks run.
+      - name: Find the base of the range
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          if [ -n "$BASE_REF" ]; then base="origin/$BASE_REF"; else base="$BEFORE"; fi
+          if [ -z "$base" ] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then base=""; fi
+          echo "BASE=$base" >> "$GITHUB_ENV"
+          echo "range: ${base:-none}..HEAD"
+      # The edit guards refuse any existing protected file, so a whole-tree
+      # run skips them; the range run below checks the changes.
+      - name: Every hook over every file
+        env:
+          GATE_MODE: content
+          SKIP: no-legacy-edits,no-inventory-edits
+        run: pre-commit run --all-files --show-diff-on-failure
+      - name: The hooks over the range's changes
+        if: env.BASE != ''
+        run: pre-commit run --from-ref "$BASE" --to-ref HEAD --show-diff-on-failure
+      - name: The range's commit messages
+        if: env.BASE != ''
+        run: gitlint --commits "$BASE..HEAD"
+      - name: Local paths and untracked names in the range's commit messages
+        if: env.BASE != ''
+        run: |
+          status=0
+          for sha in $(git rev-list --no-merges "$BASE..HEAD"); do
+            git log -1 --format=%B "$sha" > "$RUNNER_TEMP/message"
+            for hook in no-local-paths check-message-leaks; do
+              pre-commit run "$hook" --hook-stage commit-msg \
+                --commit-msg-filename "$RUNNER_TEMP/message" || { echo "in $sha"; status=1; }
+            done
+          done
+          exit "$status"
