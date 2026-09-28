@@ -15,6 +15,7 @@ dist/
 *.egg
 
 # Tooling caches
+.nox/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
@@ -31,4 +32,3 @@ mower_sdk/.DS_Store
 
 # Python version management
 .python-version
-

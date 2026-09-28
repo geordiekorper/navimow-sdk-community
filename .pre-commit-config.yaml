@@ -1,0 +1,92 @@
+# Checks run before a commit and on its message. Install the hooks with:
+#   pre-commit install
+# Code moved verbatim from upstream under mower_sdk/legacy/ is never
+# reformatted, so the whitespace fixers leave it alone. The Go hooks pin a
+# Go version, so pre-commit fetches its own toolchain instead of relying on
+# whatever go is on the PATH.
+default_install_hook_types: [pre-commit, commit-msg]
+default_stages: [pre-commit]
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-added-large-files
+      - id: check-merge-conflict
+      - id: check-toml
+      - id: check-yaml
+      - id: detect-private-key
+      - id: end-of-file-fixer
+        exclude: ^mower_sdk/legacy/
+      - id: trailing-whitespace
+        exclude: ^mower_sdk/legacy/
+
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks
+        language_version: 1.25.5
+
+  - repo: https://github.com/rhysd/actionlint
+    rev: v1.7.12
+    hooks:
+      - id: actionlint
+        language_version: 1.25.5
+
+  # The same ruff version as the CI ruff job; the rule set is in pyproject.toml.
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.9
+    hooks:
+      - id: ruff-check
+
+  # Commit-message rules: .gitlint, and the repository's own in
+  # tools/gitlint_rules.py.
+  - repo: https://github.com/jorisroovers/gitlint
+    rev: v0.19.1
+    hooks:
+      - id: gitlint
+
+  - repo: local
+    hooks:
+      # Paths that exist only on someone's machine: home directories (CI
+      # runner homes excepted), macOS private and per-user temporary
+      # directories, and Claude Code worktrees, each where a path starts (not
+      # inside a URL or another path). Generic scratch paths such as /tmp or
+      # ~/ in a usage example are allowed. check-message-leaks applies the
+      # same expression to the commit message.
+      - id: no-local-paths
+        name: no local paths
+        language: pygrep
+        entry: '(?<![\w.-])(?:/Users/[A-Za-z0-9._-]+|/home/(?!runner\b)[a-z_][a-z0-9_-]*\b|/private/(tmp|var)/|/var/folders/)|(?i:\b[a-z]:\\\\?users\\)|~/(Projects|Library|\.claude)\b|\.claude/worktrees'
+        types: [text]
+        exclude: ^\.pre-commit-config\.yaml$
+      - id: check-leaks
+        name: references to untracked files and project-specific terms
+        entry: python tools/check_leaks.py
+        language: python
+        types: [text]
+        exclude: ^\.pre-commit-config\.yaml$  # it holds the patterns themselves
+        require_serial: true  # one run lists every worktree once, not once per batch
+      - id: check-message-leaks
+        name: local paths, untracked files and project terms in the commit message
+        entry: python tools/check_leaks.py --message
+        language: python
+        additional_dependencies: [pyyaml==6.0.3]  # reads no-local-paths' expression
+        stages: [commit-msg]
+      # Code moved verbatim from upstream (mower_sdk/legacy/) and the
+      # inventory of upstream's public names are not changed. A deliberate
+      # exception is committed with SKIP=no-protected-changes and a
+      # "Legacy-edit: <reason>" trailer, which gitlint requires for any change
+      # to these paths, here and per commit in CI.
+      - id: no-protected-changes
+        name: code moved from upstream and the export inventory are not changed
+        entry: python tools/check_protected_paths.py
+        language: python
+        pass_filenames: false
+        always_run: true
+      # Tests are plain asyncio.run tests with recording fakes.
+      - id: test-style
+        name: tests use asyncio.run and recording fakes, not async plugins or mocks
+        language: pygrep
+        entry: '\bpytest_asyncio\b|\bpytest\.mark\.asyncio\b|\bunittest\.mock\b|from unittest import mock\b'
+        files: ^tests/.*\.py$

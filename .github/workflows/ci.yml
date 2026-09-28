@@ -1,15 +1,22 @@
 # CI: the verification steps of the packaging commits, the public-API
-# compatibility test and the legacy quarantine, made permanent. Four jobs:
-#   test    the test suite from the source tree on every supported Python,
-#           plus the core-isolation test with DeprecationWarning as an error
-#   bounds  the oldest and newest allowed aiohttp and paho-mqtt, plus a
-#           construction check outside a loop, under a loop set as current and
-#           inside a running one, and a credential update in both connection
-#           states, since paho's setters are what could differ between versions
-#   wheel   build, check that mower_sdk and mower_sdk.legacy ship, install
-#           into a fresh venv, test from another directory, so a wheel that
-#           omits a package fails here and nowhere else
-#   ruff    blocking; legacy code keeps only the F rules (pyproject.toml)
+# compatibility test and the legacy quarantine, made permanent. The checks
+# themselves are nox sessions (noxfile.py), so what CI runs can be run
+# locally with the same command. Five jobs:
+#   test    nox -s tests-X and tools-X: the test suite from the source tree
+#           on every supported Python, plus the core-isolation test with
+#           DeprecationWarning as an error, and the commit checks' own tests
+#   bounds  nox -s "bounds(oldest|newest)": the oldest and newest allowed
+#           aiohttp and paho-mqtt, plus a construction check outside a loop,
+#           under a loop set as current and inside a running one, and a
+#           credential update in both connection states, since paho's setters
+#           are what could differ between versions
+#   wheel   nox -s wheel: build, check that mower_sdk and mower_sdk.legacy
+#           ship, install into a fresh venv, test from another directory, so
+#           a wheel that omits a package fails here and nowhere else
+#   ruff    nox -s lint: blocking; legacy code keeps only the F rules
+#           (pyproject.toml)
+#   hygiene the pre-commit hooks over every file; gitlint and the message
+#           leak check over the commit messages of the pull request (or push)
 name: CI
 
 on:
@@ -27,6 +34,7 @@ concurrency:
 
 env:
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  NOX: nox==2026.8.17
 
 jobs:
   test:
@@ -42,12 +50,13 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Install the package and pytest
-        run: python -m pip install -e . pytest
-      - name: Run the test suite
-        run: python -m pytest
-      - name: Core isolation with DeprecationWarning as an error
-        run: python -W error::DeprecationWarning -m pytest tests/test_core_isolation.py
+          cache: pip
+          cache-dependency-path: noxfile.py
+      - run: python -m pip install "$NOX"
+      - name: Run the test suite and the core-isolation test
+        run: nox -s "tests-${{ matrix.python-version }}"
+      - name: Tests of the commit checks
+        run: nox -s "tools-${{ matrix.python-version }}"
 
   bounds:
     name: dependency bounds (py${{ matrix.python-version }}, ${{ matrix.label }})
@@ -59,96 +68,18 @@ jobs:
         include:
           - python-version: "3.11"
             label: oldest
-            pins: aiohttp==3.9.0 paho-mqtt==1.6.1
           - python-version: "3.14"
             label: newest
-            pins: aiohttp paho-mqtt
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Install the package with ${{ matrix.label }} dependencies
-        run: |
-          python -m pip install --upgrade . ${{ matrix.pins }} pytest
-          python -m pip list --format=freeze | grep -iE '^(aiohttp|paho-mqtt)=='
-      - name: Run the test suite
-        run: python -m pytest
-      - name: Construct the MQTT classes outside and inside a running event loop; update credentials in both states
-        run: |
-          python - <<'PY'
-          import asyncio
-          import sys
-          import warnings
-
-          import aiohttp
-          import paho.mqtt
-
-          from mower_sdk import NavimowMQTT, NavimowSDK
-          # The legacy client is imported from its legacy path on purpose, so this
-          # smoke test does not go through a deprecated path.
-          from mower_sdk.legacy.mqtt_v1 import MowerMQTT
-
-
-          async def main() -> None:
-              # MowerMQTT builds its paho client lazily; NavimowMQTT builds it in __init__.
-              MowerMQTT("broker.invalid")._build_client()
-              NavimowMQTT("broker.invalid", 8883, None, None, records=[])._build_new_client()
-              NavimowSDK("broker.invalid", 8883)
-
-              # update_credentials calls paho's username_pw_set and ws_set_options on the
-              # live client while connected and rebuilds the client while disconnected; the
-              # setters' signatures and where they store their values are what could differ
-              # between paho versions. Nothing connects: the paho client is told it is
-              # connected through a stub, and the rebuilt client's connect is stubbed out.
-              mqtt = NavimowMQTT(
-                  "wss://broker.invalid", 443, "user", "secret", records=[],
-                  ws_path="/mqtt", auth_headers={"Authorization": "Bearer old"},
-              )
-              live = mqtt.client
-              live.is_connected = lambda: True
-              mqtt.update_credentials(password="rotated", auth_headers={"Authorization": "Bearer new"})
-              assert mqtt.client is live, "connected: the live client is kept"
-              assert (live._username, live._password) == (b"user", b"rotated"), "connected: merged pair set"
-              assert live._websocket_path == "/mqtt", "connected: path set"
-              assert live._websocket_extra_headers == {"Authorization": "Bearer new"}, "connected: headers set"
-
-              live.is_connected = lambda: False
-              mqtt.connect_async = lambda: None  # the rebuilt client would otherwise try to connect
-              mqtt.update_credentials(username="user2")
-              rebuilt = mqtt.client
-              assert rebuilt is not live, "disconnected: the client is rebuilt"
-              assert (rebuilt._username, rebuilt._password) == (b"user2", b"rotated"), "disconnected: rebuilt pair"
-              assert rebuilt._websocket_extra_headers == {"Authorization": "Bearer new"}, "disconnected: rebuilt headers"
-              assert mqtt.loop is asyncio.get_running_loop(), "constructed inside a loop: the running loop is bound"
-              print(
-                  f"constructed and updated credentials on Python {sys.version.split()[0]}, "
-                  f"aiohttp {aiohttp.__version__}, paho-mqtt {paho.mqtt.__version__}"
-              )
-
-
-          # Outside any running loop, construction binds no loop and creates none: with no
-          # current loop set, asyncio.get_event_loop() silently creates a loop on 3.11, warns
-          # and creates one on 3.12 and 3.13 and raises on 3.14, so on 3.11 to 3.13 the
-          # policy's current-loop slot is read instead and only 3.14 asks it (the None check
-          # catches a created loop). A loop set as current with asyncio.set_event_loop() and
-          # not yet running is bound, on each version's real policy.
-          with warnings.catch_warnings():
-              warnings.filterwarnings("error", message="There is no current event loop")
-              outside = NavimowMQTT("broker.invalid", 8883, None, None, records=[])
-              assert outside.loop is None, "constructed outside a loop: no loop bound"
-              assert NavimowSDK("broker.invalid", 8883)._mqtt.loop is None, "facade outside a loop: no loop bound"
-              current = asyncio.new_event_loop()
-              asyncio.set_event_loop(current)
-              try:
-                  assert NavimowMQTT("broker.invalid", 8883, None, None, records=[]).loop is current, "constructed under a current loop: it is bound"
-                  assert NavimowSDK("broker.invalid", 8883)._mqtt.loop is current, "facade under a current loop: it is bound"
-              finally:
-                  asyncio.set_event_loop(None)
-                  current.close()
-
-          asyncio.run(main())
-          PY
+          cache: pip
+          cache-dependency-path: noxfile.py
+      - run: python -m pip install "$NOX"
+      - name: Run the suite and the construction check on the ${{ matrix.label }} dependencies
+        run: nox -s "bounds(${{ matrix.label }})"
 
   wheel:
     name: build, install and test the wheel
@@ -159,76 +90,11 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.14"
-      - name: Build the sdist and wheel
-        run: |
-          python -m pip install build
-          python -m build
-      - name: Check that the wheel ships the package, the legacy subpackage and nothing else
-        run: |
-          python - <<'PY'
-          import glob
-          import sys
-          import zipfile
-
-          (wheel,) = glob.glob("dist/*.whl")
-          names = zipfile.ZipFile(wheel).namelist()
-          print("\n".join(names))
-          stray = [n for n in names if not (n.startswith("mower_sdk/") or ".dist-info/" in n)]
-          if stray:
-              sys.exit(f"unexpected files in {wheel}: {stray}")
-          required = ["mower_sdk/__init__.py", "mower_sdk/legacy/__init__.py"] + [
-              f"mower_sdk/legacy/{module}.py"
-              for module in (
-                  "client", "cloud", "device", "errors", "event", "mqtt_v1",
-                  "navimow", "state_manager", "thing_models", "utils",
-              )
-          ]
-          missing = [n for n in required if n not in names]
-          if missing:
-              sys.exit(f"{wheel} does not contain {missing}")
-          PY
-      - name: Install the wheel into a fresh venv and test it from another directory
-        run: |
-          python -m venv "$RUNNER_TEMP/venv"
-          "$RUNNER_TEMP/venv/bin/python" -m pip install dist/*.whl pytest
-          cp -R tests "$RUNNER_TEMP/tests"
-          cd "$RUNNER_TEMP"
-          venv/bin/python -c 'import mower_sdk; print("importing", mower_sdk.__file__)'
-          venv/bin/python -m pytest tests
-      - name: Check the installed wheel's identity, version and license metadata
-        run: |
-          cd "$RUNNER_TEMP"
-          venv/bin/python - <<'PY'
-          import sys
-          from importlib.metadata import distribution
-
-          import mower_sdk
-
-          dist = distribution("navimow-sdk-community")
-          problems = []
-          if dist.metadata["Name"] != "navimow-sdk-community":
-              problems.append(f"Name is {dist.metadata['Name']!r}")
-          if dist.version != mower_sdk.__version__:
-              problems.append(f"version {dist.version!r} != mower_sdk.__version__ {mower_sdk.__version__!r}")
-          if dist.metadata["License-Expression"] != "GPL-3.0-only":
-              problems.append(f"License-Expression is {dist.metadata['License-Expression']!r}")
-          licenses = [
-              path
-              for path in dist.files or []
-              if path.name == "LICENSE"
-              and path.parent.name == "licenses"
-              and path.parent.parent.name.endswith(".dist-info")
-          ]
-          if not licenses:
-              problems.append("dist-info/licenses/LICENSE is not packaged")
-          elif not licenses[0].locate().is_file():
-              problems.append(f"{licenses[0]} is recorded but missing")
-          elif "GNU GENERAL PUBLIC LICENSE" not in licenses[0].read_text()[:200]:
-              problems.append(f"{licenses[0]} is not the GPL text")
-          print(f"{dist.metadata['Name']} {dist.version}, {dist.metadata['License-Expression']}")
-          if problems:
-              sys.exit("wheel metadata: " + "; ".join(problems))
-          PY
+          cache: pip
+          cache-dependency-path: noxfile.py
+      - run: python -m pip install "$NOX"
+      - name: Build, check, install into a fresh venv and test from another directory
+        run: nox -s wheel
 
   ruff:
     name: ruff
@@ -239,8 +105,64 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.14"
-      - run: python -m pip install ruff
+          cache: pip
+          cache-dependency-path: noxfile.py
+      - run: python -m pip install "$NOX"
       # Rule set: [tool.ruff.lint] in pyproject.toml; mower_sdk/legacy/ keeps
       # only the F rules through per-file-ignores. Any finding fails the job.
       - name: ruff check
-        run: ruff check --output-format github .
+        run: nox -s lint -- --output-format github .
+
+  hygiene:
+    name: hygiene
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+      - name: Install pre-commit and gitlint
+        run: python -m pip install pre-commit==4.6.2 gitlint==0.19.1
+      # The hook environments (a Go toolchain building gitleaks and actionlint,
+      # the Python hooks) are built once per configuration, not on every run.
+      - uses: actions/cache@v6
+        with:
+          path: ~/.cache/pre-commit
+          key: pre-commit-${{ runner.os }}-${{ hashFiles('.pre-commit-config.yaml') }}
+      # The commits this run is about: a pull request's own commits, or the
+      # ones a push to main added. Without a usable base (a manual run, a new
+      # branch, a force push) only the whole-tree checks run.
+      - name: Find the base of the range
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          if [ -n "$BASE_REF" ]; then base="origin/$BASE_REF"; else base="$BEFORE"; fi
+          if [ -z "$base" ] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then base=""; fi
+          echo "BASE=$base" >> "$GITHUB_ENV"
+          echo "range: ${base:-none}..HEAD"
+      # Every hook reads every file here, which covers the range's changes
+      # too. A change to a protected path is judged per commit by gitlint's
+      # Legacy-edit rule below (no-protected-changes reads staged changes).
+      - name: Every hook over every file
+        env:
+          GATE_MODE: content
+          # ruff-check: the ruff job checks the tree already.
+          SKIP: ruff-check
+        run: pre-commit run --all-files --show-diff-on-failure
+      - name: The range's commit messages
+        if: env.BASE != ''
+        run: gitlint --commits "$BASE..HEAD"
+      - name: Local paths and untracked names in the range's commit messages
+        if: env.BASE != ''
+        run: |
+          status=0
+          for sha in $(git rev-list --no-merges "$BASE..HEAD"); do
+            git log -1 --format=%B "$sha" > "$RUNNER_TEMP/message"
+            pre-commit run check-message-leaks --hook-stage commit-msg \
+              --commit-msg-filename "$RUNNER_TEMP/message" || { echo "in $sha"; status=1; }
+          done
+          exit "$status"

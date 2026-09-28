@@ -1,0 +1,30 @@
+# Commit-message rules, checked by gitlint: in the commit-msg hook
+# (.pre-commit-config.yaml) and over a pull request's commits in CI
+# (gitlint --commits BASE..HEAD). The repository's own rules are
+# tools/gitlint_rules.py.
+[general]
+contrib=contrib-title-conventional-commits
+extra-path=tools/gitlint_rules.py
+# fixup!, squash! and amend! commits are linted (and fail the subject rule)
+# rather than skipped: they must not reach the repository.
+ignore-fixup-commits=false
+ignore-fixup-amend-commits=false
+ignore-squash-commits=false
+# Revert commits too: git's default 'Revert "..."' subject is reworded to
+# "revert: ...", which needs no body.
+ignore-revert-commits=false
+regex-style-search=true
+
+[title-max-length]
+line-length=110
+
+[body-max-line-length]
+line-length=100
+
+[contrib-title-conventional-commits]
+types=feat,fix,docs,test,refactor,perf,build,ci,chore,style,revert
+
+# Documentation, reverts and release commits may have no body.
+[ignore-by-title]
+regex=^(docs|revert)(\([^)]*\))?!?: |^chore\(release\):
+ignore=body-is-missing,body-min-length
