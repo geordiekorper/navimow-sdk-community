@@ -51,6 +51,22 @@ def test_an_untracked_name_inside_a_longer_tracked_name_is_not_reported(repo: Pa
     assert [f.split(": ")[-1] for f in findings] == ["draft.md"]
 
 
+def test_files_in_a_new_untracked_directory_are_found(repo: Path) -> None:
+    (repo / "drafts").mkdir()
+    (repo / "drafts" / "design-sketch.md").write_text("x", encoding="utf-8")
+    stage(repo, "README.md", "# Test\n\nSee design-sketch.md.\n")
+    assert [f.split(": ")[-1] for f in check_leaks.check_files(["README.md"])] == ["design-sketch.md"]
+
+
+@pytest.mark.parametrize("tool_dir", [".nox", ".tox"])
+def test_test_runner_environments_are_not_scanned(repo: Path, tool_dir: str) -> None:
+    site = repo / tool_dir / "py314" / "lib" / "site-packages" / "somepackage"
+    site.mkdir(parents=True)
+    (site / "vendored_module.py").write_text("x", encoding="utf-8")
+    stage(repo, "README.md", "# Test\n\nSee vendored_module.py.\n")
+    assert check_leaks.check_files(["README.md"]) == []
+
+
 def test_a_short_untracked_name_that_reads_as_a_word_is_ignored(repo: Path) -> None:
     (repo / "notes").write_text("x", encoding="utf-8")
     stage(repo, "README.md", "# Test\n\nRelease notes are available.\n")

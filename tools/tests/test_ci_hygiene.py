@@ -63,18 +63,17 @@ def test_the_steps_run_every_check_in_the_right_mode() -> None:
     whole = STEPS["Every hook over every file"]
     assert whole["env"] == {"GATE_MODE": "content", "SKIP": "no-legacy-edits,no-inventory-edits,ruff-check"}
     assert "--all-files" in whole["run"]
+    # The whole-tree run reads every file, so no second pass over the range's
+    # changes; protected paths are judged per commit by gitlint's trailer rule.
+    assert not any("--from-ref" in step.get("run", "") for step in JOB["steps"])
     ranged = [
-        STEPS["The hooks over the range's changes"],
         STEPS["The range's commit messages"],
         STEPS["Local paths and untracked names in the range's commit messages"],
     ]
     assert all(step["if"] == "env.BASE != ''" for step in ranged)
-    assert '--from-ref "$BASE" --to-ref HEAD' in ranged[0]["run"]
-    # The file-level guards cannot read the Legacy-edit trailer that gitlint checks.
-    assert ranged[0]["env"] == {"SKIP": "no-legacy-edits,no-inventory-edits,no-protected-deletions,ruff-check"}
-    assert 'gitlint --commits "$BASE..HEAD"' in ranged[1]["run"]
-    assert "pre-commit run check-message-leaks" in ranged[2]["run"]
-    assert "--hook-stage commit-msg" in ranged[2]["run"]
+    assert 'gitlint --commits "$BASE..HEAD"' in ranged[0]["run"]
+    assert "pre-commit run check-message-leaks" in ranged[1]["run"]
+    assert "--hook-stage commit-msg" in ranged[1]["run"]
 
 
 def test_the_base_step_takes_its_values_from_the_event() -> None:
