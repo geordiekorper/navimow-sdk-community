@@ -12,10 +12,10 @@ The checks run in three modes, chosen from the environment:
 An optional pattern file adds project-specific rules. It lives outside the
 repository, at ``$COMMIT_GATE_PATTERNS`` or
 ``<git common dir>/commit-gate/patterns.txt``; without it the checks apply the
-generic rules only. Each non-comment line is tab-separated, either
+generic rules only. Each non-comment line is tab-separated:
 ``<scope>\\t<name>\\t<flags>\\t<regex>`` with scope ``files``, ``message`` or
 ``both`` and flags ``-`` or ``notrailers`` (not applied to trailer lines of a
-message), or ``coauthor\\t<exact Co-authored-by value>``.
+message).
 """
 
 from __future__ import annotations
@@ -64,6 +64,16 @@ def tracked_files() -> set[str]:
     return {p for p in git("ls-files", "-z").split("\0") if p}
 
 
+# Code moved verbatim from upstream, and the inventory of upstream's public
+# names: never changed except with a Legacy-edit trailer.
+LEGACY_DIR = "mower_sdk/legacy/"
+INVENTORY = "tests/upstream_exports.json"
+
+
+def is_protected(path: str) -> bool:
+    return path.startswith(LEGACY_DIR) or path == INVENTORY
+
+
 def is_claude() -> bool:
     return os.environ.get("CLAUDECODE") == "1"
 
@@ -84,19 +94,12 @@ class LocalPattern:
     regex: re.Pattern[str]
 
 
-@dataclass
-class LocalRules:
-    patterns: list[LocalPattern]
-    coauthors: list[str]
-    source: Path | None
-
-
 def patterns_file() -> Path:
     override = os.environ.get("COMMIT_GATE_PATTERNS")
     return Path(override) if override else common_dir() / "commit-gate" / "patterns.txt"
 
 
-def load_local_rules() -> LocalRules:
+def load_local_rules() -> list[LocalPattern]:
     """Read the pattern file; a Claude session without it is refused."""
     path = patterns_file()
     if not path.is_file():
@@ -105,21 +108,21 @@ def load_local_rules() -> LocalRules:
                 f"commit checks: the local pattern file {path} is missing; "
                 "Claude commits need it (run `commit-gate provision`)."
             )
-        return LocalRules([], [], None)
-    patterns, coauthors = [], []
+        return []
+    patterns = []
     for number, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
         if not raw.strip() or raw.startswith("#"):
             continue
         fields = raw.split("\t")
-        if fields[0] == "coauthor" and len(fields) == 2:
-            coauthors.append(fields[1])
-        elif fields[0] in ("files", "message", "both") and len(fields) == 4:
+        if fields[0] == "coauthor":
+            raise SystemExit(f"{path}:{number}: coauthor lines are no longer read; remove them")
+        if fields[0] in ("files", "message", "both") and len(fields) == 4:
             patterns.append(
                 LocalPattern(fields[0], fields[1], fields[2] == "notrailers", re.compile(fields[3]))
             )
         else:
             raise SystemExit(f"{path}:{number}: malformed pattern line")
-    return LocalRules(patterns, coauthors, path)
+    return patterns
 
 
 # --- names of files git does not track ---------------------------------------
@@ -253,20 +256,25 @@ def untracked_name_regex() -> re.Pattern[str] | None:
 # --- the local-path pattern ------------------------------------------------
 
 
+def hook(hook_id: str, config: Path | None = None) -> dict:
+    """A hook's definition in .pre-commit-config.yaml (this repository's by default)."""
+    import yaml  # only callers that read the configuration need it
+
+    path = config or repo_root() / ".pre-commit-config.yaml"
+    for repository in yaml.safe_load(path.read_text(encoding="utf-8"))["repos"]:
+        for definition in repository["hooks"]:
+            if definition["id"] == hook_id:
+                return definition
+    raise SystemExit(f"{hook_id} is not defined in {path}")
+
+
 def local_path_pattern() -> re.Pattern[str]:
-    """The no-local-paths pygrep hook's expression, read from .pre-commit-config.yaml.
+    """The no-local-paths pygrep hook's expression.
 
     One definition serves the file hook (pygrep) and the message check, which
     has to read the message as git commits it and so cannot be a pygrep hook.
     """
-    import yaml  # only the message check needs it; the hook installs it
-
-    config = yaml.safe_load((repo_root() / ".pre-commit-config.yaml").read_text(encoding="utf-8"))
-    for repository in config["repos"]:
-        for hook in repository["hooks"]:
-            if hook["id"] == "no-local-paths":
-                return re.compile(hook["entry"])
-    raise SystemExit("no-local-paths is not defined in .pre-commit-config.yaml")
+    return re.compile(hook("no-local-paths")["entry"])
 
 
 # --- which lines to check ----------------------------------------------------
@@ -319,6 +327,12 @@ def _parse_added(diff: str) -> dict[str, list[tuple[int, str]]]:
     return added
 
 
+def _diff_args() -> list[str]:
+    """The git diff of the current mode: between the refs, or the staged change."""
+    refs = range_refs()
+    return ["diff", f"{refs[0]}...{refs[1]}"] if refs else ["diff", "--cached"]
+
+
 def lines_to_check(files: list[str]) -> dict[str, list[tuple[int, str]]]:
     """The lines of ``files`` to inspect in the current mode."""
     if not files:
@@ -332,19 +346,15 @@ def lines_to_check(files: list[str]) -> dict[str, list[tuple[int, str]]]:
                 continue
             result[name] = list(enumerate(text.splitlines(), 1))
         return result
-    refs = range_refs()
-    base = ["diff", f"{refs[0]}...{refs[1]}"] if refs else ["diff", "--cached"]
     diff = git_bytes(
-        *base, "-U0", "--no-color", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/", "--", *files
+        *_diff_args(), "-U0", "--no-color", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/", "--", *files
     )
     return _parse_added(diff.decode("utf-8", "replace"))
 
 
 def changed_files() -> list[tuple[str, str]]:
     """(status, path) of every changed file in the current mode."""
-    refs = range_refs()
-    base = ["diff", f"{refs[0]}...{refs[1]}"] if refs else ["diff", "--cached"]
-    out = git(*base, "--name-status", "--no-renames", "-z")
+    out = git(*_diff_args(), "--name-status", "--no-renames", "-z")
     fields = [f for f in out.split("\0") if f]
     return list(zip(fields[0::2], fields[1::2], strict=True))
 
@@ -355,7 +365,7 @@ def comment_char() -> str:
     return configured if configured and configured != "auto" else "#"
 
 
-def message_lines(text: str, comment: str | None = None) -> list[tuple[int, str]]:
+def message_lines(text: str) -> list[tuple[int, str]]:
     """The lines git commits from a message file, with their line numbers.
 
     Comment lines and everything from the scissors line on (the diff that
@@ -363,7 +373,7 @@ def message_lines(text: str, comment: str | None = None) -> list[tuple[int, str]
     a commit made in the editor: git's own template lists untracked files in
     comment lines, which are not part of the message.
     """
-    comment = comment or comment_char()
+    comment = comment_char()
     lines = []
     for number, line in enumerate(text.splitlines(), 1):
         if line.startswith(f"{comment} {SCISSORS}"):

@@ -78,6 +78,13 @@ def test_local_patterns_apply_by_scope(repo: Path, tmp_path: Path) -> None:
 
 
 @pytest.mark.usefixtures("repo")
+def test_a_retired_coauthor_line_is_refused_with_a_clear_message(tmp_path: Path) -> None:
+    (tmp_path / "patterns.txt").write_text("coauthor\tExample Author <author@example.com>\n", encoding="utf-8")
+    with pytest.raises(SystemExit, match="coauthor lines are no longer read"):
+        check_leaks.check_message("MSG", "docs: x\n")
+
+
+@pytest.mark.usefixtures("repo")
 def test_message_trailers_skip_notrailers_patterns(tmp_path: Path) -> None:
     (tmp_path / "patterns.txt").write_text(
         "message\tauthor-name\tnotrailers\tAlice Example\n", encoding="utf-8"

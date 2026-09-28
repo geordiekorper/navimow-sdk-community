@@ -3,9 +3,7 @@ update credentials in both connection states.
 
 Run by the bounds sessions of noxfile.py, on the oldest and the newest
 allowed aiohttp and paho-mqtt: paho's constructors and setters, and where
-they keep their values, are what could differ between versions. Nothing
-connects: the paho client is told it is connected through a stub, and the
-rebuilt client's connect is stubbed out.
+they keep their values, are what could differ between versions.
 """
 
 import asyncio

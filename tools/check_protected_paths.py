@@ -18,19 +18,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import gatelib  # noqa: E402
 
-LEGACY = "mower_sdk/legacy/"
-INVENTORY = "tests/upstream_exports.json"
-
-
-def _protected(path: str) -> bool:
-    return path.startswith(LEGACY) or path == INVENTORY
-
-
 def check() -> list[str]:
     return [
         f"{path}: protected from edits; deleting or moving it away is refused too"
         for status, path in gatelib.changed_files()
-        if status == "D" and _protected(path)
+        if status == "D" and gatelib.is_protected(path)
     ]
 
 
