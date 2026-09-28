@@ -5,19 +5,30 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 import uuid
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Any
 
+from mower_sdk.errors import MowerUnsupportedOperationError
 from mower_sdk.models import (
     DeviceAttributesMessage,
     DeviceCommandMessage,
     DeviceEventMessage,
     DeviceStateMessage,
 )
-from mower_sdk.mqtt import NavimowMQTT
+from mower_sdk.mqtt import NavimowMQTT, _resolve_event_loop
 
 _LOGGER = logging.getLogger(__name__)
+
+# The REST command that does what each MQTT command was meant to do, for the
+# message of the error that refuses the MQTT command. Blade height has none.
+_REST_ALTERNATIVES: dict[str, str] = {
+    "start_mowing": "MowerCommand.START",
+    "pause": "MowerCommand.PAUSE",
+    "return_to_base": "MowerCommand.DOCK",
+}
 
 
 class NavimowSDK:
@@ -28,6 +39,27 @@ class NavimowSDK:
         - callbacks are invoked from the MQTT thread/event loop context.
           Home Assistant must switch to hass loop via call_soon_threadsafe or
           run_coroutine_threadsafe.
+        - a callback that raises is logged with its traceback and does not
+          stop delivery of the same message to the callbacks after it.
+        - the event loop is ``loop`` if given, else the loop running at
+          construction, else the loop set as current with
+          ``asyncio.set_event_loop()`` at that time, else the same two at the
+          first ``connect()``. A facade constructed and connected with no
+          running or current loop must be given ``loop=``; a callback that
+          arrives while no loop is bound is dropped with a warning.
+        - get_cached_state and get_cached_attributes return the last message
+          seen for a device; get_cached_state_age, get_cached_attributes_age
+          and get_cached_state_received_at say when it arrived, so a consumer
+          can tell a stale cache from a fresh one (the cloud's REST status
+          lags the mower by one to two minutes, so observation times, not
+          receipt order, decide which reading is newer).
+        - start_mowing, pause, return_to_base and set_blade_height publish to
+          the MQTT command topic, which the broker accepts and no mower has
+          been seen to act on. They raise MowerUnsupportedOperationError
+          unless the facade is constructed with
+          allow_experimental_mqtt_commands=True. Start, pause and dock have a
+          supported REST path in MowerAPI.async_send_command; nothing
+          supported sets the blade height.
     """
 
     def __init__(
@@ -43,8 +75,10 @@ class NavimowSDK:
         keepalive_seconds: int = 2400,
         reconnect_min_delay: int = 1,
         reconnect_max_delay: int = 60,
+        allow_experimental_mqtt_commands: bool = False,
     ) -> None:
-        self._loop = loop or asyncio.get_event_loop()
+        self._loop = _resolve_event_loop(loop)
+        self._allow_experimental_mqtt_commands = allow_experimental_mqtt_commands
         self._mqtt = NavimowMQTT(
             broker=broker,
             port=port,
@@ -66,6 +100,12 @@ class NavimowSDK:
 
         self._state_cache: dict[str, DeviceStateMessage] = {}
         self._attributes_cache: dict[str, DeviceAttributesMessage] = {}
+        # When each cached message arrived: time.monotonic() for ages, and the
+        # UTC wall-clock time of the state message for consumers that compare
+        # observation times across sources.
+        self._state_cache_updated_at: dict[str, float] = {}
+        self._attributes_cache_updated_at: dict[str, float] = {}
+        self._state_cache_received_at: dict[str, datetime] = {}
 
     def connect(self) -> None:
         """Connect to MQTT broker and start consuming."""
@@ -83,12 +123,12 @@ class NavimowSDK:
     ) -> None:
         """Update the MQTT credentials.
 
-        Unchanged values are ignored. While connected, changed values are only stored;
-        the live connection is kept on purpose, so hourly OAuth token rotation does not
-        force a disconnect. They reach the broker when the paho client is next rebuilt,
-        which happens on a later call made while disconnected; paho's own automatic
-        reconnect reuses the existing client. While disconnected, changed values rebuild
-        the paho client and start an asynchronous reconnect.
+        Unchanged values are ignored and None means "keep", so a password-only or
+        headers-only update is merged with the stored values. While connected, the
+        merged values are set on the live paho client and the connection is kept on
+        purpose, so hourly OAuth token rotation does not force a disconnect; paho uses
+        them at its next connect, automatic reconnects included. While disconnected,
+        changed values rebuild the paho client and start an asynchronous reconnect.
 
         Used after an OAuth token refresh to update the MQTT WebSocket auth header,
         and to update the MQTT username/password issued by the server.
@@ -113,6 +153,20 @@ class NavimowSDK:
 
     def get_cached_attributes(self, device_id: str) -> DeviceAttributesMessage | None:
         return self._attributes_cache.get(device_id)
+
+    def get_cached_state_age(self, device_id: str) -> float | None:
+        """Seconds since the cached state message for device_id arrived, or None without one."""
+        updated_at = self._state_cache_updated_at.get(device_id)
+        return None if updated_at is None else time.monotonic() - updated_at
+
+    def get_cached_attributes_age(self, device_id: str) -> float | None:
+        """Seconds since the cached attributes message for device_id arrived, or None without one."""
+        updated_at = self._attributes_cache_updated_at.get(device_id)
+        return None if updated_at is None else time.monotonic() - updated_at
+
+    def get_cached_state_received_at(self, device_id: str) -> datetime | None:
+        """The UTC time the cached state message for device_id arrived, or None without one."""
+        return self._state_cache_received_at.get(device_id)
 
     async def _on_mqtt_message(
         self, topic: str, payload: bytes, device_id: str
@@ -139,21 +193,65 @@ class NavimowSDK:
         if channel == "state":
             msg = DeviceStateMessage.from_dict(payload_dict)
             self._state_cache[msg.device_id] = msg
-            for cb in list(self._state_callbacks):
-                cb(msg)
+            self._state_cache_updated_at[msg.device_id] = time.monotonic()
+            self._state_cache_received_at[msg.device_id] = datetime.now(UTC)
+            self._dispatch(self._state_callbacks, msg, channel)
             return
         if channel == "event":
             msg = DeviceEventMessage.from_dict(payload_dict)
-            for cb in list(self._event_callbacks):
-                cb(msg)
+            self._dispatch(self._event_callbacks, msg, channel)
             return
         if channel == "attributes":
             msg = DeviceAttributesMessage.from_dict(payload_dict)
             self._attributes_cache[msg.device_id] = msg
-            for cb in list(self._attributes_callbacks):
-                cb(msg)
+            self._attributes_cache_updated_at[msg.device_id] = time.monotonic()
+            self._dispatch(self._attributes_callbacks, msg, channel)
 
-    def _publish_command(self, message: DeviceCommandMessage) -> None:
+    @staticmethod
+    def _dispatch(callbacks: list[Callable[[Any], None]], message: Any, channel: str) -> None:
+        """Call each callback with the message; one that raises is logged and the rest still run.
+
+        Without this, the exception escaped the task _schedule created, the later
+        callbacks were skipped, and the only trace was asyncio's "Task exception
+        was never retrieved" at loop shutdown or garbage collection.
+        """
+        for callback in list(callbacks):
+            try:
+                callback(message)
+            except Exception:
+                _LOGGER.exception(
+                    "Navimow %s callback %r failed for device %s",
+                    channel,
+                    callback,
+                    message.device_id,
+                )
+
+    def _send_mqtt_command(self, device_id: str, command: str, params: dict[str, Any]) -> None:
+        """Publish a DeviceCommandMessage for device_id, if experimental MQTT commands are allowed.
+
+        Raises:
+            MowerUnsupportedOperationError: unless the facade was constructed with
+                allow_experimental_mqtt_commands=True. Raised before the MQTT
+                client is touched; the message names the supported alternative.
+            RuntimeError: if the MQTT client is not connected. A connect is
+                started first, so a later call can succeed.
+        """
+        if not self._allow_experimental_mqtt_commands:
+            rest_command = _REST_ALTERNATIVES.get(command)
+            alternative = (
+                f"Use MowerAPI.async_send_command(device_id, {rest_command}) over REST instead, or"
+                if rest_command is not None
+                else "No supported call sets the blade height (the REST API has no such command);"
+            )
+            raise MowerUnsupportedOperationError(
+                f"MQTT command {command!r} not sent: NavimowSDK publishes it to "
+                f"navimow/{device_id}/command, a topic the broker accepts and no mower has been "
+                f"seen to act on. {alternative} construct NavimowSDK with "
+                "allow_experimental_mqtt_commands=True to publish anyway."
+            )
+        message = DeviceCommandMessage(
+            id=f"cmd-{uuid.uuid4()}", device_id=device_id, command=command, params=params
+        )
         if not self._mqtt.is_connected:
             self._mqtt.connect_async()
             _LOGGER.error(
@@ -174,41 +272,13 @@ class NavimowSDK:
         return self._mqtt.is_connected
 
     def start_mowing(self, device_id: str) -> None:
-        self._publish_command(
-            DeviceCommandMessage(
-                id=f"cmd-{uuid.uuid4()}",
-                device_id=device_id,
-                command="start_mowing",
-                params={},
-            )
-        )
+        self._send_mqtt_command(device_id, "start_mowing", {})
 
     def pause(self, device_id: str) -> None:
-        self._publish_command(
-            DeviceCommandMessage(
-                id=f"cmd-{uuid.uuid4()}",
-                device_id=device_id,
-                command="pause",
-                params={},
-            )
-        )
+        self._send_mqtt_command(device_id, "pause", {})
 
     def return_to_base(self, device_id: str) -> None:
-        self._publish_command(
-            DeviceCommandMessage(
-                id=f"cmd-{uuid.uuid4()}",
-                device_id=device_id,
-                command="return_to_base",
-                params={},
-            )
-        )
+        self._send_mqtt_command(device_id, "return_to_base", {})
 
     def set_blade_height(self, device_id: str, height: int) -> None:
-        self._publish_command(
-            DeviceCommandMessage(
-                id=f"cmd-{uuid.uuid4()}",
-                device_id=device_id,
-                command="set_blade_height",
-                params={"height": height},
-            )
-        )
+        self._send_mqtt_command(device_id, "set_blade_height", {"height": height})

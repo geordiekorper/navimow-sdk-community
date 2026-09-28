@@ -84,7 +84,7 @@ WRAPPERS = [
         DeviceStatus(
             device_id=DEVICE_ID,
             status=MowerStatus.DOCKED,
-            battery=0,
+            battery=None,
             extra={"vehicleState": "isDocked"},
         ),
         id="get_device_status",

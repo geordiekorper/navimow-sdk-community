@@ -12,15 +12,16 @@ if TYPE_CHECKING:
     from mower_sdk.legacy.errors import COMMAND_ERRORS as COMMAND_ERRORS
     from mower_sdk.legacy.errors import MowerAuthError as MowerAuthError
 
-# The public surface upstream published from this module. MowerAuthError and
-# COMMAND_ERRORS now live in mower_sdk.legacy.errors and are served by
-# __getattr__.
+# The public surface upstream published from this module, plus the community
+# addition MowerUnsupportedOperationError. MowerAuthError and COMMAND_ERRORS now
+# live in mower_sdk.legacy.errors and are served by __getattr__.
 __all__ = [
     "COMMAND_ERRORS",
     "ERROR_MESSAGES",
     "MowerAPIError",
     "MowerAuthError",
     "MowerMQTTError",
+    "MowerUnsupportedOperationError",
 ]
 
 
@@ -76,6 +77,15 @@ class MowerMQTTError(Exception):
         """
         super().__init__(message)
         self.message = message
+
+
+class MowerUnsupportedOperationError(Exception):
+    """Raised when an operation the SDK cannot vouch for is requested without opting in.
+
+    NavimowSDK's MQTT command methods raise it unless the facade was constructed
+    with allow_experimental_mqtt_commands=True. The message names the supported
+    alternative, when one exists.
+    """
 
 
 # Error message dictionary
