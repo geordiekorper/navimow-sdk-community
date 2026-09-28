@@ -2,6 +2,7 @@
 # compatibility test and the legacy quarantine, made permanent. Four jobs:
 #   test    the test suite from the source tree on every supported Python,
 #           plus the core-isolation test with DeprecationWarning as an error
+#           and the commit checks' own tests (tools/tests)
 #   bounds  the oldest and newest allowed aiohttp and paho-mqtt, plus a
 #           construction check outside a loop, under a loop set as current and
 #           inside a running one, and a credential update in both connection
@@ -48,6 +49,12 @@ jobs:
         run: python -m pytest
       - name: Core isolation with DeprecationWarning as an error
         run: python -W error::DeprecationWarning -m pytest tests/test_core_isolation.py
+      # The repository's commit checks (tools/) have their own suite; the
+      # SDK suite (testpaths in pyproject.toml) does not include it.
+      - name: Tests of the commit checks
+        run: |
+          python -m pip install pyyaml
+          python -m pytest tools/tests -q
 
   bounds:
     name: dependency bounds (py${{ matrix.python-version }}, ${{ matrix.label }})
