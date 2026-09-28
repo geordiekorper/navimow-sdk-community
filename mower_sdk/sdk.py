@@ -5,8 +5,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 import uuid
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Any
 
 from mower_sdk.models import (
@@ -34,6 +36,12 @@ class NavimowSDK:
           first ``connect()``. A facade constructed and connected with no
           running or current loop must be given ``loop=``; a callback that
           arrives while no loop is bound is dropped with a warning.
+        - get_cached_state and get_cached_attributes return the last message
+          seen for a device; get_cached_state_age, get_cached_attributes_age
+          and get_cached_state_received_at say when it arrived, so a consumer
+          can tell a stale cache from a fresh one (the cloud's REST status
+          lags the mower by one to two minutes, so observation times, not
+          receipt order, decide which reading is newer).
     """
 
     def __init__(
@@ -72,6 +80,12 @@ class NavimowSDK:
 
         self._state_cache: dict[str, DeviceStateMessage] = {}
         self._attributes_cache: dict[str, DeviceAttributesMessage] = {}
+        # When each cached message arrived: time.monotonic() for ages, and the
+        # UTC wall-clock time of the state message for consumers that compare
+        # observation times across sources.
+        self._state_cache_updated_at: dict[str, float] = {}
+        self._attributes_cache_updated_at: dict[str, float] = {}
+        self._state_cache_received_at: dict[str, datetime] = {}
 
     def connect(self) -> None:
         """Connect to MQTT broker and start consuming."""
@@ -120,6 +134,20 @@ class NavimowSDK:
     def get_cached_attributes(self, device_id: str) -> DeviceAttributesMessage | None:
         return self._attributes_cache.get(device_id)
 
+    def get_cached_state_age(self, device_id: str) -> float | None:
+        """Seconds since the cached state message for device_id arrived, or None without one."""
+        updated_at = self._state_cache_updated_at.get(device_id)
+        return None if updated_at is None else time.monotonic() - updated_at
+
+    def get_cached_attributes_age(self, device_id: str) -> float | None:
+        """Seconds since the cached attributes message for device_id arrived, or None without one."""
+        updated_at = self._attributes_cache_updated_at.get(device_id)
+        return None if updated_at is None else time.monotonic() - updated_at
+
+    def get_cached_state_received_at(self, device_id: str) -> datetime | None:
+        """The UTC time the cached state message for device_id arrived, or None without one."""
+        return self._state_cache_received_at.get(device_id)
+
     async def _on_mqtt_message(
         self, topic: str, payload: bytes, device_id: str
     ) -> None:
@@ -145,6 +173,8 @@ class NavimowSDK:
         if channel == "state":
             msg = DeviceStateMessage.from_dict(payload_dict)
             self._state_cache[msg.device_id] = msg
+            self._state_cache_updated_at[msg.device_id] = time.monotonic()
+            self._state_cache_received_at[msg.device_id] = datetime.now(UTC)
             for cb in list(self._state_callbacks):
                 cb(msg)
             return
@@ -156,6 +186,7 @@ class NavimowSDK:
         if channel == "attributes":
             msg = DeviceAttributesMessage.from_dict(payload_dict)
             self._attributes_cache[msg.device_id] = msg
+            self._attributes_cache_updated_at[msg.device_id] = time.monotonic()
             for cb in list(self._attributes_callbacks):
                 cb(msg)
 
