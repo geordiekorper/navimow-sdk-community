@@ -1,0 +1,148 @@
+"""The repository's own commit-message rules, as gitlint user rules.
+
+gitlint's built-in and contrib rules cover the subject and body format
+(see .gitlint); these cover what is specific to this repository.
+"""
+
+from __future__ import annotations
+
+import re
+import subprocess
+
+from gitlint.rules import CommitRule, RuleViolation
+
+_TYPE = re.compile(r"^(\w+)(?:\([^)]*\))?!?: ")
+_KIND = re.compile(r"^(?:Upstream-suitable\.|Community-only\.|Fork-only[.:])(?:\s|$)")
+_TRAILER = re.compile(r"^[A-Za-z][A-Za-z0-9-]*: \S")
+_CO_AUTHOR = re.compile(r"^Co-authored-by: ", re.IGNORECASE)
+_ASSISTANT = re.compile(r"^Co-Authored-By: Claude\b", re.IGNORECASE)
+_LABEL_SUFFIX = re.compile(r"\s\((?:[A-Z]{1,2}\d{1,2}(?:[-.]\d+)?|P\d+-C\d+|[A-Z]\d+(?:, ?[A-Z]\d+)+)\)$")
+
+
+def _trailer_start(body: list[str]) -> int:
+    """Index in ``body`` of the trailer block (the last paragraph, all trailers)."""
+    end = len(body)
+    while end and not body[end - 1].strip():
+        end -= 1
+    start = end
+    while start and body[start - 1].strip():
+        start -= 1
+    block = body[start:end]
+    if start and block and all(_TRAILER.match(line) for line in block):
+        return start
+    return len(body)
+
+
+def _trailers(commit) -> list[str]:
+    body = commit.message.body
+    return [line for line in body[_trailer_start(body):] if line.strip()]
+
+
+def _diff(commit, path: str) -> str:
+    """The change to ``path``: the staged one, or the commit's own when linting a range."""
+    args = ["git", "diff", "--cached", "--", path]
+    if commit.sha:
+        args = ["git", "show", "--format=", commit.sha, "--", path]
+    return subprocess.run(
+        args, cwd=commit.context.repository_path, capture_output=True, text=True, check=False
+    ).stdout
+
+
+class NoTrackerTrailer(CommitRule):
+    """No Refs: trailer: the message carries no tracker ids."""
+
+    name = "no-tracker-trailer"
+    id = "UC1"
+
+    def validate(self, commit):
+        return [
+            RuleViolation(self.id, "commit messages carry no tracker ids (no Refs: trailer)", line, number)
+            for number, line in enumerate(commit.message.body, 2)
+            if re.match(r"^Refs?:", line, re.IGNORECASE)
+        ]
+
+
+class NoPlanningLabel(CommitRule):
+    """The subject does not end with a parenthesised label (a letter and a number)."""
+
+    name = "no-planning-label"
+    id = "UC2"
+
+    def validate(self, commit):
+        if _LABEL_SUFFIX.search(commit.message.title):
+            return [RuleViolation(self.id, "subject ends with a parenthesised label", commit.message.title, 1)]
+        return []
+
+
+class KindLine(CommitRule):
+    """A code change says whether it suits upstream."""
+
+    name = "kind-line"
+    id = "UC3"
+
+    def validate(self, commit):
+        kind = _TYPE.match(commit.message.title)
+        if not kind or kind.group(1) not in ("feat", "fix", "perf", "refactor"):
+            return []
+        if not any(path.startswith("mower_sdk/") for path in commit.changed_files):
+            return []
+        if any(_KIND.match(line) for line in commit.message.body):
+            return []
+        return [RuleViolation(
+            self.id, "a change to mower_sdk/ needs its kind sentence: 'Upstream-suitable.' or 'Community-only.'",
+            None, 1,
+        )]
+
+
+class TrailerOrder(CommitRule):
+    """Co-author lines are trailers, and the assistant attribution is the last one."""
+
+    name = "trailer-order"
+    id = "UC4"
+
+    def validate(self, commit):
+        body = commit.message.body
+        start = _trailer_start(body)
+        violations = [
+            RuleViolation(self.id, "co-author lines belong in the trailer block at the end", line, number)
+            for number, line in enumerate(body[:start], 2)
+            if _CO_AUTHOR.match(line)
+        ]
+        trailers = _trailers(commit)
+        assistant = [i for i, line in enumerate(trailers) if _ASSISTANT.match(line)]
+        if assistant and assistant[-1] != len(trailers) - 1:
+            violations.append(RuleViolation(self.id, "the assistant attribution must be the last trailer"))
+        return violations
+
+
+class VersionInRelease(CommitRule):
+    """__version__ changes only in a release commit that also updates the changelog."""
+
+    name = "version-in-release"
+    id = "UC5"
+
+    def validate(self, commit):
+        if "mower_sdk/__init__.py" not in commit.changed_files:
+            return []
+        if not any(line.startswith("+__version__") for line in _diff(commit, "mower_sdk/__init__.py").splitlines()):
+            return []
+        if commit.message.title.startswith("chore(release)") and "CHANGELOG.md" in commit.changed_files:
+            return []
+        return [RuleViolation(
+            self.id, "__version__ changes only in a chore(release) commit that also updates CHANGELOG.md", None, 1,
+        )]
+
+
+class ForkAuthorProvenance(CommitRule):
+    """Crediting a fork author means recording the origin in UPSTREAM.md."""
+
+    name = "fork-author-provenance"
+    id = "UC6"
+
+    def validate(self, commit):
+        credited = [line for line in _trailers(commit) if _CO_AUTHOR.match(line) and not _ASSISTANT.match(line)]
+        if credited and "UPSTREAM.md" not in commit.changed_files:
+            return [RuleViolation(
+                self.id, "a fork author is credited but UPSTREAM.md does not record the origin", credited[0],
+            )]
+        return []
