@@ -16,9 +16,12 @@ from mower_sdk.api import MowerAPI
 from mower_sdk.errors import (
     MowerAPIError,
     MowerMQTTError,
+    MowerUnsupportedOperationError,
     ERROR_MESSAGES,
 )
 from mower_sdk.models import (
+    CommandReceipt,
+    CommandVerdict,
     Device,
     DeviceAttributesMessage,
     DeviceCommandMessage,
@@ -64,6 +67,8 @@ __all__ = [
     "StateManager",
     "DataEvent",
     # Data models
+    "CommandReceipt",
+    "CommandVerdict",
     "Device",
     "DeviceStateMessage",
     "DeviceEventMessage",
@@ -79,6 +84,7 @@ __all__ = [
     # Exceptions
     "MowerAPIError",
     "MowerMQTTError",
+    "MowerUnsupportedOperationError",
     "ERROR_MESSAGES",
     "COMMAND_ERRORS",
 ]

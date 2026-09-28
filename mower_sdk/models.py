@@ -4,8 +4,9 @@ Defines every data model the SDK uses: enums and dataclasses.
 """
 
 import importlib
-from dataclasses import dataclass
-from enum import Enum
+import math
+from dataclasses import dataclass, field
+from enum import Enum, StrEnum
 from typing import TYPE_CHECKING, Any
 
 from mower_sdk._deprecation import warn_legacy
@@ -18,10 +19,12 @@ if TYPE_CHECKING:
         ThingStatusMessage as ThingStatusMessage,
     )
 
-# The public surface upstream published from this module. The four Thing*
-# classes now live in mower_sdk.legacy.thing_models and are served by
-# __getattr__.
+# The public surface upstream published from this module, plus the community
+# additions CommandReceipt and CommandVerdict. The four Thing* classes now live
+# in mower_sdk.legacy.thing_models and are served by __getattr__.
 __all__ = [
+    "CommandReceipt",
+    "CommandVerdict",
     "Device",
     "DeviceAttributesMessage",
     "DeviceCommandMessage",
@@ -74,6 +77,19 @@ def _raw_state(data: dict[str, Any], keys: tuple[str, ...]) -> Any:
     return value
 
 
+def _first_present(data: dict[str, Any], keys: tuple[str, ...], default: Any) -> Any:
+    """Return the value under the first key present in data, else the default.
+
+    Presence, not truth, decides: an explicit empty or None value under an
+    earlier key is returned as it is, and a later key is read only when the
+    earlier ones are absent.
+    """
+    for key in keys:
+        if key in data:
+            return data[key]
+    return default
+
+
 def _normalize_state_value(raw_state: Any) -> str:
     """Normalize cloud/raw mower state to canonical internal state value."""
     if isinstance(raw_state, MowerStatus):
@@ -83,38 +99,49 @@ def _normalize_state_value(raw_state: Any) -> str:
     return _RAW_STATE_TO_CANONICAL.get(raw_state, raw_state)
 
 
-def _extract_battery_value(data: dict[str, Any]) -> int:
-    """Extract battery percentage from multiple payload formats."""
-    def _to_int_or_none(value: Any) -> int | None:
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            return None
+def _int(value: Any) -> int | None:
+    """int() that refuses bools and non-finite floats (JSON allows Infinity and NaN).
 
-    # MQTT state payload commonly carries direct battery field.
-    battery = _to_int_or_none(data.get("battery"))
-    if battery is not None:
-        return battery
+    None for anything int() cannot read, a bool, a non-finite float or a value
+    too large to convert.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
 
-    # HTTP getVehicleStatus payload uses capacityRemaining[].rawValue.
-    capacity_remaining = data.get("capacityRemaining")
-    if isinstance(capacity_remaining, list):
-        for item in capacity_remaining:
-            if not isinstance(item, dict):
+
+def _extract_battery_value(data: dict[str, Any]) -> int | None:
+    """Read the battery percentage from a REST status or an MQTT state payload.
+
+    The ``capacityRemaining`` entry whose ``unit`` is PERCENTAGE (compared
+    upper-cased) comes first, then any ``capacityRemaining`` entry whose
+    ``rawValue`` parses, then the plain ``battery`` field. Each value goes
+    through ``_int``, so None is returned when the payload carries no readable
+    value: both keys missing, an unparsable or non-numeric value, a bool, a
+    non-finite float. Out-of-range numbers pass through unchanged. One reader
+    for both payload shapes.
+    """
+    capacity = data.get("capacityRemaining")
+    if isinstance(capacity, list):
+        for entry in capacity:
+            if not isinstance(entry, dict):
                 continue
-            unit = str(item.get("unit", "")).upper()
-            if unit == "PERCENTAGE":
-                raw_value = _to_int_or_none(item.get("rawValue"))
-                if raw_value is not None:
-                    return raw_value
-
-        # Compatibility fallback: if PERCENTAGE unit missing, try first item.
-        if capacity_remaining and isinstance(capacity_remaining[0], dict):
-            raw_value = _to_int_or_none(capacity_remaining[0].get("rawValue"))
-            if raw_value is not None:
-                return raw_value
-
-    return 0
+            if str(entry.get("unit", "")).upper() != "PERCENTAGE":
+                continue
+            value = _int(entry.get("rawValue"))
+            if value is not None:
+                return value
+        for entry in capacity:
+            if isinstance(entry, dict):
+                value = _int(entry.get("rawValue"))
+                if value is not None:
+                    return value
+    return _int(data.get("battery"))
 
 
 class MowerStatus(Enum):
@@ -154,6 +181,60 @@ class MowerError(Enum):
     UNKNOWN = "unknown"  # Unknown error
 
 
+class CommandVerdict(StrEnum):
+    """The cloud's verdict on a submitted command, read from the reply's command results.
+
+    ACCEPTED: a result said SUCCESS and none said alreadyInState. The cloud
+    accepted the command; it does not mean the mower acted. Pause and resume
+    settle within about 30 seconds, docking can take minutes; poll the status
+    for the target state.
+    ALREADY_IN_STATE: a result was an ERROR with errorCode alreadyInState, so
+    the mower was already in the requested state. It wins over SUCCESS.
+    UNKNOWN: no result said either, an empty result list included.
+    """
+
+    ACCEPTED = "accepted"
+    ALREADY_IN_STATE = "already_in_state"
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class CommandReceipt:
+    """What the cloud replied to one command, classified.
+
+    Returned by MowerAPI.async_send_command_receipt. No receipt exists for a
+    command the cloud refused (MowerAPIError) or that got no reply
+    (MowerAPIError with the transport error or TimeoutError as its cause; the
+    cloud may still have accepted it).
+
+    Attributes:
+        device_id: The device the command was sent to
+        command: The command sent
+        verdict: The cloud's verdict, a CommandVerdict
+        command_number: The reply's command number, when it carried one under
+            a recognised key (cmdNum and its spellings); None otherwise. No
+            captured reply carries one, and where it would come from is
+            undocumented.
+        results: The per-command result dicts from the reply, as a tuple. Left
+            out of the hash the frozen dataclass derives from its fields, since
+            dicts are unhashable; equality still compares it.
+    """
+
+    device_id: str
+    command: MowerCommand
+    verdict: CommandVerdict
+    command_number: str | None = None
+    results: tuple[dict[str, Any], ...] = field(default=(), hash=False)
+
+    @property
+    def accepted(self) -> bool:
+        return self.verdict is CommandVerdict.ACCEPTED
+
+    @property
+    def already_in_state(self) -> bool:
+        return self.verdict is CommandVerdict.ALREADY_IN_STATE
+
+
 @dataclass
 class Device:
     """Device information.
@@ -185,6 +266,16 @@ class Device:
     def from_dict(cls, data: dict[str, Any]) -> "Device":
         """Create a Device from a dictionary.
 
+        The snake_case keys the model defines are read first. When one is
+        absent, and only then, its camelCase spelling is read instead:
+        ``deviceModel``, ``firmwareVersion``, ``serialNumber``, ``macAddress``
+        and ``isOnline``; an explicit empty or None snake_case value is kept.
+        ``firmware_version`` has one more source: ``firmware_version`` if
+        present, else ``firmware``, the key the device-list reply of an X430
+        carries, else ``firmwareVersion``. ``product_key``, ``device_name``
+        and ``iot_id`` take the first truthy value of their camelCase key,
+        their snake_case key and, for the last two, ``name`` and ``id``.
+
         Args:
             data: Dictionary holding the device information
 
@@ -198,11 +289,13 @@ class Device:
         return cls(
             id=data.get("id", ""),
             name=data.get("name", ""),
-            model=data.get("model", ""),
-            firmware_version=data.get("firmware_version", ""),
-            serial_number=data.get("serial_number", ""),
-            mac_address=data.get("mac_address"),
-            online=data.get("online", False),
+            model=_first_present(data, ("model", "deviceModel"), ""),
+            firmware_version=_first_present(
+                data, ("firmware_version", "firmware", "firmwareVersion"), ""
+            ),
+            serial_number=_first_present(data, ("serial_number", "serialNumber"), ""),
+            mac_address=_first_present(data, ("mac_address", "macAddress"), None),
+            online=_first_present(data, ("online", "isOnline"), False),
             extra=data.get("extra"),
             product_key=product_key,
             device_name=device_name,
@@ -243,7 +336,9 @@ class DeviceStatus:
     Attributes:
         device_id: Device ID
         status: Device status (a MowerStatus value)
-        battery: Battery level (0-100)
+        battery: Battery level in percent, or None when the payload carried no
+            readable value; out-of-range numbers pass through. to_dict emits
+            the None.
         position: Position (optional, as {"lat": float, "lng": float})
         error_code: Error code (a MowerError value)
         error_message: Error message (optional)
@@ -256,7 +351,7 @@ class DeviceStatus:
 
     device_id: str
     status: MowerStatus
-    battery: int
+    battery: int | None
     position: dict[str, float] | None = None
     error_code: MowerError = MowerError.NONE
     error_message: str | None = None

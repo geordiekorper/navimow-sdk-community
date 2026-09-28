@@ -11,7 +11,86 @@ from typing import Any
 import aiohttp
 
 from mower_sdk.errors import MowerAPIError, ERROR_MESSAGES
-from mower_sdk.models import Device, DeviceStatus, MowerCommand
+from mower_sdk.models import CommandReceipt, CommandVerdict, Device, DeviceStatus, MowerCommand
+
+# The spellings under which a reply might carry its command number.
+_COMMAND_NUMBER_KEYS = (
+    "cmdNum",
+    "cmd_num",
+    "commandNum",
+    "command_num",
+    "commandNumber",
+    "command_number",
+)
+
+
+def _scalar_command_number(value: Any) -> str | None:
+    """A str or int (not a bool) as a non-empty stripped string, else None."""
+    if isinstance(value, bool) or not isinstance(value, (str, int)):
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _extract_command_number(value: Any) -> str | None:
+    """Return the command number a reply carries under a recognised key, else None.
+
+    Looks for cmdNum, cmd_num, commandNum, command_num, commandNumber and
+    command_number in a dict, recursing into dict values and into list elements
+    that are dicts. A scalar is read only from one of those keys; a bare scalar
+    met in a list (a warning text, a device id) is never taken. Where cmdNum
+    comes from is undocumented and no captured reply carries one, so this is
+    None in practice.
+    """
+    if isinstance(value, dict):
+        for key in _COMMAND_NUMBER_KEYS:
+            if key in value:
+                found = _scalar_command_number(value[key])
+                if found is not None:
+                    return found
+        for nested in value.values():
+            if isinstance(nested, (dict, list)):
+                found = _extract_command_number(nested)
+                if found is not None:
+                    return found
+    elif isinstance(value, list):
+        for element in value:
+            if isinstance(element, dict):
+                found = _extract_command_number(element)
+                if found is not None:
+                    return found
+    return None
+
+
+def _command_results(data: dict[str, Any]) -> list[dict[str, Any]]:
+    """The dict entries of data.payload.commands, else an empty list.
+
+    A payload or commands that is missing, null or not the expected type, and
+    list entries that are not dicts, give fewer results rather than a TypeError
+    or AttributeError; what is left decides the ERROR check and the verdict.
+    """
+    payload = data.get("payload")
+    results = payload.get("commands") if isinstance(payload, dict) else None
+    if not isinstance(results, list):
+        return []
+    return [result for result in results if isinstance(result, dict)]
+
+
+def _classify_command_results(results: list[dict[str, Any]]) -> CommandVerdict:
+    """The cloud's verdict on a command, from the result dicts _command_results read.
+
+    An ERROR with errorCode alreadyInState gives ALREADY_IN_STATE and wins over
+    SUCCESS; SUCCESS gives ACCEPTED while nothing else has been seen; anything
+    else, an empty list included, gives UNKNOWN. Any other ERROR never reaches
+    this function: MowerAPI raises on it.
+    """
+    verdict = CommandVerdict.UNKNOWN
+    for result in results:
+        if result.get("status") == "ERROR" and result.get("errorCode") == "alreadyInState":
+            verdict = CommandVerdict.ALREADY_IN_STATE
+        elif result.get("status") == "SUCCESS" and verdict is CommandVerdict.UNKNOWN:
+            verdict = CommandVerdict.ACCEPTED
+    return verdict
 
 
 def _warn_sync_wrapper(name: str) -> None:
@@ -33,23 +112,41 @@ class MowerAPI:
     counterpart in asyncio.run, so it cannot run inside a running event loop,
     and it emits a DeprecationWarning when called.
 
+    Every request is bounded by request_timeout, 20 seconds in total by
+    default, and a request that times out raises MowerAPIError like any other
+    failed request. Pass request_timeout=None to leave the session's own
+    timeout policy in force instead.
+
     Attributes:
         base_url: API base URL
         session: aiohttp session (asynchronous)
         token: Access token
     """
 
-    def __init__(self, session: aiohttp.ClientSession, token: str, base_url: str):
+    def __init__(
+        self,
+        session: aiohttp.ClientSession,
+        token: str,
+        base_url: str,
+        request_timeout: float | None = 20.0,
+    ):
         """Initialize the API client.
 
         Args:
             session: aiohttp session
             token: Access token
             base_url: API base URL
+            request_timeout: Total seconds allowed for each request, passed to
+                aiohttp as ClientTimeout(total=request_timeout). None passes no
+                timeout, so the session's own policy applies (a bare aiohttp
+                session allows 300 seconds in total).
         """
         self.base_url = base_url.rstrip("/")
         self._session = session
         self._token = token
+        self._request_timeout = (
+            aiohttp.ClientTimeout(total=request_timeout) if request_timeout is not None else None
+        )
 
     def set_token(self, token: str) -> None:
         """Update the access token."""
@@ -84,16 +181,20 @@ class MowerAPI:
             Response JSON data
 
         Raises:
-            MowerAPIError: If the request fails
+            MowerAPIError: If the request fails or times out. The aiohttp
+                error or TimeoutError that caused it is its __cause__.
         """
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
         headers = self._get_auth_headers()
         headers["requestId"] = str(uuid.uuid4())
+        request_options: dict[str, Any] = {}
+        if self._request_timeout is not None:
+            request_options["timeout"] = self._request_timeout
 
         try:
             session = self._session
             async with session.request(
-                method, url, json=data, params=params, headers=headers
+                method, url, json=data, params=params, headers=headers, **request_options
             ) as response:
                 if response.status >= 400:
                     error_text = await response.text()
@@ -103,9 +204,12 @@ class MowerAPI:
                     )
 
                 return await response.json()
-        except aiohttp.ClientError as e:
+        except (TimeoutError, aiohttp.ClientError) as e:
+            # asyncio.TimeoutError is TimeoutError from Python 3.11, and aiohttp
+            # raises it when a ClientTimeout expires. A TimeoutError carries no
+            # text, so its class name stands in.
             raise MowerAPIError(
-                f"{ERROR_MESSAGES['API_REQUEST_FAILED']}: {str(e)}"
+                f"{ERROR_MESSAGES['API_REQUEST_FAILED']}: {str(e) or type(e).__name__}"
             ) from e
 
     @staticmethod
@@ -254,20 +358,23 @@ class MowerAPI:
         _warn_sync_wrapper("get_device_status")
         return asyncio.run(self.async_get_device_status(device_id))
 
-    async def async_send_command(
+    async def _async_send_command(
         self, device_id: str, command: MowerCommand
-    ) -> dict[str, Any]:
-        """Send a control command asynchronously.
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        """Send a control command and return the reply's data with the command results inspected.
 
         Args:
             device_id: Device ID
             command: Control command
 
         Returns:
-            Command execution result
+            The reply's data unchanged, and the dict entries of
+            data.payload.commands, the per-command results the ERROR check ran
+            over (an empty list when the reply has none)
 
         Raises:
-            MowerAPIError: If the request fails or the command fails
+            MowerAPIError: If the request fails or the command fails; an ERROR
+                result with errorCode alreadyInState is not a failure
         """
         command_mapping: dict[MowerCommand, tuple[str, dict[str, Any] | None]] = {
             MowerCommand.START: (
@@ -308,8 +415,7 @@ class MowerAPI:
             },
         )
         data = self._unwrap(response)
-        payload = data.get("payload", {})
-        command_results = payload.get("commands", [])
+        command_results = _command_results(data)
         for result in command_results:
             if result.get("status") == "ERROR":
                 error_code = result.get("errorCode") or "COMMAND_FAILED"
@@ -320,7 +426,64 @@ class MowerAPI:
                     f"{ERROR_MESSAGES['COMMAND_FAILED']}: {error_code}",
                     error_code=error_code,
                 )
+        return data, command_results
+
+    async def async_send_command(
+        self, device_id: str, command: MowerCommand
+    ) -> dict[str, Any]:
+        """Send a control command asynchronously.
+
+        Args:
+            device_id: Device ID
+            command: Control command
+
+        Returns:
+            Command execution result: the reply's data, unchanged
+
+        Raises:
+            MowerAPIError: If the request fails or the command fails
+        """
+        data, _results = await self._async_send_command(device_id, command)
         return data
+
+    async def async_send_command_receipt(
+        self, device_id: str, command: MowerCommand
+    ) -> CommandReceipt:
+        """Send a control command asynchronously and classify the reply.
+
+        The verdict comes from data.payload.commands: an ERROR result with
+        errorCode alreadyInState gives ALREADY_IN_STATE and wins over SUCCESS;
+        a SUCCESS result gives ACCEPTED; anything else, an empty list included,
+        gives UNKNOWN. ACCEPTED means the cloud accepted the command, not that
+        the mower acted: pause and resume settle within about 30 seconds and
+        docking can take minutes, so poll the status for the target state.
+        command_number is the cmdNum the reply carries under a recognised key,
+        if any; no captured reply does.
+
+        Two cases return no receipt. Any other ERROR result raises MowerAPIError
+        exactly as async_send_command does: the cloud refused the command. A
+        transport failure or timeout raises MowerAPIError with the aiohttp error
+        or TimeoutError as its cause: no reply came back, and the cloud may
+        still have accepted the command.
+
+        Args:
+            device_id: Device ID
+            command: Control command
+
+        Returns:
+            A CommandReceipt
+
+        Raises:
+            MowerAPIError: If the request fails or the command fails
+        """
+        data, results = await self._async_send_command(device_id, command)
+        return CommandReceipt(
+            device_id=device_id,
+            command=command,
+            verdict=_classify_command_results(results),
+            command_number=_extract_command_number(data),
+            results=tuple(results),
+        )
 
     def send_command(
         self, device_id: str, command: MowerCommand
@@ -375,3 +538,37 @@ class MowerAPI:
         """
         _warn_sync_wrapper("query_command_results")
         return asyncio.run(self.async_query_command_results(devices))
+
+    async def async_get_command_result(
+        self, device_id: str, cmd_num: str | None = None
+    ) -> dict[str, Any] | None:
+        """Query the command execution result of one device asynchronously.
+
+        Wraps async_query_command_results for the single-device case. The query
+        is {"id": device_id}, with cmdNum added only when cmd_num is given.
+        Returns the reply entry whose id equals device_id, or None when the
+        reply has none; an entry without an id never matches.
+
+        The endpoint is known from this SDK's code only: no cited capture shows
+        a reply, so its shape is unconfirmed, and where a cmdNum would come from
+        is undocumented (no captured sendCommands reply carries one; see
+        CommandReceipt.command_number).
+
+        Args:
+            device_id: Device ID
+            cmd_num: Command number to query a specific command (optional)
+
+        Returns:
+            The device's result entry, or None
+
+        Raises:
+            MowerAPIError: If the request fails
+        """
+        query: dict[str, str] = {"id": device_id}
+        if cmd_num is not None:
+            query["cmdNum"] = cmd_num
+        results = await self.async_query_command_results([query])
+        for entry in results:
+            if isinstance(entry, dict) and entry.get("id") == device_id:
+                return entry
+        return None
