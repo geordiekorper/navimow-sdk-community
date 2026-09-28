@@ -11,11 +11,10 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from conftest import run, stage
+from conftest import WORKFLOW, run, stage
 
 yaml = pytest.importorskip("yaml")
 
-WORKFLOW = Path(__file__).resolve().parents[2] / ".github" / "workflows" / "ci.yml"
 JOB = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"]["hygiene"]
 STEPS = {step.get("name"): step for step in JOB["steps"]}
 

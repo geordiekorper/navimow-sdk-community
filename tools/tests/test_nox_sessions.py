@@ -18,11 +18,11 @@ import tomllib
 from pathlib import Path
 
 import pytest
+from conftest import CONFIG, ROOT, WORKFLOW
 
 nox = pytest.importorskip("nox")
 yaml = pytest.importorskip("yaml")
 
-ROOT = Path(__file__).resolve().parents[2]
 
 
 @functools.cache
@@ -34,16 +34,17 @@ def _noxfile():
     return module
 
 
-def _session_names(noxfile: Path = ROOT / "noxfile.py") -> set[str]:
+@functools.cache
+def _session_names(noxfile: Path = ROOT / "noxfile.py") -> frozenset[str]:
     """The sessions nox itself discovers in a noxfile (nox --list --json)."""
     proc = subprocess.run([sys.executable, "-m", "nox", "--list", "--json", "-f", str(noxfile)],
                           capture_output=True, text=True, check=True, cwd=ROOT)
-    return {session["session"] for session in json.loads(proc.stdout)}
+    return frozenset(session["session"] for session in json.loads(proc.stdout))
 
 
 def _ci_session_calls() -> list[str]:
     """The sessions ci.yml runs, with each job's matrix values filled in."""
-    jobs = yaml.safe_load((ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8"))["jobs"]
+    jobs = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"]
     calls = []
     for job in jobs.values():
         matrix = (job.get("strategy") or {}).get("matrix") or {}
@@ -88,8 +89,12 @@ def test_the_oldest_bound_is_pyprojects_floor() -> None:
 
 
 def test_tool_versions_match_the_pre_commit_hooks() -> None:
-    config = yaml.safe_load((ROOT / ".pre-commit-config.yaml").read_text(encoding="utf-8"))
+    config = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
     revs = {repo["repo"].rsplit("/", 1)[-1]: repo.get("rev", "") for repo in config["repos"]}
     noxfile = _noxfile()
     assert "ruff==" + revs["ruff-pre-commit"].lstrip("v") == noxfile.RUFF
     assert "gitlint==" + revs["gitlint"].lstrip("v") == noxfile.GITLINT
+    # The hygiene job installs gitlint itself; the same version.
+    install = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"]["hygiene"]["steps"]
+    pins = [word for step in install for word in step.get("run", "").split() if word.startswith("gitlint==")]
+    assert pins == [noxfile.GITLINT]
