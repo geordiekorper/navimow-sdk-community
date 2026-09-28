@@ -33,23 +33,41 @@ class MowerAPI:
     counterpart in asyncio.run, so it cannot run inside a running event loop,
     and it emits a DeprecationWarning when called.
 
+    Every request is bounded by request_timeout, 20 seconds in total by
+    default, and a request that times out raises MowerAPIError like any other
+    failed request. Pass request_timeout=None to leave the session's own
+    timeout policy in force instead.
+
     Attributes:
         base_url: API base URL
         session: aiohttp session (asynchronous)
         token: Access token
     """
 
-    def __init__(self, session: aiohttp.ClientSession, token: str, base_url: str):
+    def __init__(
+        self,
+        session: aiohttp.ClientSession,
+        token: str,
+        base_url: str,
+        request_timeout: float | None = 20.0,
+    ):
         """Initialize the API client.
 
         Args:
             session: aiohttp session
             token: Access token
             base_url: API base URL
+            request_timeout: Total seconds allowed for each request, passed to
+                aiohttp as ClientTimeout(total=request_timeout). None passes no
+                timeout, so the session's own policy applies (a bare aiohttp
+                session allows 300 seconds in total).
         """
         self.base_url = base_url.rstrip("/")
         self._session = session
         self._token = token
+        self._request_timeout = (
+            aiohttp.ClientTimeout(total=request_timeout) if request_timeout is not None else None
+        )
 
     def set_token(self, token: str) -> None:
         """Update the access token."""
@@ -84,16 +102,20 @@ class MowerAPI:
             Response JSON data
 
         Raises:
-            MowerAPIError: If the request fails
+            MowerAPIError: If the request fails or times out. The aiohttp
+                error or TimeoutError that caused it is its __cause__.
         """
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
         headers = self._get_auth_headers()
         headers["requestId"] = str(uuid.uuid4())
+        request_options: dict[str, Any] = {}
+        if self._request_timeout is not None:
+            request_options["timeout"] = self._request_timeout
 
         try:
             session = self._session
             async with session.request(
-                method, url, json=data, params=params, headers=headers
+                method, url, json=data, params=params, headers=headers, **request_options
             ) as response:
                 if response.status >= 400:
                     error_text = await response.text()
@@ -103,9 +125,12 @@ class MowerAPI:
                     )
 
                 return await response.json()
-        except aiohttp.ClientError as e:
+        except (TimeoutError, aiohttp.ClientError) as e:
+            # asyncio.TimeoutError is TimeoutError from Python 3.11, and aiohttp
+            # raises it when a ClientTimeout expires. A TimeoutError carries no
+            # text, so its class name stands in.
             raise MowerAPIError(
-                f"{ERROR_MESSAGES['API_REQUEST_FAILED']}: {str(e)}"
+                f"{ERROR_MESSAGES['API_REQUEST_FAILED']}: {str(e) or type(e).__name__}"
             ) from e
 
     @staticmethod
