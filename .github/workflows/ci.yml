@@ -53,7 +53,7 @@ jobs:
       # SDK suite (testpaths in pyproject.toml) does not include it.
       - name: Tests of the commit checks
         run: |
-          python -m pip install pyyaml
+          python -m pip install pyyaml gitlint==0.19.1
           python -m pytest tools/tests -q
 
   bounds:

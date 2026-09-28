@@ -1,9 +1,10 @@
-# Checks run before a commit. Install the hooks with:
+# Checks run before a commit and on its message. Install the hooks with:
 #   pre-commit install
 # Code moved verbatim from upstream under mower_sdk/legacy/ is never
 # reformatted, so the whitespace fixers leave it alone. The Go hooks pin a
 # Go version, so pre-commit fetches its own toolchain instead of relying on
 # whatever go is on the PATH.
+default_install_hook_types: [pre-commit, commit-msg]
 default_stages: [pre-commit]
 
 repos:
@@ -37,6 +38,13 @@ repos:
     rev: v0.16.9
     hooks:
       - id: ruff-check
+
+  # Commit-message rules: .gitlint, and the repository's own in
+  # tools/gitlint_rules.py.
+  - repo: https://github.com/jorisroovers/gitlint
+    rev: v0.19.1
+    hooks:
+      - id: gitlint
 
   - repo: local
     hooks:
