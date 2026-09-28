@@ -4,6 +4,7 @@ Defines every data model the SDK uses: enums and dataclasses.
 """
 
 import importlib
+import math
 from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Any
@@ -83,38 +84,49 @@ def _normalize_state_value(raw_state: Any) -> str:
     return _RAW_STATE_TO_CANONICAL.get(raw_state, raw_state)
 
 
-def _extract_battery_value(data: dict[str, Any]) -> int:
-    """Extract battery percentage from multiple payload formats."""
-    def _to_int_or_none(value: Any) -> int | None:
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            return None
+def _int(value: Any) -> int | None:
+    """int() that refuses bools and non-finite floats (JSON allows Infinity and NaN).
 
-    # MQTT state payload commonly carries direct battery field.
-    battery = _to_int_or_none(data.get("battery"))
-    if battery is not None:
-        return battery
+    None for anything int() cannot read, a bool, a non-finite float or a value
+    too large to convert.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
 
-    # HTTP getVehicleStatus payload uses capacityRemaining[].rawValue.
-    capacity_remaining = data.get("capacityRemaining")
-    if isinstance(capacity_remaining, list):
-        for item in capacity_remaining:
-            if not isinstance(item, dict):
+
+def _extract_battery_value(data: dict[str, Any]) -> int | None:
+    """Read the battery percentage from a REST status or an MQTT state payload.
+
+    The ``capacityRemaining`` entry whose ``unit`` is PERCENTAGE (compared
+    upper-cased) comes first, then any ``capacityRemaining`` entry whose
+    ``rawValue`` parses, then the plain ``battery`` field. Each value goes
+    through ``_int``, so None is returned when the payload carries no readable
+    value: both keys missing, an unparsable or non-numeric value, a bool, a
+    non-finite float. Out-of-range numbers pass through unchanged. One reader
+    for both payload shapes.
+    """
+    capacity = data.get("capacityRemaining")
+    if isinstance(capacity, list):
+        for entry in capacity:
+            if not isinstance(entry, dict):
                 continue
-            unit = str(item.get("unit", "")).upper()
-            if unit == "PERCENTAGE":
-                raw_value = _to_int_or_none(item.get("rawValue"))
-                if raw_value is not None:
-                    return raw_value
-
-        # Compatibility fallback: if PERCENTAGE unit missing, try first item.
-        if capacity_remaining and isinstance(capacity_remaining[0], dict):
-            raw_value = _to_int_or_none(capacity_remaining[0].get("rawValue"))
-            if raw_value is not None:
-                return raw_value
-
-    return 0
+            if str(entry.get("unit", "")).upper() != "PERCENTAGE":
+                continue
+            value = _int(entry.get("rawValue"))
+            if value is not None:
+                return value
+        for entry in capacity:
+            if isinstance(entry, dict):
+                value = _int(entry.get("rawValue"))
+                if value is not None:
+                    return value
+    return _int(data.get("battery"))
 
 
 class MowerStatus(Enum):
@@ -243,7 +255,9 @@ class DeviceStatus:
     Attributes:
         device_id: Device ID
         status: Device status (a MowerStatus value)
-        battery: Battery level (0-100)
+        battery: Battery level in percent, or None when the payload carried no
+            readable value; out-of-range numbers pass through. to_dict emits
+            the None.
         position: Position (optional, as {"lat": float, "lng": float})
         error_code: Error code (a MowerError value)
         error_message: Error message (optional)
@@ -256,7 +270,7 @@ class DeviceStatus:
 
     device_id: str
     status: MowerStatus
-    battery: int
+    battery: int | None
     position: dict[str, float] | None = None
     error_code: MowerError = MowerError.NONE
     error_message: str | None = None
