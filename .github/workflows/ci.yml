@@ -145,14 +145,13 @@ jobs:
           echo "BASE=$base" >> "$GITHUB_ENV"
           echo "range: ${base:-none}..HEAD"
       # Every hook reads every file here, which covers the range's changes
-      # too. The edit guards refuse any existing protected file, so this run
-      # skips them: a change to a protected path is sanctioned per commit by
-      # a "Legacy-edit: <reason>" trailer, which gitlint checks below.
+      # too. A change to a protected path is judged per commit by gitlint's
+      # Legacy-edit rule below (no-protected-changes reads staged changes).
       - name: Every hook over every file
         env:
           GATE_MODE: content
           # ruff-check: the ruff job checks the tree already.
-          SKIP: no-legacy-edits,no-inventory-edits,ruff-check
+          SKIP: ruff-check
         run: pre-commit run --all-files --show-diff-on-failure
       - name: The range's commit messages
         if: env.BASE != ''

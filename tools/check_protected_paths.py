@@ -1,12 +1,14 @@
-"""Refuse deleting or moving away code that is protected from edits.
+"""Refuse any change to paths protected from edits.
 
-The pre-commit hooks no-legacy-edits and no-inventory-edits refuse changes to
-mower_sdk/legacy/ and tests/upstream_exports.json, but pre-commit passes only
-files that still exist, so a deletion, or a move out of the protected path,
-never reaches them. This check looks at the change itself.
+Code moved verbatim from upstream (mower_sdk/legacy/) and the inventory of
+upstream's public names (tests/upstream_exports.json) are not changed: not
+edited, added to, deleted or moved away. The check reads the change itself
+(the staged diff, or the diff between two refs), because pre-commit passes
+hooks only files that still exist and so never shows them a deletion.
 
-For a deliberate exception, skip it with the other two:
-  SKIP=no-legacy-edits,no-protected-deletions git commit ...
+A deliberate exception is committed with SKIP=no-protected-changes and a
+"Legacy-edit: <reason>" trailer, which the gitlint rules require for any
+change to these paths.
 """
 
 from __future__ import annotations
@@ -18,11 +20,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import gatelib  # noqa: E402
 
+_WHAT = {"A": "added", "M": "edited", "D": "deleted or moved away", "T": "changed"}
+
+
 def check() -> list[str]:
     return [
-        f"{path}: protected from edits; deleting or moving it away is refused too"
+        f"{path}: protected from changes ({_WHAT.get(status, status)}); "
+        "an exception needs SKIP=no-protected-changes and a Legacy-edit trailer"
         for status, path in gatelib.changed_files()
-        if status == "D" and gatelib.is_protected(path)
+        if gatelib.is_protected(path)
     ]
 
 

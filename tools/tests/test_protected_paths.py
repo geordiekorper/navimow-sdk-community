@@ -1,4 +1,4 @@
-"""Protected paths: the deletion check, and the hooks that guard edits."""
+"""Protected paths: the no-protected-changes check and its hook."""
 
 from __future__ import annotations
 
@@ -11,7 +11,6 @@ import pytest
 from conftest import hook, run, stage
 
 
-
 @pytest.fixture
 def sdk(repo: Path) -> Path:
     stage(repo, "mower_sdk/legacy/client.py", "OLD = 1\n")
@@ -20,10 +19,20 @@ def sdk(repo: Path) -> Path:
     return repo
 
 
-def test_edits_and_additions_are_left_to_the_other_hooks(sdk: Path) -> None:
+def test_an_ordinary_change_passes(sdk: Path) -> None:
+    stage(sdk, "src/module.py", "VALUE = 2\n")
+    assert check_protected_paths.check() == []
+
+
+def test_editing_or_adding_legacy_code_or_editing_the_inventory_is_refused(sdk: Path) -> None:
     stage(sdk, "mower_sdk/legacy/client.py", "OLD = 2\n")
     stage(sdk, "mower_sdk/legacy/new.py", "NEW = 1\n")
-    assert check_protected_paths.check() == []
+    stage(sdk, "tests/upstream_exports.json", '{"a": 1}\n')
+    findings = check_protected_paths.check()
+    assert sorted(f.split(":")[0] for f in findings) == [
+        "mower_sdk/legacy/client.py", "mower_sdk/legacy/new.py", "tests/upstream_exports.json",
+    ]
+    assert all("SKIP=no-protected-changes" in f for f in findings)
 
 
 def test_deleting_legacy_code_or_the_inventory_is_refused(sdk: Path) -> None:
@@ -56,21 +65,24 @@ def test_range_mode_checks_the_commits_between_refs(sdk: Path, monkeypatch: pyte
 
 
 @pytest.mark.parametrize(
-    ("hook_id", "path", "guarded"),
+    ("path", "protected"),
     [
-        ("no-legacy-edits", "mower_sdk/legacy/client.py", True),
-        ("no-legacy-edits", "mower_sdk/mqtt.py", False),
-        ("no-inventory-edits", "tests/upstream_exports.json", True),
-        ("no-inventory-edits", "tests/test_upstream_exports.py", False),
+        ("mower_sdk/legacy/client.py", True),
+        ("mower_sdk/mqtt.py", False),
+        ("tests/upstream_exports.json", True),
+        ("tests/test_upstream_exports.py", False),
     ],
 )
-def test_the_edit_guards_cover_exactly_the_protected_paths(hook_id: str, path: str, guarded: bool) -> None:
+def test_the_protected_paths(path: str, protected: bool) -> None:
+    assert gatelib.is_protected(path) is protected
+
+
+def test_the_hook_reads_the_change_on_every_commit() -> None:
     pytest.importorskip("yaml")
-    definition = hook(hook_id)
-    assert definition["language"] == "fail"
-    assert bool(re.search(definition["files"], path)) is guarded
-    # The hooks' patterns and the shared predicate name the same paths.
-    assert gatelib.is_protected(path) is guarded
+    definition = hook("no-protected-changes")
+    assert definition["entry"] == "python tools/check_protected_paths.py"
+    assert definition["pass_filenames"] is False  # deletions are never passed as files
+    assert definition["always_run"] is True
 
 
 @pytest.mark.parametrize(
