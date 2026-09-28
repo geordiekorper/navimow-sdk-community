@@ -83,12 +83,12 @@ class NavimowSDK:
     ) -> None:
         """Update the MQTT credentials.
 
-        Unchanged values are ignored. While connected, changed values are only stored;
-        the live connection is kept on purpose, so hourly OAuth token rotation does not
-        force a disconnect. They reach the broker when the paho client is next rebuilt,
-        which happens on a later call made while disconnected; paho's own automatic
-        reconnect reuses the existing client. While disconnected, changed values rebuild
-        the paho client and start an asynchronous reconnect.
+        Unchanged values are ignored and None means "keep", so a password-only or
+        headers-only update is merged with the stored values. While connected, the
+        merged values are set on the live paho client and the connection is kept on
+        purpose, so hourly OAuth token rotation does not force a disconnect; paho uses
+        them at its next connect, automatic reconnects included. While disconnected,
+        changed values rebuild the paho client and start an asynchronous reconnect.
 
         Used after an OAuth token refresh to update the MQTT WebSocket auth header,
         and to update the MQTT username/password issued by the server.

@@ -17,6 +17,7 @@ read, and an override of ``_build_new_client`` is not called.
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -461,14 +462,25 @@ def test_update_credentials(fake_paho: type[FakeClient]) -> None:
         assert fake_paho.instances == [first]
         assert first.named("loop_stop") == []
 
-        # Changed while connected: stored on the object, the live client is left alone.
+        # Changed while connected: merged into the stored values and set on the live
+        # client, which is kept; paho uses them at its next reconnect.
         first.connected = True
         mqtt.update_credentials(password="rotated", auth_headers={"Authorization": "Bearer new"})
         assert (mqtt.username, mqtt.password) == ("user", "rotated")
         assert mqtt.auth_headers == {"Authorization": "Bearer new"}
+        assert first.named("username_pw_set") == [
+            ("username_pw_set", ("user", "secret"), {}),
+            ("username_pw_set", ("user", "rotated"), {}),
+        ]
+        assert first.named("ws_set_options") == [
+            ("ws_set_options", (), {"path": "/mqtt", "headers": {"Authorization": "Bearer tok"}}),
+            ("ws_set_options", (), {"path": "/mqtt", "headers": {"Authorization": "Bearer new"}}),
+        ]
         assert mqtt.client is first
         assert fake_paho.instances == [first]
         assert first.named("loop_stop") == []
+        assert first.named("disconnect") == []
+        assert first.connected is True
 
         # Changed while disconnected: the old client is stopped, a new one is built and connected.
         first.connected = False
@@ -507,10 +519,11 @@ def test_update_credentials(fake_paho: type[FakeClient]) -> None:
 def test_update_credentials_partial_update_while_connected(
     fake_paho: type[FakeClient], update: dict[str, Any], expected: tuple[Any, Any, Any]
 ) -> None:
-    """A partial update while connected merges into the stored values and touches no paho call.
+    """A partial update while connected merges into the stored values, which are set on the live client.
 
     A token refresh typically sends a password-only or headers-only update, so the
-    untouched values must survive the merge.
+    untouched values must survive the merge and the setters must receive the
+    merged pair, not the arguments.
     """
 
     async def test() -> None:
@@ -522,10 +535,64 @@ def test_update_credentials_partial_update_while_connected(
         mqtt.update_credentials(**update)
 
         assert (mqtt.username, mqtt.password, mqtt.auth_headers) == expected
-        assert client.calls == calls_before  # the live client is left alone
-        assert client.connected is True
+        username, password, headers = expected
+        assert client.calls == [
+            *calls_before,
+            ("username_pw_set", (username, password), {}),
+            ("ws_set_options", (), {"path": "/mqtt", "headers": headers}),
+        ]
+        assert client.connected is True  # no disconnect, no new client
         assert mqtt.client is client
         assert fake_paho.instances == [client]
+
+    run(test)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "update", "new_calls"),
+    [
+        (WSS_NO_PATH_KWARGS, {"password": "p"}, [("username_pw_set", ("user", "p"), {})]),
+        (TCP_KWARGS, {"password": "p"}, []),
+        (TCP_KWARGS, {"auth_headers": {"Authorization": "Bearer t"}}, []),
+    ],
+    ids=["no_ws_path", "no_username", "headers_without_ws_path"],
+)
+def test_update_credentials_while_connected_calls_only_the_setters_that_apply(
+    fake_paho: type[FakeClient], kwargs: dict[str, Any], update: dict[str, Any], new_calls: list[Call]
+) -> None:
+    """username_pw_set needs both a username and a password; ws_set_options needs a WebSocket path."""
+
+    async def test() -> None:
+        mqtt = make(kwargs)
+        client = mqtt.client
+        client.connected = True
+        calls_before = list(client.calls)
+
+        mqtt.update_credentials(**update)
+
+        for name, value in update.items():
+            assert getattr(mqtt, name) == value
+        assert client.calls == [*calls_before, *new_calls]
+        assert client.connected is True
+        assert fake_paho.instances == [client]
+
+    run(test)
+
+
+def test_update_credentials_while_connected_logs_what_happens(
+    fake_paho: type[FakeClient], caplog: pytest.LogCaptureFixture
+) -> None:
+    async def test() -> None:
+        mqtt = make(WS_KWARGS)
+        mqtt.client.connected = True
+        with caplog.at_level(logging.INFO, logger="mower_sdk.mqtt"):
+            mqtt.update_credentials(password="rotated")
+        messages = [r.getMessage() for r in caplog.records if "credentials updated" in r.getMessage()]
+        assert messages == [
+            "NavimowMQTT credentials updated while connected: set on the client, used at the "
+            "next reconnect: broker=broker.example.invalid port=8884"
+        ]
+        assert fake_paho.instances == [mqtt.client]
 
     run(test)
 
