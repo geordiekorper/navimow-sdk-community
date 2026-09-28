@@ -2,12 +2,13 @@
 
 ``DeviceStatus.from_dict`` and ``DeviceStateMessage.from_dict`` share the
 normaliser but read the raw state with different key precedence, and both use
-the same battery extraction. Everything here is pinned at today's values,
-falsy fallbacks included, so the raw-state refactor can show that nothing
-observable changed. Two planned behaviour changes, ``None`` for a missing or
-unparsable battery and new MowerStatus members for mapping, updating and
-offline, will change several of these values later; the affected tests are
-then updated on purpose, in the same commit.
+the same battery reader: ``capacityRemaining``'s PERCENTAGE entry, then any
+entry whose ``rawValue`` parses, then ``battery``, and None when nothing
+parses (a missing, unparsable, bool or non-finite value); out-of-range numbers
+pass through. The state values are pinned at today's values, falsy fallbacks
+included. One planned behaviour change, new MowerStatus members for mapping,
+updating and offline, will change several of the state values later; the
+affected tests are then updated on purpose, in the same commit.
 """
 
 from __future__ import annotations
@@ -78,10 +79,10 @@ def test_vehicle_state_is_the_last_fallback_for_both_readers() -> None:
 
 def test_missing_keys() -> None:
     assert DeviceStatus.from_dict({}) == DeviceStatus(
-        device_id="", status=MowerStatus.UNKNOWN, battery=0
+        device_id="", status=MowerStatus.UNKNOWN, battery=None
     )
     assert DeviceStateMessage.from_dict({}) == DeviceStateMessage(
-        device_id="", timestamp=None, state="unknown", battery=0
+        device_id="", timestamp=None, state="unknown", battery=None
     )
 
 
@@ -150,17 +151,23 @@ def test_mower_status_instances_are_accepted() -> None:
     assert message.metrics == {"raw_state": MowerStatus.CHARGING}
 
 
+# Each case names its value; the ones whose value changed when the reader was
+# replaced say what they gave before.
 BATTERY_CASES = [
     pytest.param({"battery": 57}, 57, id="int"),
+    pytest.param({"battery": 0}, 0, id="zero_is_zero"),
     pytest.param({"battery": "57"}, 57, id="numeric_string"),
     pytest.param({"battery": 57.9}, 57, id="float_truncated"),
-    pytest.param({"battery": True}, 1, id="true_is_one"),
+    pytest.param({"battery": True}, None, id="bool_is_none"),  # was 1
     pytest.param({"battery": 150}, 150, id="above_100_passes"),
     pytest.param({"battery": -1}, -1, id="negative_passes"),
-    pytest.param({}, 0, id="missing"),
-    pytest.param({"battery": None}, 0, id="none"),
-    pytest.param({"battery": "n/a"}, 0, id="unparsable"),
-    pytest.param({"battery": [50]}, 0, id="list_battery"),
+    pytest.param({}, None, id="missing"),  # was 0
+    pytest.param({"battery": None}, None, id="none"),  # was 0
+    pytest.param({"battery": "n/a"}, None, id="unparsable"),  # was 0
+    pytest.param({"battery": [50]}, None, id="list_battery"),  # was 0
+    pytest.param({"battery": float("inf")}, None, id="infinity"),  # raised OverflowError
+    pytest.param({"battery": float("nan")}, None, id="nan"),  # was 0
+    pytest.param({"battery": 1e15}, 10**15, id="large_finite_float_passes"),
     pytest.param(
         {"battery": None, "capacityRemaining": [{"unit": "percentage", "rawValue": "73"}]},
         73,
@@ -173,6 +180,16 @@ BATTERY_CASES = [
     ),
     pytest.param({"capacityRemaining": [{"unit": "WH", "rawValue": 500}]}, 500, id="capacity_first_item_fallback"),
     pytest.param(
+        {"capacityRemaining": [{"unit": "WH", "rawValue": "x"}, {"unit": "MINUTES", "rawValue": 45}]},
+        45,
+        id="capacity_fallback_scans_past_the_first_entry",  # was 0: only the first entry was tried
+    ),
+    pytest.param(
+        {"capacityRemaining": [{"unit": "PERCENTAGE", "rawValue": True}, {"unit": "WH", "rawValue": 7}]},
+        7,
+        id="capacity_bool_skipped",  # was 1
+    ),
+    pytest.param(
         {"capacityRemaining": [{"rawValue": "x"}, {"unit": "PERCENTAGE", "rawValue": 12}]},
         12,
         id="capacity_unparsable_first_item",
@@ -182,9 +199,9 @@ BATTERY_CASES = [
         12,
         id="capacity_non_dict_skipped",
     ),
-    pytest.param({"capacityRemaining": ["nope"]}, 0, id="capacity_only_non_dict"),
-    pytest.param({"capacityRemaining": []}, 0, id="capacity_empty"),
-    pytest.param({"capacityRemaining": {"unit": "PERCENTAGE", "rawValue": 12}}, 0, id="capacity_not_a_list"),
+    pytest.param({"capacityRemaining": ["nope"]}, None, id="capacity_only_non_dict"),  # was 0
+    pytest.param({"capacityRemaining": []}, None, id="capacity_empty"),  # was 0
+    pytest.param({"capacityRemaining": {"unit": "PERCENTAGE", "rawValue": 12}}, None, id="capacity_not_a_list"),  # was 0
     pytest.param(
         {"battery": "abc", "capacityRemaining": [{"unit": "PERCENTAGE", "rawValue": 5}]},
         5,
@@ -192,16 +209,26 @@ BATTERY_CASES = [
     ),
     pytest.param(
         {"battery": 0, "capacityRemaining": [{"unit": "PERCENTAGE", "rawValue": 5}]},
-        0,
-        id="battery_zero_wins_over_capacity",
+        5,
+        id="capacity_wins_over_battery",  # was 0: battery came first
+    ),
+    pytest.param(
+        {"battery": 9, "capacityRemaining": [{"unit": "WH", "rawValue": "x"}]},
+        9,
+        id="battery_when_no_capacity_entry_parses",
     ),
 ]
 
 
 @pytest.mark.parametrize(("payload", "battery"), BATTERY_CASES)
-def test_battery_extraction(payload: dict[str, Any], battery: int) -> None:
+def test_battery_extraction(payload: dict[str, Any], battery: int | None) -> None:
     assert DeviceStatus.from_dict(payload).battery == battery
     assert DeviceStateMessage.from_dict(payload).battery == battery
+
+
+def test_to_dict_emits_a_none_battery() -> None:
+    assert DeviceStatus.from_dict({"id": "d"}).to_dict()["battery"] is None
+    assert DeviceStateMessage.from_dict({"device_id": "d"}).to_dict()["battery"] is None
 
 
 def test_device_status_extra_merges_the_raw_status_keys() -> None:
