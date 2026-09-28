@@ -42,6 +42,8 @@ def _local_pattern_hits(
 def check_texts(items: list[tuple[str, int, str, bool]], scope: str) -> list[str]:
     """Check (path, line number, text, is_trailer) items; return the findings."""
     rules = gatelib.load_local_rules()
+    if not items:
+        return []  # nothing to read: skip listing every worktree
     untracked = gatelib.untracked_name_regex()
     local_paths = gatelib.local_path_pattern() if scope == "message" else None
     findings = []

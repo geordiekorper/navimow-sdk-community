@@ -30,10 +30,21 @@ from pathlib import Path
 SCISSORS = "------------------------ >8 ------------------------"
 
 
-def git(*args: str, cwd: str | Path | None = None, check: bool = True) -> str:
+def git(*args: str, cwd: str | Path | None = None, check: bool = True,
+        env: dict[str, str] | None = None) -> str:
     return subprocess.run(
-        ["git", *args], cwd=cwd, check=check, capture_output=True, text=True
+        ["git", *args], cwd=cwd, check=check, capture_output=True, text=True, env=env
     ).stdout
+
+
+def foreign_env() -> dict[str, str]:
+    """The environment for git in another worktree: none of this repository's GIT_*.
+
+    Inside a hook git exports GIT_INDEX_FILE (relative to this worktree, or
+    its index.lock during `commit -a`) and GIT_DIR; passed on, they make git
+    in another worktree read this worktree's index, or fail.
+    """
+    return {k: v for k, v in os.environ.items() if not k.startswith("GIT_") or k == "GIT_EXEC_PATH"}
 
 
 def git_bytes(*args: str, cwd: str | Path | None = None) -> bytes:
@@ -148,14 +159,21 @@ def _worktrees() -> list[Path]:
     return paths
 
 
-def _untracked_in(worktree: Path) -> set[str]:
+def _untracked_in(worktree: Path, own: bool) -> set[str]:
+    """Untracked and ignored names in a worktree.
+
+    The current worktree keeps the calling environment, so that inside a hook
+    its index is the one being committed; any other worktree is read with its
+    own index.
+    """
+    env = None if own else foreign_env()
     names: set[str] = set()
     listings = [
         ["ls-files", "--others", "--exclude-standard", "-z"],
         ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"],
     ]
     for args in listings:
-        for entry in git(*args, cwd=worktree, check=False).split("\0"):
+        for entry in git(*args, cwd=worktree, check=False, env=env).split("\0"):
             if not entry or _noise(entry):
                 continue
             if not entry.endswith("/"):
@@ -197,8 +215,7 @@ def _word_like(name: str) -> bool:
     """
     if "/" in name:
         return False
-    stem = name.strip(".")
-    has_extension = "." in stem and not stem.endswith(".")
+    has_extension = "." in name.strip(".")
     return not (has_extension or len(name) >= 12)
 
 
@@ -215,8 +232,9 @@ def untracked_name_regex() -> re.Pattern[str] | None:
     tracked_basenames = {Path(p).name for p in tracked}
     excluded = _excluded_names()
     candidates: set[str] = set(excluded)
+    current = repo_root().resolve()
     for worktree in _worktrees():
-        for relative in _untracked_in(worktree):
+        for relative in _untracked_in(worktree, own=worktree.resolve() == current):
             for name in (relative, Path(relative).name):
                 if not _word_like(name):
                     candidates.add(name)
