@@ -1,9 +1,10 @@
 """Characterisation tests for NavimowSDK's command dispatch and consumer callbacks.
 
 A recording fake stands in for ``NavimowMQTT``, so nothing connects; the topic
-``publish_command`` uses is pinned in the MQTT client tests. Each test runs
-inside ``asyncio.run`` because NavimowSDK reads the event loop in ``__init__``
-and, on Python 3.14, ``asyncio.get_event_loop()`` raises outside a running loop.
+``publish_command`` uses is pinned in the MQTT client tests. The tests run
+inside ``asyncio.run``, where the facade binds the running loop and hands it to
+the MQTT client; one constructs outside a loop to show that None is handed over
+instead, and one under a loop set as current to show that it is handed over.
 
 Pinned at today's values: each of the four command methods publishes a
 ``DeviceCommandMessage`` while connected and, while not, asks the client to
@@ -17,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+import warnings
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -98,6 +100,36 @@ def test_construction_passes_the_parameters_through_and_wires_on_message(
         assert fake_mqtt.instances == [mqtt]
 
     run(test)
+
+
+def test_construction_outside_a_running_loop_hands_over_no_loop_and_creates_none(
+    fake_mqtt: type[FakeMQTT],
+) -> None:
+    """The MQTT client binds the loop at its first connect instead. No loop is created and there
+    is no asyncio warning: with no current loop set, asyncio.get_event_loop() creates a loop on
+    3.11, warns and creates one on 3.12 and 3.13 and raises on 3.14, so on 3.11 to 3.13 the
+    policy's current-loop slot is read instead and only 3.14 asks it."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        sdk = NavimowSDK(broker="broker.example.invalid", port=443)
+    (mqtt,) = fake_mqtt.instances
+    assert mqtt.kwargs["loop"] is None
+    assert mqtt.on_message == sdk._on_mqtt_message
+
+
+def test_construction_under_a_loop_set_as_current_hands_it_over(fake_mqtt: type[FakeMQTT]) -> None:
+    current = asyncio.new_event_loop()
+    asyncio.set_event_loop(current)
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            sdk = NavimowSDK(broker="broker.example.invalid", port=443)
+    finally:
+        asyncio.set_event_loop(None)
+        current.close()
+    (mqtt,) = fake_mqtt.instances
+    assert mqtt.kwargs["loop"] is current
+    assert mqtt.on_message == sdk._on_mqtt_message
 
 
 COMMANDS = [

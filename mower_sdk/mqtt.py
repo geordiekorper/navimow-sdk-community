@@ -7,6 +7,7 @@ import asyncio
 import importlib
 import json
 import logging
+import sys
 import uuid
 from urllib.parse import urlparse
 from collections.abc import Awaitable, Callable
@@ -40,6 +41,47 @@ __all__ = [
 _LOGGER = logging.getLogger(__name__)
 
 
+def _current_event_loop() -> asyncio.AbstractEventLoop | None:
+    """Return the loop set as current with asyncio.set_event_loop() for this thread, else None.
+
+    The warning filters are never touched, and on the default policy and uvloop no
+    loop is created (on 3.14 a custom policy that creates one when asked answers for
+    itself). asyncio.get_event_loop() returns a set loop on every version, but with
+    none set it creates one on 3.11 (silently, in the main thread) and on 3.12 and
+    3.13 (with a DeprecationWarning), so on those versions the policy's thread-local
+    slot is read instead of asking it. That is where the default policy and uvloop
+    keep the current loop; a custom policy that keeps it elsewhere is not seen, and
+    loop= is the way to hand its loop over. On 3.14 the default policy no longer
+    creates a loop and get_event_loop() raises instead.
+    """
+    if sys.version_info >= (3, 14):
+        try:
+            return asyncio.get_event_loop()
+        except RuntimeError:
+            return None
+    local = getattr(asyncio.get_event_loop_policy(), "_local", None)
+    loop = getattr(local, "_loop", None)
+    return loop if isinstance(loop, asyncio.AbstractEventLoop) else None
+
+
+def _resolve_event_loop(
+    loop: asyncio.AbstractEventLoop | None,
+) -> asyncio.AbstractEventLoop | None:
+    """Return the explicit loop, else the running loop, else the current loop, else None.
+
+    The current loop is one set with asyncio.set_event_loop() and not yet running:
+    what a program that connects first and calls run_forever() afterwards has at
+    that point. On the default policy and uvloop no loop is created;
+    _current_event_loop says how the current one is found.
+    """
+    if loop is not None:
+        return loop
+    try:
+        return asyncio.get_running_loop()
+    except RuntimeError:
+        return _current_event_loop()
+
+
 def _build_web_client_id(username: str | None) -> str:
     base = username or "unknown"
     rand = uuid.uuid4().hex[:10]
@@ -67,7 +109,15 @@ def _format_auth_headers(headers: dict[str, str] | None) -> str:
 
 
 class NavimowMQTT:
-    """Navimow MQTT client for cloud topics."""
+    """Navimow MQTT client for cloud topics.
+
+    Callbacks are scheduled on ``loop``: the loop passed in, else the loop
+    running when the client is constructed, else the loop set as current with
+    ``asyncio.set_event_loop()`` at that time, else the same two at the first
+    ``connect_async()``. A client constructed and connected with no running or
+    current loop must be given ``loop=``; a callback that arrives while no loop
+    is bound is dropped with a warning.
+    """
 
     def __init__(
         self,
@@ -89,7 +139,7 @@ class NavimowMQTT:
         self.username = username
         self.password = password
         self.records = records
-        self.loop = loop or asyncio.get_event_loop()
+        self.loop = _resolve_event_loop(loop)
         self.ws_path = ws_path
         self.auth_headers = auth_headers
         self._use_tls = bool(ws_path) or parsed.scheme == "wss"
@@ -213,6 +263,12 @@ class NavimowMQTT:
         self.connect_async()
 
     def connect_async(self) -> None:
+        if self.loop is None:
+            # Constructed with no running or current loop: bind the loop this connect
+            # is made from, running or set as current, so the usual patterns (construct
+            # anywhere, connect from inside the loop; or set the loop, connect, then
+            # run_forever) deliver the callbacks there.
+            self.loop = _resolve_event_loop(None)
         if not self.is_connected:
             _LOGGER.info(
                 "NavimowMQTT connect details: transport=%s broker=%s port=%s ws_path=%s tls=%s username=%s auth_headers=%s",
@@ -301,10 +357,30 @@ class NavimowMQTT:
             )
 
     def _schedule(self, coro: Awaitable[None]) -> None:
-        if self.loop and self.loop.is_running():
-            self.loop.call_soon_threadsafe(asyncio.create_task, coro)
+        """Run the callback coroutine on the bound loop, else drop it, closed.
+
+        A dropped coroutine is closed so it does not raise asyncio's "coroutine was
+        never awaited" RuntimeWarning at garbage collection. No loop bound at all is
+        logged as a warning: nothing will be delivered until loop= is passed or a
+        connect is made from inside a loop. A bound loop that is not running (stopped
+        at shutdown, say) keeps the debug line.
+        """
+        loop = self.loop
+        if loop is not None and loop.is_running():
+            loop.call_soon_threadsafe(asyncio.create_task, coro)
+            return
+        if loop is None:
+            _LOGGER.warning(
+                "NavimowMQTT has no event loop bound, MQTT callback dropped; pass loop= or "
+                "connect from inside the loop: broker=%s port=%s",
+                self.broker,
+                self.port,
+            )
         else:
             _LOGGER.debug("Event loop not running, skip scheduling MQTT callback")
+        close = getattr(coro, "close", None)
+        if close is not None:
+            close()
 
     def _on_connect(self, _client, _userdata, _flags, rc) -> None:
         if rc != 0:

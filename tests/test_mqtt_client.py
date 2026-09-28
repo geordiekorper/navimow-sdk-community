@@ -1,23 +1,28 @@
 """Characterisation tests for NavimowMQTT's client setup and message handling.
 
 A recording fake replaces ``paho.mqtt.client.Client``, so nothing connects.
-Each test runs inside ``asyncio.run`` because NavimowMQTT reads the event loop
-in ``__init__`` and, on Python 3.14, ``asyncio.get_event_loop()`` raises
-outside a running loop.
+Most tests run inside ``asyncio.run``, so the client binds the running loop at
+construction and the callbacks it schedules can be drained; the loop-binding
+tests at the end construct outside a loop on purpose.
 
 They pin what the MQTT setup refactor must keep: the setup calls ``__init__``
 makes are the ones ``_build_new_client`` makes; the topics ``subscribe_all``
 subscribes with and without device ids; ``_on_connect`` calls
 ``subscribe_all`` with two arguments; ``_on_message`` injects ``device_id``
-and re-encodes the payload; and two things a subclass can observe about
+and re-encodes the payload; two things a subclass can observe about
 construction: ``self.client`` is assigned before the callback attributes are
-read, and an override of ``_build_new_client`` is not called.
+read, and an override of ``_build_new_client`` is not called; and how the
+event loop is bound: at construction when one is running or set as current,
+else at the first ``connect_async()``, with an explicit ``loop=`` winning over
+both, and a callback with no loop to run on dropped, closed, with a warning.
 """
 
 from __future__ import annotations
 
 import asyncio
+import gc
 import logging
+import warnings
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -653,3 +658,183 @@ def test_callback_properties_can_read_self_client_during_construction(fake_paho:
         assert fake_paho.instances == [mqtt.client, built]
 
     run(test)
+
+
+def test_construction_inside_a_running_loop_binds_it(fake_paho: type[FakeClient]) -> None:
+    async def test() -> None:
+        mqtt = make(TCP_KWARGS)
+        assert mqtt.loop is asyncio.get_running_loop()
+        mqtt.connect_async()
+        assert mqtt.loop is asyncio.get_running_loop()
+        assert fake_paho.instances == [mqtt.client]
+
+    run(test)
+
+
+def test_an_explicit_loop_wins_over_the_running_one(fake_paho: type[FakeClient]) -> None:
+    other = asyncio.new_event_loop()
+    try:
+
+        async def test() -> None:
+            mqtt = make(TCP_KWARGS, loop=other)
+            assert mqtt.loop is other
+            mqtt.connect_async()
+            assert mqtt.loop is other
+            assert fake_paho.instances == [mqtt.client]
+
+        run(test)
+    finally:
+        other.close()
+
+
+def test_construction_outside_a_running_loop_binds_no_loop_and_creates_none(
+    fake_paho: type[FakeClient],
+) -> None:
+    """No asyncio warning either: with no current loop set, asyncio.get_event_loop() creates a loop
+    on 3.11, warns and creates one on 3.12 and 3.13 and raises on 3.14, so on 3.11 to 3.13 the
+    policy's current-loop slot is read instead and only 3.14 asks it. paho's own callback-API
+    warning does not arise with the fake."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        mqtt = make(TCP_KWARGS)
+    assert mqtt.loop is None
+    assert fake_paho.instances == [mqtt.client]
+
+
+def test_a_client_constructed_outside_a_loop_binds_the_loop_it_connects_from(
+    fake_paho: type[FakeClient],
+) -> None:
+    seen: list[str] = []
+
+    async def on_disconnected() -> None:
+        seen.append("disconnected")
+
+    mqtt = make(TCP_KWARGS)
+    mqtt.on_disconnected = on_disconnected
+    assert mqtt.loop is None
+
+    async def test() -> None:
+        mqtt.connect_async()
+        assert mqtt.loop is asyncio.get_running_loop()
+        mqtt._on_disconnect(mqtt.client, None, 0)
+        await drain()
+        assert seen == ["disconnected"]
+
+    run(test)
+    assert mqtt.client.named("connect_async") == [("connect_async", ("broker.example.invalid", 1883, 2400), {})]
+    assert fake_paho.instances == [mqtt.client]
+
+
+def test_a_client_constructed_and_connected_outside_any_loop_drops_the_callback_with_a_warning(
+    fake_paho: type[FakeClient], caplog: pytest.LogCaptureFixture
+) -> None:
+    """Without loop= there is nothing to schedule on: the callback's coroutine is closed, so no
+    "never awaited" RuntimeWarning follows, and the drop is logged as a warning naming the cure."""
+    seen: list[str] = []
+
+    async def on_disconnected() -> None:
+        seen.append("disconnected")
+
+    mqtt = make(TCP_KWARGS)
+    mqtt.on_disconnected = on_disconnected
+    mqtt.connect_async()
+    assert mqtt.loop is None
+    with (
+        warnings.catch_warnings(record=True) as caught,
+        caplog.at_level(logging.WARNING, logger="mower_sdk.mqtt"),
+    ):
+        warnings.simplefilter("always")
+        mqtt._on_disconnect(mqtt.client, None, 0)
+        gc.collect()
+    assert [w.message for w in caught if issubclass(w.category, RuntimeWarning)] == []
+    assert [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING] == [
+        "NavimowMQTT has no event loop bound, MQTT callback dropped; pass loop= or connect from "
+        "inside the loop: broker=broker.example.invalid port=1883"
+    ]
+
+    async def test() -> None:
+        await drain()
+
+    run(test)
+    assert seen == []
+    assert mqtt.loop is None
+    assert fake_paho.instances == [mqtt.client]
+
+
+def test_a_bound_loop_that_has_closed_drops_the_callback_closed_with_a_debug_line(
+    fake_paho: type[FakeClient], caplog: pytest.LogCaptureFixture
+) -> None:
+    """The loop bound at construction is closed by the time the callback arrives: the coroutine is
+    closed, so no "never awaited" RuntimeWarning follows, and nothing above DEBUG is logged, since
+    a loop that has stopped is the shutdown case, not a missing loop."""
+    seen: list[str] = []
+
+    async def on_disconnected() -> None:
+        seen.append("disconnected")
+
+    async def construct() -> NavimowMQTT:
+        return make(TCP_KWARGS)
+
+    mqtt = asyncio.run(construct())
+    assert mqtt.loop is not None
+    assert mqtt.loop.is_closed()
+    mqtt.on_disconnected = on_disconnected
+    with (
+        warnings.catch_warnings(record=True) as caught,
+        caplog.at_level(logging.DEBUG, logger="mower_sdk.mqtt"),
+    ):
+        warnings.simplefilter("always")
+        mqtt._on_disconnect(mqtt.client, None, 0)
+        gc.collect()
+    assert [w.message for w in caught if issubclass(w.category, RuntimeWarning)] == []
+    assert [r.levelno for r in caplog.records if "callback" in r.getMessage()] == [logging.DEBUG]
+    assert seen == []
+    assert fake_paho.instances == [mqtt.client]
+
+
+def test_a_loop_set_as_current_but_not_running_is_bound_and_receives_the_callbacks(
+    fake_paho: type[FakeClient],
+) -> None:
+    """The run_forever pattern: set the loop, construct, connect, then run the loop. No loop is
+    created and no asyncio warning escapes on the way."""
+    seen: list[str] = []
+
+    async def on_disconnected() -> None:
+        seen.append("disconnected")
+
+    current = asyncio.new_event_loop()
+    asyncio.set_event_loop(current)
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            mqtt = make(TCP_KWARGS)
+        assert mqtt.loop is current
+        mqtt.on_disconnected = on_disconnected
+        mqtt.connect_async()
+        assert mqtt.loop is current
+        current.call_soon(mqtt._on_disconnect, mqtt.client, None, 0)
+        current.run_until_complete(drain())
+    finally:
+        asyncio.set_event_loop(None)
+        current.close()
+    assert seen == ["disconnected"]
+    assert mqtt.client.named("connect_async") == [
+        ("connect_async", ("broker.example.invalid", 1883, 2400), {})
+    ]
+    assert fake_paho.instances == [mqtt.client]
+
+
+def test_a_client_constructed_outside_any_loop_binds_the_loop_set_as_current_at_connect(
+    fake_paho: type[FakeClient],
+) -> None:
+    mqtt = make(TCP_KWARGS)
+    assert mqtt.loop is None
+    current = asyncio.new_event_loop()
+    asyncio.set_event_loop(current)
+    try:
+        mqtt.connect_async()
+        assert mqtt.loop is current
+    finally:
+        asyncio.set_event_loop(None)
+        current.close()
+    assert fake_paho.instances == [mqtt.client]
