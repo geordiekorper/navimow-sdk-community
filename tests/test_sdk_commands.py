@@ -11,14 +11,14 @@ touching the client unless the facade was constructed with
 ``allow_experimental_mqtt_commands=True``; with the flag, each publishes a
 ``DeviceCommandMessage`` while connected and, while not, asks the client to
 connect and raises RuntimeError. Consumer callbacks run in registration order,
-and, pinned at today's value, a callback that raises stops ``_on_mqtt_message``
-there, so the later callbacks for the same message do not run; that pin is kept
-so the change that isolates the callbacks shows exactly what moved.
+and a callback that raises is logged with its traceback while the later
+callbacks for the same message still run.
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
 import warnings
 from collections.abc import Awaitable, Callable
@@ -262,22 +262,40 @@ def test_callbacks_run_in_registration_order(
 
 
 @pytest.mark.parametrize(("channel", "register", "payload", "message"), CHANNELS)
-def test_a_raising_callback_stops_the_later_callbacks(
-    fake_mqtt: type[FakeMQTT], channel: str, register: str, payload: bytes, message: Any
+def test_a_raising_callback_is_logged_and_the_later_callbacks_still_run(
+    fake_mqtt: type[FakeMQTT],
+    caplog: pytest.LogCaptureFixture,
+    channel: str,
+    register: str,
+    payload: bytes,
+    message: Any,
 ) -> None:
     async def test() -> None:
         sdk, mqtt = make()
-        seen: list[Any] = []
+        seen: list[tuple[str, Any]] = []
 
         def failing(_message: Any) -> None:
             raise RuntimeError("consumer failed")
 
+        def failing_too(_message: Any) -> None:
+            raise ValueError("another consumer failed")
+
         getattr(sdk, register)(failing)
-        getattr(sdk, register)(seen.append)
-        with pytest.raises(RuntimeError, match="^consumer failed$"):
+        getattr(sdk, register)(lambda msg: seen.append(("second", msg)))
+        getattr(sdk, register)(failing_too)
+        getattr(sdk, register)(lambda msg: seen.append(("fourth", msg)))
+        with caplog.at_level(logging.ERROR, logger="mower_sdk.sdk"):
             await sdk._on_mqtt_message(topic(channel), payload, DEVICE_ID)
-        assert seen == []
-        # The cache is written before the callbacks run, so it holds the message anyway.
+        assert seen == [("second", message), ("fourth", message)]
+
+        records = [r for r in caplog.records if r.name == "mower_sdk.sdk"]
+        assert [(r.levelno, type(r.exc_info[1])) for r in records] == [
+            (logging.ERROR, RuntimeError),
+            (logging.ERROR, ValueError),
+        ]
+        for record in records:
+            assert record.getMessage().startswith(f"Navimow {channel} callback ")
+            assert record.getMessage().endswith(f" failed for device {DEVICE_ID}")
         cached = {"state": sdk.get_cached_state, "attributes": sdk.get_cached_attributes}.get(channel)
         if cached is not None:
             assert cached(DEVICE_ID) == message
