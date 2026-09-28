@@ -62,7 +62,7 @@ def test_without_a_known_base_only_the_whole_tree_is_checked(
 def test_the_steps_run_every_check_in_the_right_mode() -> None:
     assert JOB["steps"][0]["with"] == {"fetch-depth": 0}
     whole = STEPS["Every hook over every file"]
-    assert whole["env"] == {"GATE_MODE": "content", "SKIP": "no-legacy-edits,no-inventory-edits"}
+    assert whole["env"] == {"GATE_MODE": "content", "SKIP": "no-legacy-edits,no-inventory-edits,ruff-check"}
     assert "--all-files" in whole["run"]
     ranged = [
         STEPS["The hooks over the range's changes"],
@@ -72,7 +72,7 @@ def test_the_steps_run_every_check_in_the_right_mode() -> None:
     assert all(step["if"] == "env.BASE != ''" for step in ranged)
     assert '--from-ref "$BASE" --to-ref HEAD' in ranged[0]["run"]
     # The file-level guards cannot read the Legacy-edit trailer that gitlint checks.
-    assert ranged[0]["env"] == {"SKIP": "no-legacy-edits,no-inventory-edits,no-protected-deletions"}
+    assert ranged[0]["env"] == {"SKIP": "no-legacy-edits,no-inventory-edits,no-protected-deletions,ruff-check"}
     assert 'gitlint --commits "$BASE..HEAD"' in ranged[1]["run"]
     assert "pre-commit run check-message-leaks" in ranged[2]["run"]
     assert "--hook-stage commit-msg" in ranged[2]["run"]
@@ -124,3 +124,14 @@ def test_the_message_step_checks_every_non_merge_commit_and_fails_on_one(repo: P
     assert f"in {bad}" in proc.stdout
     recorded = sorted(calls.read_text(encoding="utf-8").splitlines())
     assert recorded == sorted(["docs: good|check-message-leaks", "docs: BAD message|check-message-leaks"])
+
+
+def test_the_hook_environments_are_cached_per_configuration() -> None:
+    (cache,) = [step for step in JOB["steps"] if str(step.get("uses", "")).startswith("actions/cache@")]
+    assert cache["uses"] == "actions/cache@v6"
+    assert cache["with"] == {
+        "path": "~/.cache/pre-commit",
+        "key": "pre-commit-${{ runner.os }}-${{ hashFiles('.pre-commit-config.yaml') }}",
+    }
+    names = [step.get("name") or step.get("uses") for step in JOB["steps"]]
+    assert names.index(cache["uses"]) < names.index("Every hook over every file")
