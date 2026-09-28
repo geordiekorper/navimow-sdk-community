@@ -138,8 +138,13 @@ jobs:
           GATE_MODE: content
           SKIP: no-legacy-edits,no-inventory-edits
         run: pre-commit run --all-files --show-diff-on-failure
+      # A deliberate change to a protected path is sanctioned per commit by a
+      # "Legacy-edit: <reason>" trailer, which gitlint checks below; the
+      # file-level guards cannot see trailers, so the range run skips them.
       - name: The hooks over the range's changes
         if: env.BASE != ''
+        env:
+          SKIP: no-legacy-edits,no-inventory-edits,no-protected-deletions
         run: pre-commit run --from-ref "$BASE" --to-ref HEAD --show-diff-on-failure
       - name: The range's commit messages
         if: env.BASE != ''

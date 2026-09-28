@@ -10,6 +10,9 @@ extra-path=tools/gitlint_rules.py
 ignore-fixup-commits=false
 ignore-fixup-amend-commits=false
 ignore-squash-commits=false
+# Revert commits too: git's default 'Revert "..."' subject is reworded to
+# "revert: ...", which needs no body.
+ignore-revert-commits=false
 regex-style-search=true
 
 [title-max-length]

@@ -28,6 +28,22 @@ def _trailers(commit) -> list[str]:
     return gatelib.trailer_block(commit.message.body)
 
 
+def _changed_paths(commit) -> list[str]:
+    """Every path the change touches: the staged change, or the commit's own.
+
+    Read from git with rename detection off, so a move is the old path deleted
+    and the new one added. gitlint's own changed_files splits git's
+    "dir/{old => new}/file" rename notation on whitespace and so mangles
+    moved paths.
+    """
+    if commit.sha:
+        args = ["git", "diff-tree", "--no-commit-id", "-r", "--root", "--no-renames", "--name-only", "-z", commit.sha]
+    else:
+        args = ["git", "diff", "--cached", "--no-renames", "--name-only", "-z"]
+    out = subprocess.run(args, cwd=commit.context.repository_path, capture_output=True, text=True, check=True).stdout
+    return [path for path in out.split("\0") if path]
+
+
 def _diff(commit, path: str) -> str:
     """The change to ``path``: the staged one, or the commit's own when linting a range."""
     args = ["git", "diff", "--cached", "--", path]
@@ -74,7 +90,7 @@ class KindLine(CommitRule):
         kind = _TYPE.match(commit.message.title)
         if not kind or kind.group(1) not in ("feat", "fix", "perf", "refactor"):
             return []
-        if not any(path.startswith("mower_sdk/") for path in commit.changed_files):
+        if not any(path.startswith("mower_sdk/") for path in _changed_paths(commit)):
             return []
         if any(_KIND.match(line) for line in commit.message.body):
             return []
@@ -116,11 +132,12 @@ class VersionInRelease(CommitRule):
     id = "UC5"
 
     def validate(self, commit):
-        if "mower_sdk/__init__.py" not in commit.changed_files:
+        changed = _changed_paths(commit)
+        if "mower_sdk/__init__.py" not in changed:
             return []
         if not any(line.startswith("+__version__") for line in _diff(commit, "mower_sdk/__init__.py").splitlines()):
             return []
-        if commit.message.title.startswith("chore(release)") and "CHANGELOG.md" in commit.changed_files:
+        if commit.message.title.startswith("chore(release)") and "CHANGELOG.md" in changed:
             return []
         return [RuleViolation(
             self.id, "__version__ changes only in a chore(release) commit that also updates CHANGELOG.md", None, 1,
@@ -135,8 +152,43 @@ class ForkAuthorProvenance(CommitRule):
 
     def validate(self, commit):
         credited = [line for line in _trailers(commit) if _CO_AUTHOR.match(line) and not _ASSISTANT.match(line)]
-        if credited and "UPSTREAM.md" not in commit.changed_files:
+        if credited and "UPSTREAM.md" not in _changed_paths(commit):
             return [RuleViolation(
                 self.id, "a fork author is credited but UPSTREAM.md does not record the origin", credited[0],
             )]
+        return []
+
+
+_LEGACY_EDIT = re.compile(r"^Legacy-edit:(.*)$")
+
+
+def _protected(path: str) -> bool:
+    return path.startswith("mower_sdk/legacy/") or path == "tests/upstream_exports.json"
+
+
+class LegacyEditTrailer(CommitRule):
+    """A change to a protected path says why, in a Legacy-edit trailer.
+
+    Code moved verbatim from upstream (mower_sdk/legacy/) and the inventory of
+    upstream's public names (tests/upstream_exports.json) are not changed;
+    the hooks no-legacy-edits, no-inventory-edits and no-protected-deletions
+    refuse it. A deliberate exception skips those hooks and carries
+    "Legacy-edit: <reason>", which this rule requires, here and in CI.
+    """
+
+    name = "legacy-edit-trailer"
+    id = "UC7"
+
+    def validate(self, commit):
+        reasons = [m.group(1).strip() for line in _trailers(commit) if (m := _LEGACY_EDIT.match(line))]
+        touched = [path for path in _changed_paths(commit) if _protected(path)]
+        if touched and not reasons:
+            return [RuleViolation(
+                self.id, f"a change to a protected path ({touched[0]}) needs a 'Legacy-edit: <reason>' trailer",
+                None, 1,
+            )]
+        if reasons and not touched:
+            return [RuleViolation(self.id, "a Legacy-edit trailer on a commit that changes no protected path")]
+        if any(not reason for reason in reasons):
+            return [RuleViolation(self.id, "the Legacy-edit trailer needs a reason")]
         return []
