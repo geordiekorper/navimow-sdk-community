@@ -6,12 +6,14 @@ inside ``asyncio.run``, where the facade binds the running loop and hands it to
 the MQTT client; one constructs outside a loop to show that None is handed over
 instead, and one under a loop set as current to show that it is handed over.
 
-Pinned at today's values: each of the four command methods publishes a
+The four command methods raise ``MowerUnsupportedOperationError`` before
+touching the client unless the facade was constructed with
+``allow_experimental_mqtt_commands=True``; with the flag, each publishes a
 ``DeviceCommandMessage`` while connected and, while not, asks the client to
-connect and raises RuntimeError; consumer callbacks run in registration order;
-and a callback that raises stops ``_on_mqtt_message`` there, so the later
-callbacks for the same message do not run. Both are pinned so the changes that
-gate the dispatch and isolate the callbacks show exactly what moved.
+connect and raises RuntimeError. Consumer callbacks run in registration order,
+and, pinned at today's value, a callback that raises stops ``_on_mqtt_message``
+there, so the later callbacks for the same message do not run; that pin is kept
+so the change that isolates the callbacks shows exactly what moved.
 """
 
 from __future__ import annotations
@@ -24,7 +26,9 @@ from typing import Any
 
 import pytest
 
+import mower_sdk
 from mower_sdk import sdk as sdk_module
+from mower_sdk.errors import MowerUnsupportedOperationError
 from mower_sdk.models import DeviceAttributesMessage, DeviceEventMessage, DeviceStateMessage
 from mower_sdk.sdk import NavimowSDK
 
@@ -138,6 +142,45 @@ COMMANDS = [
     pytest.param("return_to_base", (), "return_to_base", {}, id="return_to_base"),
     pytest.param("set_blade_height", (30,), "set_blade_height", {"height": 30}, id="set_blade_height"),
 ]
+# What the refusal names as the supported alternative; blade height has none.
+REST_ALTERNATIVE = {
+    "start_mowing": "MowerAPI.async_send_command(device_id, MowerCommand.START)",
+    "pause": "MowerAPI.async_send_command(device_id, MowerCommand.PAUSE)",
+    "return_to_base": "MowerAPI.async_send_command(device_id, MowerCommand.DOCK)",
+    "set_blade_height": "No supported call sets the blade height",
+}
+
+
+def test_the_gate_error_is_exported_from_the_package() -> None:
+    assert mower_sdk.MowerUnsupportedOperationError is MowerUnsupportedOperationError
+    assert "MowerUnsupportedOperationError" in mower_sdk.__all__
+    assert issubclass(MowerUnsupportedOperationError, Exception)
+
+
+@pytest.mark.parametrize("connected", [False, True], ids=["disconnected", "connected"])
+@pytest.mark.parametrize(("method", "args", "command", "params"), COMMANDS)
+def test_command_is_refused_by_default_before_the_client_is_touched(
+    fake_mqtt: type[FakeMQTT],
+    method: str,
+    args: tuple,
+    command: str,
+    params: dict[str, Any],  # noqa: ARG001
+    connected: bool,
+) -> None:
+    async def test() -> None:
+        sdk, mqtt = make()
+        mqtt.is_connected = connected
+        with pytest.raises(MowerUnsupportedOperationError) as info:
+            getattr(sdk, method)(DEVICE_ID, *args)
+        text = str(info.value)
+        assert text.startswith(f"MQTT command {command!r} not sent: ")
+        assert f"navimow/{DEVICE_ID}/command" in text
+        assert REST_ALTERNATIVE[command] in text
+        assert "allow_experimental_mqtt_commands=True" in text
+        assert mqtt.calls == []
+        assert fake_mqtt.instances == [mqtt]
+
+    run(test)
 
 
 @pytest.mark.parametrize(("method", "args", "command", "params"), COMMANDS)
@@ -145,7 +188,8 @@ def test_command_publishes_a_command_message_while_connected(
     fake_mqtt: type[FakeMQTT], method: str, args: tuple, command: str, params: dict[str, Any]
 ) -> None:
     async def test() -> None:
-        sdk, mqtt = make()
+        sdk, mqtt = make(allow_experimental_mqtt_commands=True)
+        assert "allow_experimental_mqtt_commands" not in mqtt.kwargs  # the gate has one layer
         mqtt.is_connected = True
         getattr(sdk, method)(DEVICE_ID, *args)
         ((name, (device_id, payload)),) = mqtt.calls
@@ -164,7 +208,7 @@ def test_command_asks_to_connect_and_raises_while_disconnected(
     fake_mqtt: type[FakeMQTT], method: str, args: tuple, command: str, params: dict[str, Any]  # noqa: ARG001
 ) -> None:
     async def test() -> None:
-        sdk, mqtt = make()
+        sdk, mqtt = make(allow_experimental_mqtt_commands=True)
         with pytest.raises(RuntimeError, match="^MQTT not connected$"):
             getattr(sdk, method)(DEVICE_ID, *args)
         assert mqtt.calls == [("connect_async", ())]
