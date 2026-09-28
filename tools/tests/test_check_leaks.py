@@ -13,7 +13,7 @@ from pathlib import Path
 
 import check_leaks
 import pytest
-from conftest import run, stage
+from conftest import ROOT, hook, run, stage
 
 EXCLUDED_DIR = "scratch" + "_docs"
 
@@ -120,9 +120,12 @@ def test_a_link_to_an_ignored_document_is_caught_by_its_name(repo: Path) -> None
     assert any("release-plan.html" in f for f in findings)
 
 
-def _untracked(repo: Path, name: str = "private-notes.txt") -> str:
-    (repo / name).write_text("x", encoding="utf-8")
-    return name
+UNTRACKED = "private-notes.txt"
+
+
+def _untracked(repo: Path) -> str:
+    (repo / UNTRACKED).write_text("x", encoding="utf-8")
+    return UNTRACKED
 
 
 def test_only_added_lines_are_checked_in_staged_mode(repo: Path) -> None:
@@ -169,9 +172,6 @@ def test_files_with_awkward_names_are_checked_under_their_own_name(repo: Path, p
     assert check_leaks.check_files([path]) == [f"{path}:1: names a file git does not track: {name}"]
 
 
-CONFIG = Path(__file__).resolve().parents[2] / ".pre-commit-config.yaml"
-
-
 @pytest.mark.parametrize(
     ("text", "local"),
     [
@@ -192,12 +192,11 @@ CONFIG = Path(__file__).resolve().parents[2] / ".pre-commit-config.yaml"
     ],
 )
 def test_the_local_path_hook_pattern(text: str, local: bool) -> None:
-    yaml = pytest.importorskip("yaml")
-    config = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
-    (hook,) = [h for r in config["repos"] for h in r["hooks"] if h["id"] == "no-local-paths"]
-    assert hook["language"] == "pygrep"
-    assert "stages" not in hook  # files only; the message check reads the same expression
-    assert bool(re.search(hook["entry"], text)) is local
+    pytest.importorskip("yaml")
+    definition = hook("no-local-paths")
+    assert definition["language"] == "pygrep"
+    assert "stages" not in definition  # files only; the message check reads the same expression
+    assert bool(re.search(definition["entry"], text)) is local
 
 
 def test_an_ignored_document_in_another_worktree_is_reported(repo: Path, tmp_path: Path) -> None:
@@ -289,7 +288,7 @@ def test_trailers_followed_by_git_comments_are_still_trailers(tmp_path: Path) ->
     assert check_leaks.check_message("MSG", message) == []
 
 
-TOOLS = Path(__file__).resolve().parents[1]
+TOOLS = ROOT / "tools"
 
 
 @pytest.fixture

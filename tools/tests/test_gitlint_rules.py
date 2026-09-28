@@ -13,11 +13,10 @@ import sys
 from pathlib import Path
 
 import pytest
-from conftest import run, stage
+from conftest import ROOT, run, stage
 
 pytest.importorskip("gitlint")
 
-ROOT = Path(__file__).resolve().parents[2]
 GITLINT = [sys.executable, "-m", "gitlint.cli", "--config", str(ROOT / ".gitlint"),
            "--extra-path", str(ROOT / "tools" / "gitlint_rules.py")]
 
@@ -41,22 +40,26 @@ def rule_ids(output: str) -> list[str]:
     return [m.group(1) for line in output.splitlines() if (m := _VIOLATION.match(line))]
 
 
-def gitlint(repo: Path, *args: str) -> list[str]:
-    """Run gitlint; return the ids of the rules broken, failing on anything else.
+def run_gitlint(repo: Path, *args: str) -> str:
+    """Run gitlint and return its report, failing on anything but violations.
 
     gitlint exits 0 when nothing is broken and with the number of violations
     otherwise; a configuration or git error has its own exit code and output,
     which must not pass for "no violations".
     """
     proc = subprocess.run([*GITLINT, *args], cwd=repo, capture_output=True, text=True, check=False)
-    ids = rule_ids(proc.stderr)
     unexpected = [
         line for line in proc.stderr.splitlines()
         if line.strip() and not _VIOLATION.match(line) and not line.startswith("Commit ")
     ]
     assert not unexpected and not proc.stdout.strip(), proc.stdout + proc.stderr
-    assert proc.returncode == min(len(ids), 250), (proc.returncode, proc.stderr)
-    return ids
+    assert proc.returncode == min(len(rule_ids(proc.stderr)), 250), (proc.returncode, proc.stderr)
+    return proc.stderr
+
+
+def gitlint(repo: Path, *args: str) -> list[str]:
+    """The ids of the rules gitlint reports (see run_gitlint)."""
+    return rule_ids(run_gitlint(repo, *args))
 
 
 def lint(repo: Path, message: str) -> list[str]:
@@ -181,10 +184,9 @@ def test_the_range_form_reads_each_commits_own_version_change(repo: Path) -> Non
     stage(repo, "mower_sdk/__init__.py", '__version__ = "1.1"\nX = 1\n')
     run("git", "commit", "-q", "-m", "build(sdk): y\n\nWhy the change is made, and what it does.", cwd=repo)
     last = run("git", "rev-parse", "--short=10", "HEAD", cwd=repo).strip()
-    proc = subprocess.run([*GITLINT, "--commits", f"{base}..HEAD"], cwd=repo,
-                          capture_output=True, text=True, check=False)
-    assert rule_ids(proc.stderr) == ["UC5"]
-    assert f"Commit {last}" in proc.stderr
+    report = run_gitlint(repo, "--commits", f"{base}..HEAD")
+    assert rule_ids(report) == ["UC5"]
+    assert f"Commit {last}" in report
 
 
 def per_commit(output: str) -> dict[str, list[str]]:
@@ -216,9 +218,8 @@ def test_the_range_form_applies_every_rule_to_each_commit(repo: Path) -> None:
                             "Co-authored-by: Fork Author <fork@example.com>")
     commit("d.txt", "d\n", f"docs(d): credit\n\n{body}\n\nCo-authored-by: Fork Author <fork@example.com>")
     commit("UPSTREAM.md", "# Provenance\n", f"docs(e): provenance elsewhere\n\n{body}")
-    proc = subprocess.run([*GITLINT, "--commits", f"{base}..HEAD"], cwd=repo,
-                          capture_output=True, text=True, check=False)
-    found = per_commit(proc.stderr)
+    report = run_gitlint(repo, "--commits", f"{base}..HEAD")
+    found = per_commit(report)
     # A fork credit in one commit is not satisfied by UPSTREAM.md in another.
     assert found == {
         commits["docs(a): tracker"]: ["UC1"],
@@ -282,9 +283,8 @@ def test_the_range_form_checks_each_commit_for_its_trailer(repo: Path) -> None:
     stage(repo, "mower_sdk/legacy/client.py", "OLD = 2\n")
     run("git", "commit", "-q", "-m", f"chore(legacy): unsanctioned\n\n{body}", cwd=repo)
     unsanctioned = run("git", "rev-parse", "--short=10", "HEAD", cwd=repo).strip()
-    proc = subprocess.run([*GITLINT, "--commits", f"{base}..HEAD"], cwd=repo,
-                          capture_output=True, text=True, check=False)
-    assert per_commit(proc.stderr) == {unsanctioned: ["UC7"]}
+    report = run_gitlint(repo, "--commits", f"{base}..HEAD")
+    assert per_commit(report) == {unsanctioned: ["UC7"]}
 
 
 def test_a_revert_commit_is_linted(repo: Path) -> None:

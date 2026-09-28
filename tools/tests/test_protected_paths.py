@@ -6,10 +6,10 @@ import re
 from pathlib import Path
 
 import check_protected_paths
+import gatelib
 import pytest
-from conftest import run, stage
+from conftest import hook, run, stage
 
-CONFIG = Path(__file__).resolve().parents[2] / ".pre-commit-config.yaml"
 
 
 @pytest.fixture
@@ -55,13 +55,6 @@ def test_range_mode_checks_the_commits_between_refs(sdk: Path, monkeypatch: pyte
     assert len(check_protected_paths.check()) == 1
 
 
-def _hook(hook_id: str) -> dict:
-    yaml = pytest.importorskip("yaml")
-    config = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
-    (hook,) = [h for r in config["repos"] for h in r["hooks"] if h["id"] == hook_id]
-    return hook
-
-
 @pytest.mark.parametrize(
     ("hook_id", "path", "guarded"),
     [
@@ -72,9 +65,12 @@ def _hook(hook_id: str) -> dict:
     ],
 )
 def test_the_edit_guards_cover_exactly_the_protected_paths(hook_id: str, path: str, guarded: bool) -> None:
-    hook = _hook(hook_id)
-    assert hook["language"] == "fail"
-    assert bool(re.search(hook["files"], path)) is guarded
+    pytest.importorskip("yaml")
+    definition = hook(hook_id)
+    assert definition["language"] == "fail"
+    assert bool(re.search(definition["files"], path)) is guarded
+    # The hooks' patterns and the shared predicate name the same paths.
+    assert gatelib.is_protected(path) is guarded
 
 
 @pytest.mark.parametrize(
@@ -89,7 +85,8 @@ def test_the_edit_guards_cover_exactly_the_protected_paths(hook_id: str, path: s
     ],
 )
 def test_the_test_style_hook(line: str, refused: bool) -> None:
-    hook = _hook("test-style")
-    assert hook["language"] == "pygrep"
-    assert re.search(hook["files"], "tests/test_x.py")
-    assert bool(re.search(hook["entry"], line)) is refused
+    pytest.importorskip("yaml")
+    definition = hook("test-style")
+    assert definition["language"] == "pygrep"
+    assert re.search(definition["files"], "tests/test_x.py")
+    assert bool(re.search(definition["entry"], line)) is refused
