@@ -98,3 +98,14 @@ def test_tool_versions_match_the_pre_commit_hooks() -> None:
     install = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"]["hygiene"]["steps"]
     pins = [word for step in install for word in step.get("run", "").split() if word.startswith("gitlint==")]
     assert pins == [noxfile.GITLINT]
+
+
+def test_the_nox_jobs_cache_pip_downloads_per_noxfile() -> None:
+    jobs = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"]
+    nox_jobs = [job for job in jobs.values()
+                if any("nox -s" in step.get("run", "") for step in job["steps"])]
+    assert nox_jobs
+    for job in nox_jobs:
+        (setup,) = [step for step in job["steps"] if str(step.get("uses", "")).startswith("actions/setup-python")]
+        assert setup["with"]["cache"] == "pip"
+        assert setup["with"]["cache-dependency-path"] == "noxfile.py"

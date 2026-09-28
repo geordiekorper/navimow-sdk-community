@@ -129,7 +129,7 @@ def load_local_rules() -> list[LocalPattern]:
 
 _NOISE_PARTS = {
     "__pycache__", ".venv", "venv", ".pytest_cache", ".ruff_cache", ".mypy_cache",
-    "node_modules", "build", "dist", "htmlcov", ".git", ".idea", ".vscode",
+    "node_modules", "build", "dist", "htmlcov", ".git", ".idea", ".vscode", ".nox", ".tox",
     # The issue tracker's and its database's directories, spelt in pieces so
     # the names are not in the text this checker reads.
     "." + "beads", "." + "dolt",
@@ -172,7 +172,9 @@ def _untracked_in(worktree: Path, own: bool) -> set[str]:
     env = None if own else foreign_env()
     names: set[str] = set()
     listings = [
-        ["ls-files", "--others", "--exclude-standard", "-z"],
+        # Whole untracked or ignored directories are listed as "dir/" and walked
+        # below, with the noise filter and the walk limit applied.
+        ["ls-files", "--others", "--exclude-standard", "--directory", "-z"],
         ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"],
     ]
     for args in listings:

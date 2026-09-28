@@ -15,9 +15,8 @@
 #           a wheel that omits a package fails here and nowhere else
 #   ruff    nox -s lint: blocking; legacy code keeps only the F rules
 #           (pyproject.toml)
-#   hygiene the pre-commit hooks over every file and over the changes of the
-#           pull request (or push); gitlint and the message leak check over
-#           the range's commit messages
+#   hygiene the pre-commit hooks over every file; gitlint and the message
+#           leak check over the commit messages of the pull request (or push)
 name: CI
 
 on:
@@ -51,6 +50,8 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: noxfile.py
       - run: python -m pip install "$NOX"
       - name: Run the test suite and the core-isolation test
         run: nox -s "tests-${{ matrix.python-version }}"
@@ -74,6 +75,8 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: noxfile.py
       - run: python -m pip install "$NOX"
       - name: Run the suite and the construction check on the ${{ matrix.label }} dependencies
         run: nox -s "bounds(${{ matrix.label }})"
@@ -87,6 +90,8 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.14"
+          cache: pip
+          cache-dependency-path: noxfile.py
       - run: python -m pip install "$NOX"
       - name: Build, check, install into a fresh venv and test from another directory
         run: nox -s wheel
@@ -100,6 +105,8 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.14"
+          cache: pip
+          cache-dependency-path: noxfile.py
       - run: python -m pip install "$NOX"
       # Rule set: [tool.ruff.lint] in pyproject.toml; mower_sdk/legacy/ keeps
       # only the F rules through per-file-ignores. Any finding fails the job.
@@ -137,22 +144,16 @@ jobs:
           if [ -z "$base" ] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then base=""; fi
           echo "BASE=$base" >> "$GITHUB_ENV"
           echo "range: ${base:-none}..HEAD"
-      # The edit guards refuse any existing protected file, so a whole-tree
-      # run skips them; the range run below checks the changes.
+      # Every hook reads every file here, which covers the range's changes
+      # too. The edit guards refuse any existing protected file, so this run
+      # skips them: a change to a protected path is sanctioned per commit by
+      # a "Legacy-edit: <reason>" trailer, which gitlint checks below.
       - name: Every hook over every file
         env:
           GATE_MODE: content
           # ruff-check: the ruff job checks the tree already.
           SKIP: no-legacy-edits,no-inventory-edits,ruff-check
         run: pre-commit run --all-files --show-diff-on-failure
-      # A deliberate change to a protected path is sanctioned per commit by a
-      # "Legacy-edit: <reason>" trailer, which gitlint checks below; the
-      # file-level guards cannot see trailers, so the range run skips them.
-      - name: The hooks over the range's changes
-        if: env.BASE != ''
-        env:
-          SKIP: no-legacy-edits,no-inventory-edits,no-protected-deletions,ruff-check
-        run: pre-commit run --from-ref "$BASE" --to-ref HEAD --show-diff-on-failure
       - name: The range's commit messages
         if: env.BASE != ''
         run: gitlint --commits "$BASE..HEAD"
