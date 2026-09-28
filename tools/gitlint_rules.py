@@ -8,34 +8,24 @@ from __future__ import annotations
 
 import re
 import subprocess
+import sys
+from pathlib import Path
 
 from gitlint.rules import CommitRule, RuleViolation
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import gatelib  # noqa: E402  (the trailer-block rule is shared with the leak check)
+
 _TYPE = re.compile(r"^(\w+)(?:\([^)]*\))?!?: ")
 _KIND = re.compile(r"^(?:Upstream-suitable\.|Community-only\.|Fork-only[.:])(?:\s|$)")
-_TRAILER = re.compile(r"^[A-Za-z][A-Za-z0-9-]*: \S")
 _CO_AUTHOR = re.compile(r"^Co-authored-by: ", re.IGNORECASE)
 _ASSISTANT = re.compile(r"^Co-Authored-By: Claude\b", re.IGNORECASE)
 _LABEL_SUFFIX = re.compile(r"\s\((?:[A-Z]{1,2}\d{1,2}(?:[-.]\d+)?|P\d+-C\d+|[A-Z]\d+(?:, ?[A-Z]\d+)+)\)$")
 
 
-def _trailer_start(body: list[str]) -> int:
-    """Index in ``body`` of the trailer block (the last paragraph, all trailers)."""
-    end = len(body)
-    while end and not body[end - 1].strip():
-        end -= 1
-    start = end
-    while start and body[start - 1].strip():
-        start -= 1
-    block = body[start:end]
-    if start and block and all(_TRAILER.match(line) for line in block):
-        return start
-    return len(body)
-
-
 def _trailers(commit) -> list[str]:
-    body = commit.message.body
-    return [line for line in body[_trailer_start(body):] if line.strip()]
+    return gatelib.trailer_block(commit.message.body)
 
 
 def _diff(commit, path: str) -> str:
@@ -95,14 +85,18 @@ class KindLine(CommitRule):
 
 
 class TrailerOrder(CommitRule):
-    """Co-author lines are trailers, and the assistant attribution is the last one."""
+    """Co-author lines are trailers, and no co-author follows the assistant attribution.
+
+    Other trailers may follow it, such as the Signed-off-by that `git commit -s`
+    appends.
+    """
 
     name = "trailer-order"
     id = "UC4"
 
     def validate(self, commit):
         body = commit.message.body
-        start = _trailer_start(body)
+        start = gatelib.trailer_start(body)
         violations = [
             RuleViolation(self.id, "co-author lines belong in the trailer block at the end", line, number)
             for number, line in enumerate(body[:start], 2)
@@ -110,8 +104,8 @@ class TrailerOrder(CommitRule):
         ]
         trailers = _trailers(commit)
         assistant = [i for i, line in enumerate(trailers) if _ASSISTANT.match(line)]
-        if assistant and assistant[-1] != len(trailers) - 1:
-            violations.append(RuleViolation(self.id, "the assistant attribution must be the last trailer"))
+        if assistant and any(_CO_AUTHOR.match(line) for line in trailers[assistant[-1] + 1:]):
+            violations.append(RuleViolation(self.id, "the assistant attribution must be the last co-author"))
         return violations
 
 

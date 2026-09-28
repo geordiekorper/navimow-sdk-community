@@ -374,11 +374,15 @@ def message_lines(text: str, comment: str | None = None) -> list[tuple[int, str]
     return lines
 
 
+_TRAILER = re.compile(r"^[A-Za-z][A-Za-z0-9-]*: \S")
+_CHERRY_PICKED = re.compile(r"^\(cherry picked from commit [0-9a-f]{7,64}\)$")
+
+
 def trailer_start(lines: list[str]) -> int:
     """Index of the first line of the trailer block (``len(lines)`` if none).
 
     The trailer block is the last paragraph when every line in it is a
-    ``Key: value`` trailer.
+    ``Key: value`` trailer, or the line `git cherry-pick -x` appends there.
     """
     end = len(lines)
     while end and not lines[end - 1].strip():
@@ -387,7 +391,7 @@ def trailer_start(lines: list[str]) -> int:
     while start and lines[start - 1].strip():
         start -= 1
     block = lines[start:end]
-    if start and block and all(re.match(r"^[A-Za-z][A-Za-z0-9-]*: \S", line) for line in block):
+    if start and block and all(_TRAILER.match(line) or _CHERRY_PICKED.match(line) for line in block):
         return start
     return len(lines)
 
