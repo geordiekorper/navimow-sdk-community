@@ -1,0 +1,33 @@
+# Checks run before a commit. Install the hooks with:
+#   pre-commit install
+# Code moved verbatim from upstream under mower_sdk/legacy/ is never
+# reformatted, so the whitespace fixers leave it alone. The Go hooks pin a
+# Go version, so pre-commit fetches its own toolchain instead of relying on
+# whatever go is on the PATH.
+default_stages: [pre-commit]
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-added-large-files
+      - id: check-merge-conflict
+      - id: check-toml
+      - id: check-yaml
+      - id: detect-private-key
+      - id: end-of-file-fixer
+        exclude: ^mower_sdk/legacy/
+      - id: trailing-whitespace
+        exclude: ^mower_sdk/legacy/
+
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks
+        language_version: 1.25.5
+
+  - repo: https://github.com/rhysd/actionlint
+    rev: v1.7.12
+    hooks:
+      - id: actionlint
+        language_version: 1.25.5
