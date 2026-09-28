@@ -67,6 +67,12 @@ request that times out raises `MowerAPIError` (the `TimeoutError` is its `__caus
 `MowerAPI(..., request_timeout=None)` to leave the session's own timeout policy in force instead,
 or another number of seconds to change the bound.
 
+**MQTT commands are off by default.** `NavimowSDK.start_mowing`, `pause`, `return_to_base` and
+`set_blade_height` publish to an MQTT command topic that the broker accepts and no mower has been
+seen to act on; every command that works goes over REST, through `MowerAPI.async_send_command`.
+They therefore raise `MowerUnsupportedOperationError` unless the facade is constructed with
+`NavimowSDK(..., allow_experimental_mqtt_commands=True)`.
+
 ## Core Capabilities
 
 * **Device Discovery** – Retrieve mower devices linked to an account
