@@ -11,7 +11,86 @@ from typing import Any
 import aiohttp
 
 from mower_sdk.errors import MowerAPIError, ERROR_MESSAGES
-from mower_sdk.models import Device, DeviceStatus, MowerCommand
+from mower_sdk.models import CommandReceipt, CommandVerdict, Device, DeviceStatus, MowerCommand
+
+# The spellings under which a reply might carry its command number.
+_COMMAND_NUMBER_KEYS = (
+    "cmdNum",
+    "cmd_num",
+    "commandNum",
+    "command_num",
+    "commandNumber",
+    "command_number",
+)
+
+
+def _scalar_command_number(value: Any) -> str | None:
+    """A str or int (not a bool) as a non-empty stripped string, else None."""
+    if isinstance(value, bool) or not isinstance(value, (str, int)):
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _extract_command_number(value: Any) -> str | None:
+    """Return the command number a reply carries under a recognised key, else None.
+
+    Looks for cmdNum, cmd_num, commandNum, command_num, commandNumber and
+    command_number in a dict, recursing into dict values and into list elements
+    that are dicts. A scalar is read only from one of those keys; a bare scalar
+    met in a list (a warning text, a device id) is never taken. Where cmdNum
+    comes from is undocumented and no captured reply carries one, so this is
+    None in practice.
+    """
+    if isinstance(value, dict):
+        for key in _COMMAND_NUMBER_KEYS:
+            if key in value:
+                found = _scalar_command_number(value[key])
+                if found is not None:
+                    return found
+        for nested in value.values():
+            if isinstance(nested, (dict, list)):
+                found = _extract_command_number(nested)
+                if found is not None:
+                    return found
+    elif isinstance(value, list):
+        for element in value:
+            if isinstance(element, dict):
+                found = _extract_command_number(element)
+                if found is not None:
+                    return found
+    return None
+
+
+def _command_results(data: dict[str, Any]) -> list[dict[str, Any]]:
+    """The dict entries of data.payload.commands, else an empty list.
+
+    A payload or commands that is missing, null or not the expected type, and
+    list entries that are not dicts, give fewer results rather than a TypeError
+    or AttributeError; what is left decides the ERROR check and the verdict.
+    """
+    payload = data.get("payload")
+    results = payload.get("commands") if isinstance(payload, dict) else None
+    if not isinstance(results, list):
+        return []
+    return [result for result in results if isinstance(result, dict)]
+
+
+def _classify_command_results(results: list[dict[str, Any]]) -> CommandVerdict:
+    """The cloud's verdict on a command, from the result dicts _command_results read.
+
+    An ERROR with errorCode alreadyInState gives ALREADY_IN_STATE and wins over
+    SUCCESS; SUCCESS gives ACCEPTED while nothing else has been seen; anything
+    else, an empty list included, gives UNKNOWN. Any other ERROR never reaches
+    this function: MowerAPI raises on it.
+    """
+    verdict = CommandVerdict.UNKNOWN
+    for result in results:
+        if result.get("status") == "ERROR" and result.get("errorCode") == "alreadyInState":
+            verdict = CommandVerdict.ALREADY_IN_STATE
+        elif result.get("status") == "SUCCESS" and verdict is CommandVerdict.UNKNOWN:
+            verdict = CommandVerdict.ACCEPTED
+    return verdict
 
 
 def _warn_sync_wrapper(name: str) -> None:
@@ -279,20 +358,23 @@ class MowerAPI:
         _warn_sync_wrapper("get_device_status")
         return asyncio.run(self.async_get_device_status(device_id))
 
-    async def async_send_command(
+    async def _async_send_command(
         self, device_id: str, command: MowerCommand
-    ) -> dict[str, Any]:
-        """Send a control command asynchronously.
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        """Send a control command and return the reply's data with the command results inspected.
 
         Args:
             device_id: Device ID
             command: Control command
 
         Returns:
-            Command execution result
+            The reply's data unchanged, and the dict entries of
+            data.payload.commands, the per-command results the ERROR check ran
+            over (an empty list when the reply has none)
 
         Raises:
-            MowerAPIError: If the request fails or the command fails
+            MowerAPIError: If the request fails or the command fails; an ERROR
+                result with errorCode alreadyInState is not a failure
         """
         command_mapping: dict[MowerCommand, tuple[str, dict[str, Any] | None]] = {
             MowerCommand.START: (
@@ -333,8 +415,7 @@ class MowerAPI:
             },
         )
         data = self._unwrap(response)
-        payload = data.get("payload", {})
-        command_results = payload.get("commands", [])
+        command_results = _command_results(data)
         for result in command_results:
             if result.get("status") == "ERROR":
                 error_code = result.get("errorCode") or "COMMAND_FAILED"
@@ -345,7 +426,64 @@ class MowerAPI:
                     f"{ERROR_MESSAGES['COMMAND_FAILED']}: {error_code}",
                     error_code=error_code,
                 )
+        return data, command_results
+
+    async def async_send_command(
+        self, device_id: str, command: MowerCommand
+    ) -> dict[str, Any]:
+        """Send a control command asynchronously.
+
+        Args:
+            device_id: Device ID
+            command: Control command
+
+        Returns:
+            Command execution result: the reply's data, unchanged
+
+        Raises:
+            MowerAPIError: If the request fails or the command fails
+        """
+        data, _results = await self._async_send_command(device_id, command)
         return data
+
+    async def async_send_command_receipt(
+        self, device_id: str, command: MowerCommand
+    ) -> CommandReceipt:
+        """Send a control command asynchronously and classify the reply.
+
+        The verdict comes from data.payload.commands: an ERROR result with
+        errorCode alreadyInState gives ALREADY_IN_STATE and wins over SUCCESS;
+        a SUCCESS result gives ACCEPTED; anything else, an empty list included,
+        gives UNKNOWN. ACCEPTED means the cloud accepted the command, not that
+        the mower acted: pause and resume settle within about 30 seconds and
+        docking can take minutes, so poll the status for the target state.
+        command_number is the cmdNum the reply carries under a recognised key,
+        if any; no captured reply does.
+
+        Two cases return no receipt. Any other ERROR result raises MowerAPIError
+        exactly as async_send_command does: the cloud refused the command. A
+        transport failure or timeout raises MowerAPIError with the aiohttp error
+        or TimeoutError as its cause: no reply came back, and the cloud may
+        still have accepted the command.
+
+        Args:
+            device_id: Device ID
+            command: Control command
+
+        Returns:
+            A CommandReceipt
+
+        Raises:
+            MowerAPIError: If the request fails or the command fails
+        """
+        data, results = await self._async_send_command(device_id, command)
+        return CommandReceipt(
+            device_id=device_id,
+            command=command,
+            verdict=_classify_command_results(results),
+            command_number=_extract_command_number(data),
+            results=tuple(results),
+        )
 
     def send_command(
         self, device_id: str, command: MowerCommand
