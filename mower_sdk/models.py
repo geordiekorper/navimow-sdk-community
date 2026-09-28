@@ -5,8 +5,8 @@ Defines every data model the SDK uses: enums and dataclasses.
 
 import importlib
 import math
-from dataclasses import dataclass
-from enum import Enum
+from dataclasses import dataclass, field
+from enum import Enum, StrEnum
 from typing import TYPE_CHECKING, Any
 
 from mower_sdk._deprecation import warn_legacy
@@ -19,10 +19,12 @@ if TYPE_CHECKING:
         ThingStatusMessage as ThingStatusMessage,
     )
 
-# The public surface upstream published from this module. The four Thing*
-# classes now live in mower_sdk.legacy.thing_models and are served by
-# __getattr__.
+# The public surface upstream published from this module, plus the community
+# additions CommandReceipt and CommandVerdict. The four Thing* classes now live
+# in mower_sdk.legacy.thing_models and are served by __getattr__.
 __all__ = [
+    "CommandReceipt",
+    "CommandVerdict",
     "Device",
     "DeviceAttributesMessage",
     "DeviceCommandMessage",
@@ -177,6 +179,60 @@ class MowerError(Enum):
     MOTOR_ERROR = "motor_error"  # Motor error
     BLADE_ERROR = "blade_error"  # Blade error
     UNKNOWN = "unknown"  # Unknown error
+
+
+class CommandVerdict(StrEnum):
+    """The cloud's verdict on a submitted command, read from the reply's command results.
+
+    ACCEPTED: a result said SUCCESS and none said alreadyInState. The cloud
+    accepted the command; it does not mean the mower acted. Pause and resume
+    settle within about 30 seconds, docking can take minutes; poll the status
+    for the target state.
+    ALREADY_IN_STATE: a result was an ERROR with errorCode alreadyInState, so
+    the mower was already in the requested state. It wins over SUCCESS.
+    UNKNOWN: no result said either, an empty result list included.
+    """
+
+    ACCEPTED = "accepted"
+    ALREADY_IN_STATE = "already_in_state"
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class CommandReceipt:
+    """What the cloud replied to one command, classified.
+
+    Returned by MowerAPI.async_send_command_receipt. No receipt exists for a
+    command the cloud refused (MowerAPIError) or that got no reply
+    (MowerAPIError with the transport error or TimeoutError as its cause; the
+    cloud may still have accepted it).
+
+    Attributes:
+        device_id: The device the command was sent to
+        command: The command sent
+        verdict: The cloud's verdict, a CommandVerdict
+        command_number: The reply's command number, when it carried one under
+            a recognised key (cmdNum and its spellings); None otherwise. No
+            captured reply carries one, and where it would come from is
+            undocumented.
+        results: The per-command result dicts from the reply, as a tuple. Left
+            out of the hash the frozen dataclass derives from its fields, since
+            dicts are unhashable; equality still compares it.
+    """
+
+    device_id: str
+    command: MowerCommand
+    verdict: CommandVerdict
+    command_number: str | None = None
+    results: tuple[dict[str, Any], ...] = field(default=(), hash=False)
+
+    @property
+    def accepted(self) -> bool:
+        return self.verdict is CommandVerdict.ACCEPTED
+
+    @property
+    def already_in_state(self) -> bool:
+        return self.verdict is CommandVerdict.ALREADY_IN_STATE
 
 
 @dataclass

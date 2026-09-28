@@ -20,6 +20,8 @@ from mower_sdk.errors import (
     ERROR_MESSAGES,
 )
 from mower_sdk.models import (
+    CommandReceipt,
+    CommandVerdict,
     Device,
     DeviceAttributesMessage,
     DeviceCommandMessage,
@@ -65,6 +67,8 @@ __all__ = [
     "StateManager",
     "DataEvent",
     # Data models
+    "CommandReceipt",
+    "CommandVerdict",
     "Device",
     "DeviceStateMessage",
     "DeviceEventMessage",
