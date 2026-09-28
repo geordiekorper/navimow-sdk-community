@@ -164,9 +164,9 @@ class LegacyEditTrailer(CommitRule):
 
     Code moved verbatim from upstream (mower_sdk/legacy/) and the inventory of
     upstream's public names (tests/upstream_exports.json) are not changed;
-    the hooks no-legacy-edits, no-inventory-edits and no-protected-deletions
-    refuse it. A deliberate exception skips those hooks and carries
-    "Legacy-edit: <reason>", which this rule requires, here and in CI.
+    the hook no-protected-changes refuses it. A deliberate exception skips
+    that hook and carries "Legacy-edit: <reason>", which this rule requires,
+    here and in CI.
     """
 
     name = "legacy-edit-trailer"

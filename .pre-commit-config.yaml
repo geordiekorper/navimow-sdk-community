@@ -73,25 +73,13 @@ repos:
         language: python
         additional_dependencies: [pyyaml==6.0.3]  # reads no-local-paths' expression
         stages: [commit-msg]
-      # Code moved verbatim from upstream and the inventory of upstream's
-      # public names are never edited. A deliberate exception is committed
-      # with SKIP=no-legacy-edits,no-inventory-edits,no-protected-deletions
-      # and a "Legacy-edit: <reason>" trailer, which gitlint requires for any
-      # change to these paths (CI checks the trailer, not the files).
-      # pre-commit passes only files that still exist, so deletions and
-      # moves away are a separate check.
-      - id: no-legacy-edits
-        name: code moved from upstream (mower_sdk/legacy/) is not edited
-        language: fail
-        entry: legacy code is not edited
-        files: ^mower_sdk/legacy/
-      - id: no-inventory-edits
-        name: the upstream export inventory is not edited
-        language: fail
-        entry: tests/upstream_exports.json is never edited
-        files: ^tests/upstream_exports\.json$
-      - id: no-protected-deletions
-        name: protected paths are not deleted or moved away
+      # Code moved verbatim from upstream (mower_sdk/legacy/) and the
+      # inventory of upstream's public names are not changed. A deliberate
+      # exception is committed with SKIP=no-protected-changes and a
+      # "Legacy-edit: <reason>" trailer, which gitlint requires for any change
+      # to these paths, here and per commit in CI.
+      - id: no-protected-changes
+        name: code moved from upstream and the export inventory are not changed
         entry: python tools/check_protected_paths.py
         language: python
         pass_filenames: false
