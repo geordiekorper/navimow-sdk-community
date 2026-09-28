@@ -62,3 +62,30 @@ repos:
         entry: python tools/check_leaks.py --message
         language: python
         stages: [commit-msg]
+      # Code moved verbatim from upstream and the inventory of upstream's
+      # public names are never edited; a deliberate exception is committed
+      # with SKIP=no-legacy-edits,no-protected-deletions. pre-commit passes
+      # only files that still exist, so deletions and moves away are a
+      # separate check.
+      - id: no-legacy-edits
+        name: code moved from upstream (mower_sdk/legacy/) is not edited
+        language: fail
+        entry: legacy code is not edited
+        files: ^mower_sdk/legacy/
+      - id: no-inventory-edits
+        name: the upstream export inventory is not edited
+        language: fail
+        entry: tests/upstream_exports.json is never edited
+        files: ^tests/upstream_exports\.json$
+      - id: no-protected-deletions
+        name: protected paths are not deleted or moved away
+        entry: python tools/check_protected_paths.py
+        language: python
+        pass_filenames: false
+        always_run: true
+      # Tests are plain asyncio.run tests with recording fakes.
+      - id: test-style
+        name: tests use asyncio.run and recording fakes, not async plugins or mocks
+        language: pygrep
+        entry: '\bpytest_asyncio\b|\bpytest\.mark\.asyncio\b|\bunittest\.mock\b|from unittest import mock\b'
+        files: ^tests/.*\.py$
