@@ -75,6 +75,19 @@ def _raw_state(data: dict[str, Any], keys: tuple[str, ...]) -> Any:
     return value
 
 
+def _first_present(data: dict[str, Any], keys: tuple[str, ...], default: Any) -> Any:
+    """Return the value under the first key present in data, else the default.
+
+    Presence, not truth, decides: an explicit empty or None value under an
+    earlier key is returned as it is, and a later key is read only when the
+    earlier ones are absent.
+    """
+    for key in keys:
+        if key in data:
+            return data[key]
+    return default
+
+
 def _normalize_state_value(raw_state: Any) -> str:
     """Normalize cloud/raw mower state to canonical internal state value."""
     if isinstance(raw_state, MowerStatus):
@@ -197,6 +210,16 @@ class Device:
     def from_dict(cls, data: dict[str, Any]) -> "Device":
         """Create a Device from a dictionary.
 
+        The snake_case keys the model defines are read first. When one is
+        absent, and only then, its camelCase spelling is read instead:
+        ``deviceModel``, ``firmwareVersion``, ``serialNumber``, ``macAddress``
+        and ``isOnline``; an explicit empty or None snake_case value is kept.
+        ``firmware_version`` has one more source: ``firmware_version`` if
+        present, else ``firmware``, the key the device-list reply of an X430
+        carries, else ``firmwareVersion``. ``product_key``, ``device_name``
+        and ``iot_id`` take the first truthy value of their camelCase key,
+        their snake_case key and, for the last two, ``name`` and ``id``.
+
         Args:
             data: Dictionary holding the device information
 
@@ -210,11 +233,13 @@ class Device:
         return cls(
             id=data.get("id", ""),
             name=data.get("name", ""),
-            model=data.get("model", ""),
-            firmware_version=data.get("firmware_version", ""),
-            serial_number=data.get("serial_number", ""),
-            mac_address=data.get("mac_address"),
-            online=data.get("online", False),
+            model=_first_present(data, ("model", "deviceModel"), ""),
+            firmware_version=_first_present(
+                data, ("firmware_version", "firmware", "firmwareVersion"), ""
+            ),
+            serial_number=_first_present(data, ("serial_number", "serialNumber"), ""),
+            mac_address=_first_present(data, ("mac_address", "macAddress"), None),
+            online=_first_present(data, ("online", "isOnline"), False),
             extra=data.get("extra"),
             product_key=product_key,
             device_name=device_name,
