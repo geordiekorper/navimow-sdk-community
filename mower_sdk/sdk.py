@@ -12,7 +12,13 @@ from datetime import UTC, datetime
 from typing import Any
 
 from mower_sdk.errors import MowerUnsupportedOperationError
-from mower_sdk.location import LocationDecoder, ParsedLocation
+from mower_sdk.location import (
+    PLAUSIBLE_MIN_MS,
+    REASON_PRIORITY,
+    TIME_AHEAD_MAX_MS,
+    LocationDecoder,
+    ParsedLocation,
+)
 from mower_sdk.models import (
     DeviceAttributesMessage,
     DeviceCommandMessage,
@@ -21,6 +27,8 @@ from mower_sdk.models import (
     DeviceLocationMessage,
     DeviceStateMessage,
     RejectedMessage,
+    STATE_KNOWN_FIELDS,
+    mower_time_ms,
 )
 from mower_sdk.mqtt import NavimowMQTT, _resolve_event_loop
 
@@ -54,6 +62,15 @@ class NavimowSDK:
           ``loop`` property reads the MQTT client's binding. A closed
           ``loop=`` raises ValueError, and connecting from a running loop
           other than the bound one raises RuntimeError.
+        - on_rejected reports every message that was not applied, or was
+          applied with something unknown in it: a state, event or attributes
+          payload that is not a JSON object (unparsable), a state payload with
+          a field outside STATE_KNOWN_FIELDS (unknown_field, still applied),
+          and the location channel's reasons. With reject_late_state=True, a
+          state message whose timestamp is implausible (implausible_time) or
+          older than the device's newest accepted one (stale) is not applied;
+          one without a timestamp is. Every delivered message carries
+          received_at, the UTC receipt time.
         - keepalive_seconds defaults to 60: idle links die after about ten
           minutes, and a ping a minute keeps them alive and finds a dead one
           within about two minutes (NavimowMQTT says more).
@@ -88,8 +105,13 @@ class NavimowSDK:
         allow_experimental_mqtt_commands: bool = False,
         subscribe_location: bool = False,
         extra_topics: list[str] | None = None,
+        reject_late_state: bool = False,
     ) -> None:
         self._allow_experimental_mqtt_commands = allow_experimental_mqtt_commands
+        self._reject_late_state = reject_late_state
+        # device id -> the newest accepted state timestamp (mower milliseconds), kept
+        # only with reject_late_state.
+        self._state_marks: dict[str, int] = {}
         self._mqtt = NavimowMQTT(
             broker=broker,
             port=port,
@@ -260,31 +282,72 @@ class NavimowSDK:
             self._on_location_message(topic, payload, device_id)
             return
 
+        if channel not in ("state", "event", "attributes"):
+            return
+
+        received_at = datetime.now(UTC)
         try:
             payload_dict = json.loads(payload.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
-            return
+            payload_dict = None
         if not isinstance(payload_dict, dict):
+            self._reject(channel, topic, device_id, "unparsable", ["unparsable"], payload, received_at)
             return
 
         payload_dict.setdefault("device_id", device_id)
 
         if channel == "state":
-            msg = DeviceStateMessage.from_dict(payload_dict)
-            self._state_cache[msg.device_id] = msg
-            self._state_cache_updated_at[msg.device_id] = time.monotonic()
-            self._state_cache_received_at[msg.device_id] = datetime.now(UTC)
-            self._dispatch(self._state_callbacks, msg, channel)
+            self._on_state_payload(topic, payload, payload_dict, received_at)
             return
         if channel == "event":
             msg = DeviceEventMessage.from_dict(payload_dict)
+            msg.received_at = received_at
             self._dispatch(self._event_callbacks, msg, channel)
             return
-        if channel == "attributes":
-            msg = DeviceAttributesMessage.from_dict(payload_dict)
-            self._attributes_cache[msg.device_id] = msg
-            self._attributes_cache_updated_at[msg.device_id] = time.monotonic()
-            self._dispatch(self._attributes_callbacks, msg, channel)
+        msg = DeviceAttributesMessage.from_dict(payload_dict)
+        msg.received_at = received_at
+        self._attributes_cache[msg.device_id] = msg
+        self._attributes_cache_updated_at[msg.device_id] = time.monotonic()
+        self._dispatch(self._attributes_callbacks, msg, channel)
+
+    def _on_state_payload(
+        self, topic: str, payload: bytes, payload_dict: dict[str, Any], received_at: datetime
+    ) -> None:
+        """Apply a state payload unless the late-state filter blocks it; report what it earned.
+
+        A key outside STATE_KNOWN_FIELDS earns unknown_field and never blocks. With
+        reject_late_state, a timestamp outside the plausibility window earns
+        implausible_time and one older than the device's newest accepted timestamp
+        earns stale; both block, and a blocked message names the blocking reason as
+        its reason. A message without a timestamp is applied.
+        """
+        msg = DeviceStateMessage.from_dict(payload_dict)
+        msg.received_at = received_at
+        reasons = []
+        if not set(payload_dict) <= STATE_KNOWN_FIELDS:
+            reasons.append("unknown_field")
+        stamp = mower_time_ms(msg.timestamp) if self._reject_late_state else None
+        if stamp is not None:
+            now_ms = round(received_at.timestamp() * 1000)
+            mark = self._state_marks.get(msg.device_id)
+            if not PLAUSIBLE_MIN_MS <= stamp <= now_ms + TIME_AHEAD_MAX_MS:
+                reasons.append("implausible_time")
+            elif mark is not None and stamp < mark:
+                reasons.append("stale")
+        blocking = [reason for reason in reasons if reason in ("implausible_time", "stale")]
+        if not blocking:
+            if stamp is not None:
+                self._state_marks[msg.device_id] = max(stamp, self._state_marks.get(msg.device_id, stamp))
+            self._state_cache[msg.device_id] = msg
+            self._state_cache_updated_at[msg.device_id] = time.monotonic()
+            self._state_cache_received_at[msg.device_id] = received_at
+            self._dispatch(self._state_callbacks, msg, "state")
+        if reasons:
+            # A message that was not applied names the reason that blocked it; one that
+            # was applied names unknown_field.
+            ordered = [reason for reason in REASON_PRIORITY if reason in reasons]
+            reason = blocking[0] if blocking else ordered[0]
+            self._reject("state", topic, msg.device_id, reason, ordered, payload, received_at)
 
     def _on_location_message(self, topic: str, payload: bytes, device_id: str) -> None:
         received_at = datetime.now(UTC)

@@ -1,0 +1,218 @@
+"""NavimowSDK's state checks: the opt-in late-state filter, unknown fields, malformed payloads, receipt times.
+
+A minimal fake stands in for NavimowMQTT, a fake clock is patched into the sdk
+module in place of time and datetime, and _on_mqtt_message is driven directly.
+Mower timestamps are milliseconds around T, the fake receipt time.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+from datetime import UTC, datetime, timedelta
+from typing import Any
+
+import pytest
+
+from mower_sdk import sdk as sdk_module
+from mower_sdk.models import DeviceAttributesMessage, DeviceEventMessage, DeviceStateMessage, RejectedMessage
+from mower_sdk.sdk import NavimowSDK
+
+DEVICE_ID = "dev-1"
+NOW = datetime(2026, 9, 28, 12, 0, tzinfo=UTC)
+T = int(NOW.timestamp() * 1000)
+
+
+class FakeMQTT:
+    def __init__(self, **kwargs: Any) -> None:
+        self.kwargs = kwargs
+        self.on_message: Any = None
+        self.on_raw: Any = None
+
+
+class FakeClock:
+    def __init__(self) -> None:
+        self.monotonic_now = 100.0
+        self.wall_now = NOW
+
+    def monotonic(self) -> float:
+        return self.monotonic_now
+
+    def now(self, tz: Any) -> datetime:
+        assert tz is UTC
+        return self.wall_now
+
+
+@pytest.fixture
+def clock(monkeypatch: pytest.MonkeyPatch) -> FakeClock:
+    fake = FakeClock()
+    monkeypatch.setattr(sdk_module, "NavimowMQTT", FakeMQTT)
+    monkeypatch.setattr(sdk_module, "time", fake)
+    monkeypatch.setattr(sdk_module, "datetime", fake)
+    return fake
+
+
+pytestmark = pytest.mark.usefixtures("clock")
+
+
+class Recorder:
+    def __init__(self, sdk: NavimowSDK) -> None:
+        self.states: list[DeviceStateMessage] = []
+        self.events: list[DeviceEventMessage] = []
+        self.attributes: list[DeviceAttributesMessage] = []
+        self.rejected: list[RejectedMessage] = []
+        sdk.on_state(self.states.append)
+        sdk.on_event(self.events.append)
+        sdk.on_attributes(self.attributes.append)
+        sdk.on_rejected(self.rejected.append)
+
+
+def make(**options: Any) -> tuple[NavimowSDK, Recorder]:
+    sdk = NavimowSDK(broker="broker.example.invalid", port=443, **options)
+    return sdk, Recorder(sdk)
+
+
+def topic(channel: str) -> str:
+    return f"/downlink/vehicle/{DEVICE_ID}/realtimeDate/{channel}"
+
+
+def deliver(sdk: NavimowSDK, channel: str, payload: Any) -> bytes:
+    data = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
+    asyncio.run(sdk._on_mqtt_message(topic(channel), data, DEVICE_ID))
+    return data
+
+
+def state(timestamp: Any = None, **extra: Any) -> dict[str, Any]:
+    payload: dict[str, Any] = {"state": "isRunning", "battery": 80, **extra}
+    if timestamp is not None:
+        payload["timestamp"] = timestamp
+    return payload
+
+
+def test_the_option_is_off_by_default_and_not_forwarded_to_the_client() -> None:
+    sdk, seen = make()
+    assert "reject_late_state" not in sdk.mqtt.kwargs
+    deliver(sdk, "state", state(T))
+    deliver(sdk, "state", state(T - 60_000))  # older: applied anyway with the filter off
+    deliver(sdk, "state", state(5))  # 1970: applied anyway
+    assert [m.timestamp for m in seen.states] == [T, T - 60_000, 5]
+    assert seen.rejected == []
+    assert sdk._state_marks == {}
+
+
+def test_accepted_messages_advance_the_mark_and_an_older_one_is_stale() -> None:
+    sdk, seen = make(reject_late_state=True)
+    deliver(sdk, "state", state(T - 60_000))
+    assert sdk._state_marks == {DEVICE_ID: T - 60_000}
+    deliver(sdk, "state", state(T - 30_000))
+    deliver(sdk, "state", state(T - 30_000))  # equal to the mark: applied
+    assert sdk._state_marks == {DEVICE_ID: T - 30_000}
+    data = deliver(sdk, "state", state(T - 45_000, state="isDocked"))
+    assert [m.timestamp for m in seen.states] == [T - 60_000, T - 30_000, T - 30_000]
+    assert sdk.get_cached_state(DEVICE_ID).timestamp == T - 30_000
+    (rejection,) = seen.rejected
+    assert (rejection.channel, rejection.reason, rejection.reasons, rejection.payload) == ("state", "stale", ("stale",), data)
+    assert rejection.received_at == NOW
+
+
+def test_a_timestamp_in_seconds_is_compared_in_milliseconds() -> None:
+    sdk, seen = make(reject_late_state=True)
+    deliver(sdk, "state", state(T // 1000))
+    deliver(sdk, "state", state(T - 10_000))
+    assert [r.reason for r in seen.rejected] == ["stale"]
+    assert sdk._state_marks == {DEVICE_ID: (T // 1000) * 1000}
+
+
+@pytest.mark.parametrize("timestamp", [5, 1_500_000_000_000, T + 5 * 60 * 1000 + 1], ids=["1970", "2017", "ahead"])
+def test_an_implausible_timestamp_is_rejected_and_leaves_the_mark(timestamp: int) -> None:
+    sdk, seen = make(reject_late_state=True)
+    deliver(sdk, "state", state(T - 10_000))
+    deliver(sdk, "state", state(timestamp))
+    assert [r.reason for r in seen.rejected] == ["implausible_time"]
+    assert len(seen.states) == 1
+    assert sdk._state_marks == {DEVICE_ID: T - 10_000}
+
+
+def test_a_message_without_a_timestamp_is_applied_and_leaves_the_mark() -> None:
+    sdk, seen = make(reject_late_state=True)
+    deliver(sdk, "state", state(T - 10_000))
+    deliver(sdk, "state", state(None, state="isDocked"))
+    deliver(sdk, "state", state("soon"))
+    assert [m.state for m in seen.states] == ["mowing", "docked", "mowing"]
+    assert seen.rejected == []
+    assert sdk._state_marks == {DEVICE_ID: T - 10_000}
+
+
+def test_marks_are_per_device() -> None:
+    sdk, seen = make(reject_late_state=True)
+    deliver(sdk, "state", state(T))
+    asyncio.run(sdk._on_mqtt_message("/downlink/vehicle/dev-2/realtimeDate/state", json.dumps(state(T - 60_000)).encode(), "dev-2"))
+    assert seen.rejected == []
+    assert sdk._state_marks == {DEVICE_ID: T, "dev-2": T - 60_000}
+
+
+def test_an_unknown_field_is_applied_and_reported_and_never_blocks() -> None:
+    sdk, seen = make()
+    deliver(sdk, "state", state(T, speed=1))
+    assert len(seen.states) == 1
+    assert [(r.reason, r.reasons) for r in seen.rejected] == [("unknown_field", ("unknown_field",))]
+
+
+def test_a_stale_message_with_an_unknown_field_earns_both_is_not_applied_and_names_stale() -> None:
+    sdk, seen = make(reject_late_state=True)
+    deliver(sdk, "state", state(T))
+    deliver(sdk, "state", state(T - 1000, speed=1))
+    deliver(sdk, "state", state(5, speed=1))
+    assert len(seen.states) == 1
+    assert [(r.reason, r.reasons) for r in seen.rejected] == [
+        ("stale", ("unknown_field", "stale")),
+        ("implausible_time", ("implausible_time", "unknown_field")),
+    ]
+
+
+def test_the_known_state_fields_earn_no_reason() -> None:
+    sdk, seen = make()
+    deliver(sdk, "state", {"state": "isDocked", "vehicleState": "isDocked", "status": "x", "battery": 1,
+                           "capacityRemaining": [], "timestamp": T, "device_id": DEVICE_ID})
+    assert seen.rejected == []
+
+
+@pytest.mark.parametrize("channel", ["state", "event", "attributes"])
+@pytest.mark.parametrize("payload", [b"not json", b"[1]"], ids=["not_json", "array"])
+def test_a_malformed_payload_on_each_channel_is_reported_with_the_filter_off(channel: str, payload: bytes) -> None:
+    sdk, seen = make()
+    deliver(sdk, channel, payload)
+    assert (seen.states, seen.events, seen.attributes) == ([], [], [])
+    assert sdk.get_cached_state(DEVICE_ID) is None and sdk.get_cached_attributes(DEVICE_ID) is None
+    assert [(r.channel, r.topic, r.reason, r.payload) for r in seen.rejected] == [(channel, topic(channel), "unparsable", payload)]
+
+
+def test_a_rejected_state_leaves_the_cache_and_its_times_untouched(clock: FakeClock) -> None:
+    sdk, seen = make(reject_late_state=True)
+    deliver(sdk, "state", state(T))
+    clock.monotonic_now += 10
+    clock.wall_now += timedelta(seconds=10)
+    deliver(sdk, "state", state(T - 1000, state="isDocked"))
+    assert sdk.get_cached_state(DEVICE_ID).state == "mowing"
+    assert sdk.get_cached_state_age(DEVICE_ID) == 10.0
+    assert sdk.get_cached_state_received_at(DEVICE_ID) == NOW
+    assert seen.rejected[0].received_at == NOW + timedelta(seconds=10)
+
+
+def test_every_delivered_message_carries_its_receipt_time_outside_equality(clock: FakeClock) -> None:
+    sdk, seen = make()
+    deliver(sdk, "state", state(T))
+    clock.wall_now += timedelta(seconds=1)
+    deliver(sdk, "event", {"type": "system", "event": "started"})
+    clock.wall_now += timedelta(seconds=1)
+    deliver(sdk, "attributes", {"attributes": {"a": 1}})
+    assert [seen.states[0].received_at, seen.events[0].received_at, seen.attributes[0].received_at] == [
+        NOW, NOW + timedelta(seconds=1), NOW + timedelta(seconds=2)
+    ]
+    assert seen.events[0] == DeviceEventMessage(device_id=DEVICE_ID, timestamp=None, type="system", event="started")
+    for message in (seen.states[0], seen.events[0], seen.attributes[0]):
+        assert "received_at" not in message.to_dict()
+    assert seen.attributes[0] == DeviceAttributesMessage(device_id=DEVICE_ID, attributes={"a": 1})
+    assert DeviceStateMessage(device_id=DEVICE_ID, timestamp=None, state="docked").received_at is None
+    assert DeviceEventMessage(device_id=DEVICE_ID, timestamp=None, type="system", event="x").received_at is None
+    assert DeviceAttributesMessage(device_id=DEVICE_ID, attributes={}).received_at is None

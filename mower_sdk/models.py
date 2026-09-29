@@ -508,6 +508,9 @@ class DeviceStateMessage:
     # The payload as decoded, for a message made by from_dict; None for one built by
     # hand. Not compared and not in to_dict().
     raw: dict[str, Any] | None = field(default=None, compare=False, repr=False)
+    # When NavimowSDK received the message (UTC); None for one built by hand. Not
+    # compared and not in to_dict().
+    received_at: datetime | None = field(default=None, compare=False)
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "DeviceStateMessage":
@@ -562,6 +565,9 @@ class DeviceEventMessage:
     params: dict[str, Any] | None = None
     # The payload as decoded, as on DeviceStateMessage.
     raw: dict[str, Any] | None = field(default=None, compare=False, repr=False)
+    # When NavimowSDK received the message (UTC); None for one built by hand. Not
+    # compared and not in to_dict().
+    received_at: datetime | None = field(default=None, compare=False)
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "DeviceEventMessage":
@@ -596,6 +602,9 @@ class DeviceAttributesMessage:
     attributes: dict[str, Any]
     # The payload as decoded, as on DeviceStateMessage.
     raw: dict[str, Any] | None = field(default=None, compare=False, repr=False)
+    # When NavimowSDK received the message (UTC); None for one built by hand. Not
+    # compared and not in to_dict().
+    received_at: datetime | None = field(default=None, compare=False)
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "DeviceAttributesMessage":

@@ -3,8 +3,7 @@
 A minimal fake stands in for NavimowMQTT (the facade only sets its
 on_message), and _on_mqtt_message is driven directly. A location
 message is decoded into per-entry messages and a cached record, and what was
-not applied is reported through on_rejected; a malformed state payload is still
-dropped without a trace.
+not applied is reported through on_rejected, as is a malformed state payload.
 """
 
 from __future__ import annotations
@@ -92,15 +91,20 @@ def test_a_location_message_reaches_the_location_callbacks_and_cache_only(
 @pytest.mark.parametrize(
     "payload", [b"not json", b"\xff", b'[{"state":"isDocked"}]', b'"isDocked"'], ids=["not_json", "not_utf8", "array", "string"]
 )
-def test_a_malformed_state_payload_is_dropped_without_a_trace(
+def test_a_malformed_state_payload_is_reported_as_unparsable_and_not_applied(
     sdk: NavimowSDK, payload: bytes, caplog: pytest.LogCaptureFixture
 ) -> None:
     seen = record_everything(sdk)
+    rejected: list[RejectedMessage] = []
+    sdk.on_rejected(rejected.append)
     with caplog.at_level(logging.DEBUG, logger="mower_sdk"):
         asyncio.run(sdk._on_mqtt_message(topic("state"), payload, DEVICE_ID))
     assert seen == []
     assert sdk.get_cached_state(DEVICE_ID) is None
     assert sdk.get_cached_state_age(DEVICE_ID) is None
+    assert [(r.channel, r.reason, r.reasons, r.payload) for r in rejected] == [
+        ("state", "unparsable", ("unparsable",), payload)
+    ]
     assert caplog.records == []
 
 
