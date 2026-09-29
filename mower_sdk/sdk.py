@@ -3,15 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import logging
 import time
 import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from mower_sdk.errors import MowerUnsupportedOperationError
+from mower_sdk.errors import ERROR_MESSAGES, MowerAPIError, MowerUnsupportedOperationError
 from mower_sdk.location import (
     PLAUSIBLE_MIN_MS,
     REASON_PRIORITY,
@@ -31,6 +32,9 @@ from mower_sdk.models import (
     mower_time_ms,
 )
 from mower_sdk.mqtt import NavimowMQTT, _resolve_event_loop
+
+if TYPE_CHECKING:
+    from mower_sdk.api import MowerAPI
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -141,6 +145,8 @@ class NavimowSDK:
         self._rejected_callbacks: list[Callable[[RejectedMessage], None]] = []
         self._raw_callbacks: list[Callable[[str, bytes], None]] = []
         self._location = LocationDecoder()
+        self._credentials_lock = asyncio.Lock()
+        self._credentials_attempted_at: float | None = None
 
         self._state_cache: dict[str, DeviceStateMessage] = {}
         self._attributes_cache: dict[str, DeviceAttributesMessage] = {}
@@ -199,6 +205,76 @@ class NavimowSDK:
             auth_headers=auth_headers,
             force_reconnect=force_reconnect,
         )
+
+    async def async_refresh_broker_credentials(
+        self,
+        api: MowerAPI,
+        *,
+        auth_headers: dict[str, str] | None = None,
+        force_reconnect: bool = False,
+        cooldown: float = 65.0,
+    ) -> bool:
+        """Fetch the broker username and password from the cloud and apply them.
+
+        When to call it: at startup, then connect() (or construct the facade
+        from the reply instead); and after on_connect_fail, where paho's thread
+        is still retrying and uses the applied values at its next attempt, or
+        at once with force_reconnect=True. Never on a timer, and never on an
+        OAuth token refresh, which is update_mqtt_credentials(auth_headers=...)
+        alone. It does not refresh the OAuth token: do that first, and pass the
+        new bearer header as auth_headers.
+
+        The endpoint allows about one call a minute, so a call within cooldown
+        seconds of the last attempt (a failed one included, since the cloud
+        counted it) returns False without a request; concurrent calls run one
+        at a time. Otherwise userName and pwdInfo from the reply are applied,
+        as strings, through update_mqtt_credentials(..., force_reconnect=...),
+        run in the default executor because its rebuilding paths block, and
+        True is returned. It does not start a connection of its own: unchanged
+        values without force_reconnect leave the client alone. Changed values
+        on a client that is not connected go through a rebuild, which connects,
+        as update_mqtt_credentials always has; a connect() after it is then a
+        no-op.
+
+        The loop the call is made from is bound to the MQTT client if none is,
+        before any executor work, so the callbacks of a facade constructed
+        outside a loop go to the caller's loop. A client bound to another loop
+        raises RuntimeError.
+
+        Raises:
+            RuntimeError: The client is bound to another event loop.
+            MowerAPIError: The request failed (MowerRateLimitedError: too early),
+                or the reply carried no credentials.
+        """
+        running = asyncio.get_running_loop()
+        if self._mqtt.loop is None:
+            self._mqtt.loop = running
+        elif self._mqtt.loop is not running:
+            raise RuntimeError(
+                f"NavimowSDK is bound to event loop {self._mqtt.loop!r}; "
+                f"async_refresh_broker_credentials() was called from another, {running!r}"
+            )
+        async with self._credentials_lock:
+            now = time.monotonic()
+            if self._credentials_attempted_at is not None and now - self._credentials_attempted_at < cooldown:
+                return False
+            self._credentials_attempted_at = now
+            info = await api.async_get_mqtt_user_info()
+            username = info.get("userName") if isinstance(info, dict) else None
+            password = info.get("pwdInfo") if isinstance(info, dict) else None
+            if username is None and password is None:
+                raise MowerAPIError(f"{ERROR_MESSAGES['API_REQUEST_FAILED']}: no broker credentials in the reply")
+            await running.run_in_executor(
+                None,
+                functools.partial(
+                    self.update_mqtt_credentials,
+                    None if username is None else str(username),
+                    None if password is None else str(password),
+                    auth_headers,
+                    force_reconnect=force_reconnect,
+                ),
+            )
+            return True
 
     def on_state(self, callback: Callable[[DeviceStateMessage], None]) -> None:
         self._state_callbacks.append(callback)
