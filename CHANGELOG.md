@@ -7,6 +7,8 @@ throughout.
 
 ## [Unreleased]
 
+## [0.2.0a3] - 2026-09-29
+
 The MQTT transport, the location channel, the models and the REST errors.
 Nothing upstream published is removed; the live path behaves differently only
 as listed here. `UPSTREAM.md` maps the pieces taken from the randax and
@@ -366,6 +368,7 @@ metadata and its guards. No line of executable code differs from upstream
 - `UPSTREAM.md`, recording the fork point, the remotes, provenance and the
   rules that keep a merge-back possible.
 
-[Unreleased]: https://github.com/geordiekorper/navimow-sdk-community/compare/v0.2.0a2...HEAD
+[Unreleased]: https://github.com/geordiekorper/navimow-sdk-community/compare/v0.2.0a3...HEAD
+[0.2.0a3]: https://github.com/geordiekorper/navimow-sdk-community/compare/v0.2.0a2...v0.2.0a3
 [0.2.0a2]: https://github.com/geordiekorper/navimow-sdk-community/compare/v0.2.0a1...v0.2.0a2
 [0.2.0a1]: https://github.com/geordiekorper/navimow-sdk-community/releases/tag/v0.2.0a1
