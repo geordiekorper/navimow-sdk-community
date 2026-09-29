@@ -1,8 +1,12 @@
-# Release to TestPyPI on a version tag using PyPI trusted publishing (OIDC),
-# so no API token is stored anywhere. TestPyPI must list this repository as
-# the project's trusted publisher: owner geordiekorper, repository
-# navimow-sdk-community, workflow publish.yml, environment testpypi.
-# Publishing to PyPI proper is a later addition; for now TestPyPI only.
+# Release a version tag using PyPI trusted publishing (OIDC), so no API
+# token is stored anywhere. Every v* tag builds the sdist and wheel once,
+# uploads them to TestPyPI unattended, and then waits at the pypi job: that
+# job runs in the pypi environment, whose required-reviewer rule holds it
+# until the owner approves the deployment, so nothing reaches PyPI before
+# the release has been tested. A failed TestPyPI upload stops the run before
+# PyPI. Both indexes list this repository as the project's trusted
+# publisher: owner geordiekorper, repository navimow-sdk-community, workflow
+# publish.yml, environment testpypi on test.pypi.org and pypi on pypi.org.
 name: Publish
 
 on:
@@ -71,3 +75,20 @@ jobs:
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:
           repository-url: https://test.pypi.org/legacy/
+
+  pypi:
+    name: upload to PyPI
+    needs: [build, testpypi]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: pypi
+      url: https://pypi.org/project/navimow-sdk-community/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
