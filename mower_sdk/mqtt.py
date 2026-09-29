@@ -119,7 +119,10 @@ class NavimowMQTT:
     ``asyncio.set_event_loop()`` at that time, else the same two at the first
     ``connect_async()``. A client constructed and connected with no running or
     current loop must be given ``loop=``; a callback that arrives while no loop
-    is bound is dropped with a warning.
+    is bound is dropped with a warning. A closed ``loop=`` is refused with
+    ValueError, and ``connect_async()`` called from inside a running loop other
+    than the bound one raises RuntimeError: the callbacks would go to a loop the
+    caller is not running.
 
     The connection is observable without wrapping paho's callbacks:
     ``on_connect_fail`` is called with a reason when a connect is refused or
@@ -160,6 +163,8 @@ class NavimowMQTT:
         self.username = username
         self.password = password
         self.records = records
+        if loop is not None and loop.is_closed():
+            raise ValueError("NavimowMQTT: the loop= given is closed")
         self.loop = _resolve_event_loop(loop)
         self.ws_path = ws_path
         self.auth_headers = auth_headers
@@ -454,6 +459,16 @@ class NavimowMQTT:
             # anywhere, connect from inside the loop; or set the loop, connect, then
             # run_forever) deliver the callbacks there.
             self.loop = _resolve_event_loop(None)
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is not None and self.loop is not None and running is not self.loop:
+            raise RuntimeError(
+                f"NavimowMQTT is bound to event loop {self.loop!r}; connect_async() was called "
+                f"from another running loop, {running!r}. Connect from the bound loop, or "
+                "construct the client in (or with loop=) the loop that will run it."
+            )
         if self._loop_started:
             # paho's thread is running for this client: connected, connecting, or
             # waiting to retry. Calling paho's connect_async again would reset the
@@ -563,12 +578,17 @@ class NavimowMQTT:
         never awaited" RuntimeWarning at garbage collection. No loop bound at all is
         logged as a warning: nothing will be delivered until loop= is passed or a
         connect is made from inside a loop. A bound loop that is not running (stopped
-        at shutdown, say) keeps the debug line.
+        at shutdown, say) keeps the debug line, and so does a loop that closes
+        between the running check and the hand-over, which paho's thread would
+        otherwise die of.
         """
         loop = self.loop
         if loop is not None and loop.is_running():
-            loop.call_soon_threadsafe(asyncio.create_task, coro)
-            return
+            try:
+                loop.call_soon_threadsafe(asyncio.create_task, coro)
+                return
+            except RuntimeError:  # "Event loop is closed": it closed under the call
+                pass
         if loop is None:
             _LOGGER.warning(
                 "NavimowMQTT has no event loop bound, MQTT callback dropped; pass loop= or "

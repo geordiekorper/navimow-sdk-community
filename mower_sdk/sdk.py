@@ -46,7 +46,10 @@ class NavimowSDK:
           ``asyncio.set_event_loop()`` at that time, else the same two at the
           first ``connect()``. A facade constructed and connected with no
           running or current loop must be given ``loop=``; a callback that
-          arrives while no loop is bound is dropped with a warning.
+          arrives while no loop is bound is dropped with a warning. The
+          ``loop`` property reads the MQTT client's binding. A closed
+          ``loop=`` raises ValueError, and connecting from a running loop
+          other than the bound one raises RuntimeError.
         - get_cached_state and get_cached_attributes return the last message
           seen for a device; get_cached_state_age, get_cached_attributes_age
           and get_cached_state_received_at say when it arrived, so a consumer
@@ -77,7 +80,6 @@ class NavimowSDK:
         reconnect_max_delay: int = 60,
         allow_experimental_mqtt_commands: bool = False,
     ) -> None:
-        self._loop = _resolve_event_loop(loop)
         self._allow_experimental_mqtt_commands = allow_experimental_mqtt_commands
         self._mqtt = NavimowMQTT(
             broker=broker,
@@ -87,7 +89,7 @@ class NavimowSDK:
             records=records or [],
             ws_path=ws_path,
             auth_headers=auth_headers,
-            loop=self._loop,
+            loop=_resolve_event_loop(loop),
             keepalive_seconds=keepalive_seconds,
             reconnect_min_delay=reconnect_min_delay,
             reconnect_max_delay=reconnect_max_delay,
@@ -106,6 +108,11 @@ class NavimowSDK:
         self._state_cache_updated_at: dict[str, float] = {}
         self._attributes_cache_updated_at: dict[str, float] = {}
         self._state_cache_received_at: dict[str, datetime] = {}
+
+    @property
+    def loop(self) -> asyncio.AbstractEventLoop | None:
+        """The event loop the callbacks run on: the MQTT client's, which it may bind at connect."""
+        return self._mqtt.loop
 
     @property
     def mqtt(self) -> NavimowMQTT:
