@@ -8,9 +8,11 @@ import importlib
 import json
 import logging
 import sys
+import time
 import uuid
 from urllib.parse import urlparse
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from paho.mqtt import client as mqtt_client
@@ -117,6 +119,16 @@ class NavimowMQTT:
     ``connect_async()``. A client constructed and connected with no running or
     current loop must be given ``loop=``; a callback that arrives while no loop
     is bound is dropped with a warning.
+
+    The connection is observable without wrapping paho's callbacks:
+    ``on_connect_fail`` is called with a reason when a connect is refused or
+    fails before the broker answers; ``last_connect_fail_reason``,
+    ``last_disconnect_reason`` and ``last_connected_at`` keep the latest of
+    each; ``connects``, ``disconnects`` and ``connect_failures`` count them
+    since construction; ``client_id`` is the id the wire client was built
+    with; and ``last_message_at()`` and ``last_message_age()`` say when a
+    message last arrived for a device, per channel or across channels. The
+    bookkeeping happens whether or not a hook is set.
     """
 
     def __init__(
@@ -152,6 +164,16 @@ class NavimowMQTT:
         self.on_ready: Callable[[], Awaitable[None]] | None = None
         self.on_message: Callable[[str, bytes, str], Awaitable[None]] | None = None
         self.on_disconnected: Callable[[], Awaitable[None]] | None = None
+        self.on_connect_fail: Callable[[str], Awaitable[None]] | None = None
+
+        self.last_connect_fail_reason: str | None = None
+        self.last_disconnect_reason: str | None = None
+        self.last_connected_at: datetime | None = None
+        self.connects = 0
+        self.disconnects = 0
+        self.connect_failures = 0
+        # device id -> channel -> (UTC receipt time, time.monotonic() at receipt)
+        self._last_message: dict[str, dict[str, tuple[datetime, float]]] = {}
 
         # self.client is assigned before it is configured: the callback lookups
         # in _configure_client may read it, and a subclass can rely on that.
@@ -175,6 +197,37 @@ class NavimowMQTT:
     def is_connected(self) -> bool:
         return self.client.is_connected()
 
+    @property
+    def client_id(self) -> str:
+        """The MQTT client id the paho client was built with."""
+        return self._client_id
+
+    def _last_message_stamp(self, device_id: str, channel: str | None) -> tuple[datetime, float] | None:
+        channels = self._last_message.get(device_id, {})
+        if channel is not None:
+            return channels.get(channel)
+        # paho's thread adds channels while this runs on the loop: list() copies the
+        # values in one step, and max() then walks the copy, not the live dict.
+        return max(list(channels.values()), key=lambda stamp: stamp[1], default=None)
+
+    def last_message_at(self, device_id: str, channel: str | None = None) -> datetime | None:
+        """The UTC time the last message for device_id arrived, or None if none has.
+
+        channel names one topic channel ("state", "event", "attributes", ...);
+        None gives the newest across all channels. Every message on a topic that
+        parses counts, whether or not on_message is set.
+        """
+        stamp = self._last_message_stamp(device_id, channel)
+        return None if stamp is None else stamp[0]
+
+    def last_message_age(self, device_id: str, channel: str | None = None) -> float | None:
+        """Seconds (monotonic) since the last message for device_id arrived, or None if none has.
+
+        channel as in last_message_at.
+        """
+        stamp = self._last_message_stamp(device_id, channel)
+        return None if stamp is None else time.monotonic() - stamp[1]
+
     def _configure_client(self, client: mqtt_client.Client) -> None:
         """Apply the current credentials, WebSocket options, TLS, reconnect delays and callbacks."""
         if self.username and self.password:
@@ -188,6 +241,7 @@ class NavimowMQTT:
         )
         client.on_connect = self._on_connect
         client.on_disconnect = self._on_disconnect
+        client.on_connect_fail = self._on_connect_fail
         client.on_message = self._on_message
 
     def _build_new_client(self) -> mqtt_client.Client:
@@ -390,11 +444,20 @@ class NavimowMQTT:
         if close is not None:
             close()
 
+    def _connect_failed(self, reason: str) -> None:
+        self.connect_failures += 1
+        self.last_connect_fail_reason = reason
+        if self.on_connect_fail is not None:
+            self._schedule(self.on_connect_fail(reason))
+
     def _on_connect(self, _client, _userdata, _flags, reason_code, _properties=None) -> None:
         """paho's on_connect, callback API version 2: reason_code is a paho ReasonCode."""
         if reason_code.is_failure:
             _LOGGER.error("MQTT connection failed: %s (%s)", reason_code, reason_code.value)
+            self._connect_failed(f"refused: {reason_code} ({reason_code.value})")
             return
+        self.connects += 1
+        self.last_connected_at = datetime.now(UTC)
         _LOGGER.info(
             "NavimowMQTT connected: broker=%s port=%s",
             self.broker,
@@ -409,8 +472,23 @@ class NavimowMQTT:
         if self.on_ready is not None:
             self._schedule(self.on_ready())
 
+    def _on_connect_fail(self, _client, _userdata) -> None:
+        """paho's on_connect_fail: no CONNACK at all.
+
+        A network failure, or a bearer token refused at the WebSocket upgrade,
+        shows this way. paho keeps retrying with the reconnect delays.
+        """
+        _LOGGER.warning(
+            "NavimowMQTT connection failed before CONNACK: broker=%s port=%s",
+            self.broker,
+            self.port,
+        )
+        self._connect_failed("connection failed before CONNACK")
+
     def _on_disconnect(self, _client, _userdata, _flags, reason_code, _properties=None) -> None:
         """paho's on_disconnect, callback API version 2."""
+        self.disconnects += 1
+        self.last_disconnect_reason = "requested" if not reason_code.is_failure else str(reason_code)
         _LOGGER.debug(
             "NavimowMQTT disconnected: broker=%s port=%s rc=%s",
             self.broker,
@@ -434,7 +512,9 @@ class NavimowMQTT:
 
     def _on_message(self, _client, _userdata, msg) -> None:
         topic = msg.topic
-        device_id, _ = self._parse_topic(topic)
+        device_id, channel = self._parse_topic(topic)
+        if device_id and channel:
+            self._last_message.setdefault(device_id, {})[channel] = (datetime.now(UTC), time.monotonic())
 
         payload_bytes = msg.payload
         _LOGGER.debug(

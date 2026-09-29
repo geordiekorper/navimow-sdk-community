@@ -97,6 +97,7 @@ def test_construction_passes_the_parameters_through_and_wires_on_message(
             "reconnect_max_delay": 60,
         }
         assert mqtt.on_message == sdk._on_mqtt_message
+        assert sdk.mqtt is mqtt
         assert sdk.is_connected is False
         sdk.connect()
         sdk.disconnect()

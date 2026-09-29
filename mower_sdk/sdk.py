@@ -107,6 +107,11 @@ class NavimowSDK:
         self._attributes_cache_updated_at: dict[str, float] = {}
         self._state_cache_received_at: dict[str, datetime] = {}
 
+    @property
+    def mqtt(self) -> NavimowMQTT:
+        """The MQTT client: its connection hooks, counters, reasons and message times."""
+        return self._mqtt
+
     def connect(self) -> None:
         """Connect to MQTT broker and start consuming."""
         self._mqtt.connect_async()
