@@ -35,6 +35,7 @@ COMMUNITY_ADDITIONS: dict[str, set[str]] = {
         "CommandVerdict",
         "DeviceLocation",
         "DeviceLocationMessage",
+        "RejectedMessage",
         "VEHICLE_STATE_TO_STATUS",
         "mower_time_ms",
     },

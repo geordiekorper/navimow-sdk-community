@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 # The public surface upstream published from this module, plus the community
 # additions CommandReceipt and CommandVerdict and the location channel's
 # DeviceLocation, DeviceLocationMessage, VEHICLE_STATE_TO_STATUS and
-# mower_time_ms. The four Thing* classes now live
+# mower_time_ms, and RejectedMessage. The four Thing* classes now live
 # in mower_sdk.legacy.thing_models and are served by __getattr__.
 __all__ = [
     "CommandReceipt",
@@ -39,6 +39,7 @@ __all__ = [
     "MowerCommand",
     "MowerError",
     "MowerStatus",
+    "RejectedMessage",
     "VEHICLE_STATE_TO_STATUS",
     "mower_time_ms",
     "ThingEventMessage",
@@ -840,6 +841,26 @@ class DeviceLocationMessage:
     def status(self) -> MowerStatus | None:
         """The pose code as a MowerStatus; None without one, UNKNOWN for a code not in the table."""
         return _status_of(self.vehicle_state)
+
+
+@dataclass(frozen=True)
+class RejectedMessage:
+    """A message NavimowSDK did not apply, or applied with something unknown in it.
+
+    ``reason`` is the deciding one of ``reasons`` (unparsable, implausible_time,
+    unknown_type, unknown_field, stale, placeholder). ``payload`` is the bytes the
+    facade received: the wire bytes for an array, and for an object the MQTT
+    client's re-encoded form with device_id added. Recording it is the
+    consumer's.
+    """
+
+    channel: str
+    topic: str
+    device_id: str
+    reason: str
+    reasons: tuple[str, ...]
+    payload: bytes
+    received_at: datetime
 
 
 # Names that moved to mower_sdk.legacy: attribute here -> (legacy module, attribute there).

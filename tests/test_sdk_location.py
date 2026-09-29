@@ -1,20 +1,24 @@
 """NavimowSDK and the payloads it does not model: location messages and malformed state.
 
 A minimal fake stands in for NavimowMQTT (the facade only sets its
-on_message), and _on_mqtt_message is driven directly. Today both kinds of
-payload are dropped without a trace: nothing reaches a callback or a cache,
-and nothing is logged.
+on_message), and _on_mqtt_message is driven directly. A location
+message is decoded into per-entry messages and a cached record, and what was
+not applied is reported through on_rejected; a malformed state payload is still
+dropped without a trace.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
 
 from mower_sdk import sdk as sdk_module
+from mower_sdk.models import DeviceLocation, DeviceLocationMessage, RejectedMessage
 from mower_sdk.sdk import NavimowSDK
 
 DEVICE_ID = "dev-1"
@@ -24,6 +28,7 @@ class FakeMQTT:
     def __init__(self, **kwargs: Any) -> None:
         self.kwargs = kwargs
         self.on_message: Any = None
+        self.on_raw: Any = None
 
 
 @pytest.fixture
@@ -36,6 +41,14 @@ def topic(channel: str) -> str:
     return f"/downlink/vehicle/{DEVICE_ID}/realtimeDate/{channel}"
 
 
+def deliver(sdk: NavimowSDK, channel: str, payload: bytes, topic_name: str | None = None) -> None:
+    asyncio.run(sdk._on_mqtt_message(topic_name or topic(channel), payload, DEVICE_ID))
+
+
+def pose(t: int, x: str = "1.5") -> dict[str, Any]:
+    return {"type": 1, "time": str(t), "postureX": x, "postureY": "2.5"}
+
+
 def record_everything(sdk: NavimowSDK) -> list[Any]:
     seen: list[Any] = []
     sdk.on_state(seen.append)
@@ -45,23 +58,34 @@ def record_everything(sdk: NavimowSDK) -> list[Any]:
 
 
 @pytest.mark.parametrize(
-    "payload",
+    ("payload", "applied"),
     [
-        b'[{"type":"1","time":"1790000000000","postureX":"1.5","postureY":"2.5"}]',
-        b'{"type":"1","time":"1790000000000","device_id":"dev-1"}',
-        b"[]",
+        (b'[{"type":1,"time":"1790000000000","postureX":"1.5","postureY":"2.5"}]', 1),
+        (b'{"type": 1, "time": "1790000000000", "postureX": "1.5", "postureY": "2.5", "device_id": "dev-1"}', 1),
+        (b"[]", 0),
     ],
     ids=["array", "object", "empty_array"],
 )
-def test_a_location_message_reaches_no_callback_and_no_cache(
-    sdk: NavimowSDK, payload: bytes, caplog: pytest.LogCaptureFixture
+def test_a_location_message_reaches_the_location_callbacks_and_cache_only(
+    sdk: NavimowSDK, payload: bytes, applied: int, caplog: pytest.LogCaptureFixture
 ) -> None:
     seen = record_everything(sdk)
+    located: list[DeviceLocationMessage] = []
+    rejected: list[RejectedMessage] = []
+    sdk.on_location(located.append)
+    sdk.on_rejected(rejected.append)
     with caplog.at_level(logging.DEBUG, logger="mower_sdk.sdk"):
-        asyncio.run(sdk._on_mqtt_message(topic("location"), payload, DEVICE_ID))
+        deliver(sdk, "location", payload)
     assert seen == []
     assert sdk.get_cached_state(DEVICE_ID) is None
     assert sdk.get_cached_attributes(DEVICE_ID) is None
+    assert len(located) == applied
+    assert rejected == []  # the object's injected device_id is not an unknown field
+    if applied:
+        assert sdk.get_cached_location(DEVICE_ID) == located[0].location
+        assert located[0].location.x == 1.5
+    else:
+        assert sdk.get_cached_location(DEVICE_ID) is None
     assert caplog.records == []
 
 
@@ -78,3 +102,98 @@ def test_a_malformed_state_payload_is_dropped_without_a_trace(
     assert sdk.get_cached_state(DEVICE_ID) is None
     assert sdk.get_cached_state_age(DEVICE_ID) is None
     assert caplog.records == []
+
+
+T = int(datetime.now(UTC).timestamp() * 1000) - 60_000
+
+
+def test_one_callback_per_applied_entry_with_the_record_as_of_that_entry_and_one_rejection(sdk: NavimowSDK) -> None:
+    located: list[DeviceLocationMessage] = []
+    rejected: list[RejectedMessage] = []
+    order: list[str] = []
+    sdk.on_location(located.append)
+    sdk.on_rejected(rejected.append)
+    sdk.on_location(lambda _message: order.append("location"))
+    sdk.on_rejected(lambda _message: order.append("rejected"))
+    payload = json.dumps(
+        [pose(T - 1000, "3"), pose(T - 3000, "1"), {"type": 9}, pose(T - 2000, "2"), {**pose(T, "0"), "postureY": "0"}]
+    ).encode()
+    deliver(sdk, "location", payload)
+    assert order == ["location", "location", "location", "rejected"]
+    assert [m.x for m in located] == [1.0, 2.0, 3.0]
+    assert [m.location.x for m in located] == [1.0, 2.0, 3.0]
+    assert sdk.get_cached_location(DEVICE_ID) == located[-1].location
+    (rejection,) = rejected
+    assert (rejection.channel, rejection.topic, rejection.device_id) == ("location", topic("location"), DEVICE_ID)
+    assert (rejection.reason, rejection.reasons) == ("unknown_type", ("unknown_type", "placeholder"))
+    assert rejection.payload is payload
+    assert rejection.received_at.tzinfo is UTC
+
+
+@pytest.mark.parametrize("payload", [b"not json", b"\xff", b'"text"'], ids=["not_json", "not_utf8", "string"])
+def test_an_unreadable_location_payload_is_rejected_as_unparsable(sdk: NavimowSDK, payload: bytes) -> None:
+    rejected: list[RejectedMessage] = []
+    sdk.on_rejected(rejected.append)
+    deliver(sdk, "location", payload)
+    assert [(r.reason, r.reasons, r.payload) for r in rejected] == [("unparsable", ("unparsable",), payload)]
+    assert sdk.get_cached_location(DEVICE_ID) is None
+
+
+def test_an_unknown_field_is_applied_and_reported(sdk: NavimowSDK) -> None:
+    located: list[DeviceLocationMessage] = []
+    rejected: list[RejectedMessage] = []
+    sdk.on_location(located.append)
+    sdk.on_rejected(rejected.append)
+    deliver(sdk, "location", json.dumps({**pose(T), "speed": "1", "device_id": DEVICE_ID}).encode())
+    assert len(located) == 1
+    assert [r.reasons for r in rejected] == [("unknown_field",)]
+
+
+def test_a_restored_location_rejects_an_older_pose(sdk: NavimowSDK) -> None:
+    rejected: list[RejectedMessage] = []
+    sdk.on_rejected(rejected.append)
+    sdk.restore_location(DEVICE_ID, DeviceLocation(device_id=DEVICE_ID, x=9.0, pose_at=T, marks={1: T}))
+    deliver(sdk, "location", json.dumps([pose(T - 1000)]).encode())
+    assert [r.reason for r in rejected] == ["stale"]
+    assert sdk.get_cached_location(DEVICE_ID).x == 9.0
+
+
+def test_a_raising_location_callback_does_not_stop_the_others(
+    sdk: NavimowSDK, caplog: pytest.LogCaptureFixture
+) -> None:
+    located: list[DeviceLocationMessage] = []
+
+    def broken(_message: DeviceLocationMessage) -> None:
+        raise RuntimeError("consumer bug")
+
+    sdk.on_location(broken)
+    sdk.on_location(located.append)
+    with caplog.at_level(logging.ERROR, logger="mower_sdk.sdk"):
+        deliver(sdk, "location", json.dumps([pose(T)]).encode())
+    assert len(located) == 1
+    assert "Navimow location callback" in caplog.records[0].getMessage()
+
+
+def test_raw_callbacks_are_installed_on_the_client_only_once_registered(
+    sdk: NavimowSDK, caplog: pytest.LogCaptureFixture
+) -> None:
+    assert sdk.mqtt.on_raw is None
+    seen: list[tuple[str, bytes]] = []
+
+    def broken(_topic: str, _payload: bytes) -> None:
+        raise RuntimeError("consumer bug")
+
+    sdk.on_raw(broken)
+    sdk.on_raw(lambda topic_name, payload: seen.append((topic_name, payload)))
+    assert sdk.mqtt.on_raw == sdk._on_mqtt_raw
+    with caplog.at_level(logging.ERROR, logger="mower_sdk.sdk"):
+        asyncio.run(sdk.mqtt.on_raw("custom/topic", b"\x01"))
+    assert seen == [("custom/topic", b"\x01")]
+    assert "Navimow raw callback" in caplog.records[0].getMessage()
+    assert "custom/topic" in caplog.records[0].getMessage()
+
+
+def test_the_facade_forwards_subscribe_location_and_extra_topics(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sdk_module, "NavimowMQTT", FakeMQTT)
+    facade = NavimowSDK(broker="broker.example.invalid", port=443, subscribe_location=True, extra_topics=["a/b"])
+    assert (facade.mqtt.kwargs["subscribe_location"], facade.mqtt.kwargs["extra_topics"]) == (True, ["a/b"])

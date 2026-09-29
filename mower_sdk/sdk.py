@@ -12,11 +12,15 @@ from datetime import UTC, datetime
 from typing import Any
 
 from mower_sdk.errors import MowerUnsupportedOperationError
+from mower_sdk.location import LocationDecoder, ParsedLocation
 from mower_sdk.models import (
     DeviceAttributesMessage,
     DeviceCommandMessage,
     DeviceEventMessage,
+    DeviceLocation,
+    DeviceLocationMessage,
     DeviceStateMessage,
+    RejectedMessage,
 )
 from mower_sdk.mqtt import NavimowMQTT, _resolve_event_loop
 
@@ -82,6 +86,8 @@ class NavimowSDK:
         reconnect_min_delay: int = 1,
         reconnect_max_delay: int = 60,
         allow_experimental_mqtt_commands: bool = False,
+        subscribe_location: bool = False,
+        extra_topics: list[str] | None = None,
     ) -> None:
         self._allow_experimental_mqtt_commands = allow_experimental_mqtt_commands
         self._mqtt = NavimowMQTT(
@@ -96,12 +102,18 @@ class NavimowSDK:
             keepalive_seconds=keepalive_seconds,
             reconnect_min_delay=reconnect_min_delay,
             reconnect_max_delay=reconnect_max_delay,
+            subscribe_location=subscribe_location,
+            extra_topics=extra_topics,
         )
         self._mqtt.on_message = self._on_mqtt_message
 
         self._state_callbacks: list[Callable[[DeviceStateMessage], None]] = []
         self._event_callbacks: list[Callable[[DeviceEventMessage], None]] = []
         self._attributes_callbacks: list[Callable[[DeviceAttributesMessage], None]] = []
+        self._location_callbacks: list[Callable[[DeviceLocationMessage], None]] = []
+        self._rejected_callbacks: list[Callable[[RejectedMessage], None]] = []
+        self._raw_callbacks: list[Callable[[str, bytes], None]] = []
+        self._location = LocationDecoder()
 
         self._state_cache: dict[str, DeviceStateMessage] = {}
         self._attributes_cache: dict[str, DeviceAttributesMessage] = {}
@@ -170,6 +182,39 @@ class NavimowSDK:
     def on_attributes(self, callback: Callable[[DeviceAttributesMessage], None]) -> None:
         self._attributes_callbacks.append(callback)
 
+    def on_location(self, callback: Callable[[DeviceLocationMessage], None]) -> None:
+        """Call callback with each applied entry of a location message, in the order applied.
+
+        Each message carries the merged record as it stood after its entry. The
+        channel is subscribed only with subscribe_location=True.
+        """
+        self._location_callbacks.append(callback)
+
+    def on_rejected(self, callback: Callable[[RejectedMessage], None]) -> None:
+        """Call callback once for each message that was not applied, or was applied with
+        something unknown in it, after whatever was applied has been delivered."""
+        self._rejected_callbacks.append(callback)
+
+    def on_raw(self, callback: Callable[[str, bytes], None]) -> None:
+        """Call callback(topic, payload) for every MQTT message, on any topic, with the bytes as received.
+
+        Nothing extra runs per message until the first raw callback is registered.
+        """
+        self._raw_callbacks.append(callback)
+        self._mqtt.on_raw = self._on_mqtt_raw
+
+    def get_cached_location(self, device_id: str) -> DeviceLocation | None:
+        """The merged location record for device_id, or None before any location entry or restore."""
+        return self._location.get(device_id)
+
+    def restore_location(self, device_id: str, location: DeviceLocation) -> None:
+        """Install a location record persisted earlier (DeviceLocation.to_dict / from_dict).
+
+        Call it before connecting, so a late entry older than what was applied
+        before a restart is rejected as stale rather than applied.
+        """
+        self._location.restore(device_id, location)
+
     def get_cached_state(self, device_id: str) -> DeviceStateMessage | None:
         return self._state_cache.get(device_id)
 
@@ -190,17 +235,17 @@ class NavimowSDK:
         """The UTC time the cached state message for device_id arrived, or None without one."""
         return self._state_cache_received_at.get(device_id)
 
+    async def _on_mqtt_raw(self, topic: str, payload: bytes) -> None:
+        """Call each raw callback with the topic and bytes; one that raises is logged and the rest still run."""
+        for callback in list(self._raw_callbacks):
+            try:
+                callback(topic, payload)
+            except Exception:
+                _LOGGER.exception("Navimow raw callback %r failed for topic %s", callback, topic)
+
     async def _on_mqtt_message(
         self, topic: str, payload: bytes, device_id: str
     ) -> None:
-        try:
-            payload_dict = json.loads(payload.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            return
-        if not isinstance(payload_dict, dict):
-            return
-
-        payload_dict.setdefault("device_id", device_id)
         parts = topic.split("/")
         if parts and parts[0] == "":
             parts = parts[1:]
@@ -211,6 +256,18 @@ class NavimowSDK:
         if parts[3] != "realtimeDate":
             return
         channel = parts[4]
+        if channel == "location":
+            self._on_location_message(topic, payload, device_id)
+            return
+
+        try:
+            payload_dict = json.loads(payload.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return
+        if not isinstance(payload_dict, dict):
+            return
+
+        payload_dict.setdefault("device_id", device_id)
 
         if channel == "state":
             msg = DeviceStateMessage.from_dict(payload_dict)
@@ -228,6 +285,43 @@ class NavimowSDK:
             self._attributes_cache[msg.device_id] = msg
             self._attributes_cache_updated_at[msg.device_id] = time.monotonic()
             self._dispatch(self._attributes_callbacks, msg, channel)
+
+    def _on_location_message(self, topic: str, payload: bytes, device_id: str) -> None:
+        received_at = datetime.now(UTC)
+        try:
+            value = json.loads(payload.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            parsed = ParsedLocation(reasons=["unparsable"])
+        else:
+            if isinstance(value, dict) and value.get("device_id") == device_id:
+                # The MQTT client adds device_id to an object payload; the mower did not send it.
+                value = {key: item for key, item in value.items() if key != "device_id"}
+            parsed = self._location.decode(device_id, value, received_at)
+        for message in parsed.messages:
+            self._dispatch(self._location_callbacks, message, "location")
+        if parsed.reasons:
+            self._reject("location", topic, device_id, parsed.reason, parsed.reasons, payload, received_at)
+
+    def _reject(
+        self,
+        channel: str,
+        topic: str,
+        device_id: str,
+        reason: str | None,
+        reasons: list[str],
+        payload: bytes,
+        received_at: datetime,
+    ) -> None:
+        rejected = RejectedMessage(
+            channel=channel,
+            topic=topic,
+            device_id=device_id,
+            reason=reason or reasons[0],
+            reasons=tuple(reasons),
+            payload=payload,
+            received_at=received_at,
+        )
+        self._dispatch(self._rejected_callbacks, rejected, "rejected")
 
     @staticmethod
     def _dispatch(callbacks: list[Callable[[Any], None]], message: Any, channel: str) -> None:

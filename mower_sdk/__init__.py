@@ -33,6 +33,7 @@ from mower_sdk.models import (
     MowerCommand,
     MowerError,
     MowerStatus,
+    RejectedMessage,
     VEHICLE_STATE_TO_STATUS,
     mower_time_ms,
 )
@@ -84,6 +85,7 @@ __all__ = [
     "MowerStatus",
     "MowerCommand",
     "MowerError",
+    "RejectedMessage",
     "VEHICLE_STATE_TO_STATUS",
     "mower_time_ms",
     "ThingStatusMessage",

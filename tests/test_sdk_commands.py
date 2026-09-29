@@ -98,6 +98,8 @@ def test_construction_passes_the_parameters_through_and_wires_on_message(
             "keepalive_seconds": 60,
             "reconnect_min_delay": 1,
             "reconnect_max_delay": 60,
+            "subscribe_location": False,
+            "extra_topics": None,
         }
         assert mqtt.on_message == sdk._on_mqtt_message
         assert sdk.mqtt is mqtt

@@ -24,6 +24,7 @@ CORE_MODULES = [
     "mower_sdk._deprecation",
     "mower_sdk.api",
     "mower_sdk.errors",
+    "mower_sdk.location",
     "mower_sdk.models",
     "mower_sdk.mqtt",
     "mower_sdk.sdk",
