@@ -9,6 +9,9 @@ process, so importing this package loads no legacy code.
 """
 
 import importlib
+import importlib.metadata
+import warnings
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from mower_sdk._deprecation import warn_legacy
@@ -62,6 +65,33 @@ if TYPE_CHECKING:
     )
 
 __version__ = "0.2.0a2"
+
+
+def _warn_if_upstream_installed(version_of: Callable[[str], str] = importlib.metadata.version) -> None:
+    """Warn once when the upstream navimow-sdk distribution is listed beside this one.
+
+    Both distributions install the mower_sdk package, so whichever was
+    installed last owns the files. This check runs only when this package's
+    own __init__ is the one loaded; when the upstream distribution was
+    installed last, its files replaced this one and nothing here runs.
+    ``version_of`` is importlib.metadata.version, a parameter for the tests.
+    """
+    try:
+        upstream = version_of("navimow-sdk")
+        community = version_of("navimow-sdk-community")
+    except importlib.metadata.PackageNotFoundError:
+        return
+    warnings.warn(
+        f"navimow-sdk {upstream} is installed beside navimow-sdk-community {community}. "
+        "Both provide the mower_sdk package; the files loaded are navimow-sdk-community's "
+        f"(this import is version {__version__}), so the other distribution's files are not "
+        "the ones running. Uninstall both, then install navimow-sdk-community.",
+        UserWarning,
+        stacklevel=2,
+    )
+
+
+_warn_if_upstream_installed()
 
 __all__ = [
     # Main clients

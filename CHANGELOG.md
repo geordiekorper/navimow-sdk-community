@@ -139,6 +139,12 @@ An integration that does any of these must change with this release:
 - `MowerAPI.async_get_vehicle_status_raw()`, the status entries as the cloud
   sent them.
 - `MowerCommand`'s docstring says what each REST command does.
+- A `UserWarning` at import when the upstream `navimow-sdk` distribution is
+  listed beside `navimow-sdk-community` in the same environment: both install
+  the `mower_sdk` package, and the message names both versions and says to
+  uninstall both and install `navimow-sdk-community`. It fires only when this
+  package's files are the ones loaded; when `navimow-sdk` was installed last,
+  its files replaced these and nothing warns.
 
 ## [0.2.0a2] - 2026-09-28
 
