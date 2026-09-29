@@ -30,7 +30,14 @@ MODULES = ["mower_sdk.mqtt", "mower_sdk.models", "mower_sdk.errors"]
 # commit that introduces it; ``upstream_exports.json`` itself is never edited.
 COMMUNITY_ADDITIONS: dict[str, set[str]] = {
     "mower_sdk.errors": {"MowerUnsupportedOperationError"},
-    "mower_sdk.models": {"CommandReceipt", "CommandVerdict"},
+    "mower_sdk.models": {
+        "CommandReceipt",
+        "CommandVerdict",
+        "DeviceLocation",
+        "DeviceLocationMessage",
+        "VEHICLE_STATE_TO_STATUS",
+        "mower_time_ms",
+    },
 }
 
 

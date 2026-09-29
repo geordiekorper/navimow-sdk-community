@@ -5,7 +5,8 @@ Defines every data model the SDK uses: enums and dataclasses.
 
 import importlib
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
+from datetime import datetime
 from enum import Enum, StrEnum
 from typing import TYPE_CHECKING, Any
 
@@ -20,7 +21,9 @@ if TYPE_CHECKING:
     )
 
 # The public surface upstream published from this module, plus the community
-# additions CommandReceipt and CommandVerdict. The four Thing* classes now live
+# additions CommandReceipt and CommandVerdict and the location channel's
+# DeviceLocation, DeviceLocationMessage, VEHICLE_STATE_TO_STATUS and
+# mower_time_ms. The four Thing* classes now live
 # in mower_sdk.legacy.thing_models and are served by __getattr__.
 __all__ = [
     "CommandReceipt",
@@ -29,11 +32,15 @@ __all__ = [
     "DeviceAttributesMessage",
     "DeviceCommandMessage",
     "DeviceEventMessage",
+    "DeviceLocation",
+    "DeviceLocationMessage",
     "DeviceStateMessage",
     "DeviceStatus",
     "MowerCommand",
     "MowerError",
     "MowerStatus",
+    "VEHICLE_STATE_TO_STATUS",
+    "mower_time_ms",
     "ThingEventMessage",
     "ThingParams",
     "ThingPropertiesMessage",
@@ -581,6 +588,258 @@ class DeviceCommandMessage:
             "command": self.command,
             "params": self.params or {},
         }
+
+
+# ---- the location channel ---------------------------------------------------------------------
+
+# The pose entry's vehicleState code: 1 docked and charged, 2 docked and charging,
+# 3 paused or stopped, 4 mowing, 5 returning, 6 mapping. A lifted mower sends no code.
+VEHICLE_STATE_TO_STATUS: dict[int, MowerStatus] = {
+    1: MowerStatus.DOCKED,
+    2: MowerStatus.CHARGING,
+    3: MowerStatus.PAUSED,
+    4: MowerStatus.MOWING,
+    5: MowerStatus.RETURNING,
+    6: MowerStatus.MAPPING,
+}
+
+# A mower time above this is read as milliseconds, at or below it as seconds.
+_MILLISECONDS_ABOVE = 100_000_000_000
+
+
+def _number(value: Any) -> float | None:
+    """A vendor number (often a string such as "100.00") as a float; None for a bool,
+    a non-finite value or anything float() cannot read."""
+    if isinstance(value, bool):
+        return None
+    try:
+        result = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return result if math.isfinite(result) else None
+
+
+def _whole(value: Any) -> int | None:
+    """A vendor integer (an int, a float or a numeric string) as an int, else None."""
+    number = _number(value)
+    return None if number is None else int(number)
+
+
+def mower_time_ms(value: Any) -> int | None:
+    """A mower timestamp as epoch milliseconds, whether it was sent in seconds or milliseconds.
+
+    Numbers may arrive as strings. None when the value is absent, unreadable, or
+    not positive.
+    """
+    number = _whole(value)
+    if number is None or number <= 0:
+        return None
+    return number if number > _MILLISECONDS_ABOVE else number * 1000
+
+
+def _status_of(vehicle_state: int | None) -> MowerStatus | None:
+    if vehicle_state is None:
+        return None
+    return VEHICLE_STATE_TO_STATUS.get(vehicle_state, MowerStatus.UNKNOWN)
+
+
+def _iso(value: datetime | None) -> str | None:
+    return None if value is None else value.isoformat()
+
+
+def _from_iso(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+_LOCATION_WHOLE_FIELDS = (
+    "vehicle_state", "pose_at", "current_zone", "zone_at", "route_progress", "progress_at",
+    "action", "sub_action", "mow_start_type", "task_at", "target_at", "target_last_at",
+)
+_LOCATION_NUMBER_FIELDS = ("x", "y", "theta", "mowing_percentage", "area_m2", "week_area_m2")
+
+
+@dataclass(frozen=True)
+class DeviceLocation:
+    """The location channel's merged record for one device, as it stands.
+
+    Built by merging the channel's entries one by one (mower_sdk.location): each
+    entry type updates its own fields and leaves the others as they were. Times
+    ending in ``_at`` without ``received`` are mower times in epoch milliseconds;
+    ``pose_received_at`` and ``delay_received_at`` are the UTC receipt times.
+
+    Pose (type 1 entries): ``x`` and ``y`` in metres on the lawn's local grid
+    (origin near the dock or RTK reference, not latitude and longitude),
+    ``theta`` in radians, ``vehicle_state`` (the pose code, see ``status``),
+    ``pose_at`` and ``pose_received_at``. A pose is replaced whole, so a pose
+    entry without a heading leaves ``theta`` None.
+
+    Task (type 2 entries): ``current_zone`` is the partition the mower is in now
+    (it changes once the mower has crossed into the next one), with ``zone_at``;
+    ``route_progress`` is the last route reading seen (0 to 10000, 10000 at the
+    end of the route), with ``progress_at``, kept when a newer task entry omits
+    it. The rest of the latest task entry is replaced whole: ``mowing_percentage``,
+    ``area_m2``, ``week_area_m2``, ``action``, ``sub_action``, ``mow_start_type``,
+    ``map_work_position`` and ``task_at``. ``map_work_position`` is kept as the
+    128-hex-digit string the mower sends: it holds sixteen 32-bit words whose
+    order two readings of captures disagree on, so it is not decoded.
+
+    Target (type 3 entries): ``partition_ids``, None until a target report has
+    arrived and empty for a report with no active target (a mow-all task sends
+    the same empty report as an idle mower); ``target_at``, when this set was
+    first reported, and ``target_last_at``, its latest repeat.
+
+    Delay (type 4 entries): ``task_delay`` (a rain or schedule delay) and
+    ``delay_received_at``; the entry carries no time of its own.
+
+    ``marks`` maps the entry types 1, 2 and 3 to the mower time of the newest
+    entry of that type applied, the high-water mark below which a later entry is
+    stale. It is kept apart from the observation times because an entry without
+    a time leaves the time None while the mark must stand. to_dict() and
+    from_dict() carry it, so a record persisted and handed back after a restart
+    keeps rejecting late entries.
+    """
+
+    device_id: str
+    x: float | None = None
+    y: float | None = None
+    theta: float | None = None
+    vehicle_state: int | None = None
+    pose_at: int | None = None
+    pose_received_at: datetime | None = None
+    current_zone: int | None = None
+    zone_at: int | None = None
+    route_progress: int | None = None
+    progress_at: int | None = None
+    mowing_percentage: float | None = None
+    area_m2: float | None = None
+    week_area_m2: float | None = None
+    action: int | None = None
+    sub_action: int | None = None
+    mow_start_type: int | None = None
+    map_work_position: str | None = None
+    task_at: int | None = None
+    partition_ids: tuple[int, ...] | None = None
+    target_at: int | None = None
+    target_last_at: int | None = None
+    task_delay: bool | None = None
+    delay_received_at: datetime | None = None
+    marks: dict[int, int] = field(default_factory=dict, hash=False)
+
+    @property
+    def status(self) -> MowerStatus | None:
+        """The pose code as a MowerStatus; None without one, UNKNOWN for a code not in the table."""
+        return _status_of(self.vehicle_state)
+
+    @property
+    def progress_percent(self) -> float | None:
+        """The route reading as a percentage, else the latest task entry's mowingPercentage, else None."""
+        if self.route_progress is not None:
+            return self.route_progress / 100
+        return self.mowing_percentage
+
+    @property
+    def progress_source(self) -> str:
+        """Which reading progress_percent came from: "route", "percentage" or "none"."""
+        if self.route_progress is not None:
+            return "route"
+        if self.mowing_percentage is not None:
+            return "percentage"
+        return "none"
+
+    def to_dict(self) -> dict[str, Any]:
+        """The record as JSON-ready values: times as ISO 8601, partition ids as a list, marks keyed by type."""
+        data: dict[str, Any] = {}
+        for item in fields(self):
+            value = getattr(self, item.name)
+            if isinstance(value, datetime):
+                value = _iso(value)
+            elif isinstance(value, tuple):
+                value = list(value)
+            elif item.name == "marks":
+                value = {str(entry_type): mark for entry_type, mark in value.items()}
+            data[item.name] = value
+        return data
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "DeviceLocation":
+        """The record from to_dict()'s output; absent or unreadable values are None, absent marks empty."""
+        values: dict[str, Any] = {}
+        for name in _LOCATION_WHOLE_FIELDS:
+            values[name] = _whole(data.get(name))
+        for name in _LOCATION_NUMBER_FIELDS:
+            values[name] = _number(data.get(name))
+        for name in ("pose_received_at", "delay_received_at"):
+            values[name] = _from_iso(data.get(name))
+        position = data.get("map_work_position")
+        values["map_work_position"] = position if isinstance(position, str) else None
+        delay = data.get("task_delay")
+        values["task_delay"] = delay if isinstance(delay, bool) else None
+        values["partition_ids"] = data.get("partition_ids")
+        values["marks"] = data.get("marks")
+        partition_ids = values.get("partition_ids")
+        values["partition_ids"] = (
+            tuple(pid for pid in (_whole(v) for v in partition_ids) if pid is not None)
+            if isinstance(partition_ids, list | tuple)
+            else None
+        )
+        marks = values.get("marks")
+        values["marks"] = {
+            entry_type: mark
+            for entry_type, mark in (
+                (_whole(key), _whole(value)) for key, value in (marks.items() if isinstance(marks, dict) else ())
+            )
+            if entry_type is not None and mark is not None
+        }
+        values["device_id"] = str(data.get("device_id") or "")
+        return cls(**values)
+
+
+@dataclass(frozen=True)
+class DeviceLocationMessage:
+    """One entry of a location message, decoded, with the merged record as it stood after it.
+
+    ``entry_type`` is 1 (pose), 2 (task), 3 (target) or 4 (delay); ``timestamp``
+    is the entry's mower time in epoch milliseconds (None for a delay entry, or an
+    entry sent without a time); ``received_at`` is the UTC receipt time. The
+    entry's own fields follow, None for those it does not carry (see
+    DeviceLocation for their meaning). ``raw`` is the entry as decoded, and
+    ``location`` the DeviceLocation after this entry was applied, so a consumer
+    acting per entry sees the record at that point, not only after the message.
+    """
+
+    device_id: str
+    entry_type: int
+    timestamp: int | None
+    received_at: datetime | None
+    location: DeviceLocation
+    x: float | None = None
+    y: float | None = None
+    theta: float | None = None
+    vehicle_state: int | None = None
+    current_zone: int | None = None
+    route_progress: int | None = None
+    mowing_percentage: float | None = None
+    area_m2: float | None = None
+    week_area_m2: float | None = None
+    action: int | None = None
+    sub_action: int | None = None
+    mow_start_type: int | None = None
+    map_work_position: str | None = None
+    partition_ids: tuple[int, ...] | None = None
+    task_delay: bool | None = None
+    raw: dict[str, Any] = field(default_factory=dict, compare=False, repr=False)
+
+    @property
+    def status(self) -> MowerStatus | None:
+        """The pose code as a MowerStatus; None without one, UNKNOWN for a code not in the table."""
+        return _status_of(self.vehicle_state)
 
 
 # Names that moved to mower_sdk.legacy: attribute here -> (legacy module, attribute there).
