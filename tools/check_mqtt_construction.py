@@ -62,6 +62,8 @@ async def core() -> None:
     mqtt.update_credentials(username="user2")
     rebuilt = mqtt.client
     assert rebuilt is not live, "disconnected: the client is rebuilt"
+    assert rebuilt._client_id != live._client_id, "disconnected: a fresh client id suffix"
+    assert rebuilt._client_id.decode() == mqtt.client_id, "disconnected: client_id names the new client"
     assert (rebuilt._username, rebuilt._password) == (b"user2", b"rotated"), "disconnected: rebuilt pair"
     assert rebuilt._websocket_extra_headers == {"Authorization": "Bearer new"}, "disconnected: rebuilt headers"
     assert mqtt.loop is asyncio.get_running_loop(), "constructed inside a loop: the running loop is bound"

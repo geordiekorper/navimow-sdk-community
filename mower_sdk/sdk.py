@@ -125,6 +125,8 @@ class NavimowSDK:
         username: str | None = None,
         password: str | None = None,
         auth_headers: dict[str, str] | None = None,
+        *,
+        force_reconnect: bool = False,
     ) -> None:
         """Update the MQTT credentials.
 
@@ -134,6 +136,10 @@ class NavimowSDK:
         purpose, so hourly OAuth token rotation does not force a disconnect; paho uses
         them at its next connect, automatic reconnects included. While disconnected,
         changed values rebuild the paho client and start an asynchronous reconnect.
+        force_reconnect=True rebuilds and reconnects in any case (NavimowMQTT.rebuild).
+        The rebuilding paths block and must be called off the event loop; every
+        path, like connect(), disconnect() and the command methods, waits while a
+        rebuild runs on another thread.
 
         Used after an OAuth token refresh to update the MQTT WebSocket auth header,
         and to update the MQTT username/password issued by the server.
@@ -142,6 +148,7 @@ class NavimowSDK:
             username=username,
             password=password,
             auth_headers=auth_headers,
+            force_reconnect=force_reconnect,
         )
 
     def on_state(self, callback: Callable[[DeviceStateMessage], None]) -> None:

@@ -22,6 +22,8 @@ from __future__ import annotations
 import asyncio
 import gc
 import logging
+import threading
+import time
 import warnings
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
@@ -34,6 +36,7 @@ from paho.mqtt.reasoncodes import ReasonCode
 from mower_sdk import mqtt as mqtt_module
 from mower_sdk.models import Device
 from mower_sdk.mqtt import NavimowMQTT
+from mower_sdk.sdk import NavimowSDK
 
 Call = tuple[str, tuple[Any, ...], dict[str, Any]]
 VERSION2 = mqtt_module.mqtt_client.CallbackAPIVersion.VERSION2
@@ -43,6 +46,8 @@ class FakeClient:
     """Records every paho call made on it; connects to nothing."""
 
     instances: list[FakeClient] = []
+    # Every call on every instance, in order, for tests about the order across clients.
+    events: list[tuple[FakeClient, str]] = []
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         self.calls: list[Call] = [("__init__", args, kwargs)]
@@ -51,9 +56,11 @@ class FakeClient:
         self.on_disconnect: Any = None
         self.on_message: Any = None
         FakeClient.instances.append(self)
+        FakeClient.events.append((self, "__init__"))
 
     def _record(self, name: str, *args: Any, **kwargs: Any) -> None:
         self.calls.append((name, args, kwargs))
+        FakeClient.events.append((self, name))
 
     def username_pw_set(self, *args: Any, **kwargs: Any) -> None:
         self._record("username_pw_set", *args, **kwargs)
@@ -126,6 +133,7 @@ class FakeMessage:
 @pytest.fixture
 def fake_paho(monkeypatch: pytest.MonkeyPatch) -> type[FakeClient]:
     FakeClient.instances = []
+    FakeClient.events = []
     monkeypatch.setattr(mqtt_module.mqtt_client, "Client", FakeClient)
     return FakeClient
 
@@ -504,16 +512,15 @@ def test_connect_async_disconnect_and_publish(fake_paho: type[FakeClient]) -> No
     run(test)
 
 
-def test_a_second_connect_before_the_first_completes_starts_paho_again(fake_paho: type[FakeClient]) -> None:
+def test_a_second_connect_before_the_first_completes_is_a_no_op(fake_paho: type[FakeClient]) -> None:
     async def test() -> None:
         mqtt = make(TCP_KWARGS)
         mqtt.connect_async()
-        mqtt.connect_async()  # not connected yet: both calls reach paho
+        mqtt.connect_async()  # not connected yet, but paho's thread is running: nothing more
         assert mqtt.client.named("connect_async") == [
             ("connect_async", ("broker.example.invalid", 1883, 2400), {}),
-            ("connect_async", ("broker.example.invalid", 1883, 2400), {}),
         ]
-        assert mqtt.client.named("loop_start") == [("loop_start", (), {}), ("loop_start", (), {})]
+        assert mqtt.client.named("loop_start") == [("loop_start", (), {})]
         assert fake_paho.instances == [mqtt.client]
 
     run(test)
@@ -1165,3 +1172,346 @@ def test_the_newest_message_time_is_read_safely_while_paho_adds_a_channel(
         assert fake_paho.instances == [mqtt.client]
 
     run(test)
+
+
+# ---- rebuild(), the retired-client guard, the connect guard and the credential rule ---------------
+
+
+def test_rebuild_installs_the_new_client_before_tearing_the_old_one_down(fake_paho: type[FakeClient]) -> None:
+    async def test() -> None:
+        mqtt = make(WS_KWARGS)
+        old, old_id = mqtt.client, mqtt.client_id
+        mqtt.connect_async()
+        fake_paho.events.clear()
+
+        mqtt.rebuild(password="rotated", auth_headers={"Authorization": "Bearer new"}, reason="watchdog")
+
+        new = mqtt.client
+        assert new is not old
+        assert fake_paho.instances == [old, new]
+        assert [(client is new, name) for client, name in fake_paho.events] == [
+            (True, "__init__"),
+            (True, "username_pw_set"),
+            (True, "ws_set_options"),
+            (True, "tls_set"),
+            (True, "reconnect_delay_set"),
+            (False, "disconnect"),
+            (False, "loop_stop"),
+            (True, "connect_async"),
+            (True, "loop_start"),
+        ]
+        assert new.named("username_pw_set") == [("username_pw_set", ("user", "rotated"), {})]
+        assert new.named("ws_set_options") == [
+            ("ws_set_options", (), {"path": "/mqtt", "headers": {"Authorization": "Bearer new"}})
+        ]
+        assert mqtt.client_id != old_id
+        assert mqtt.client_id.startswith("web_user_") and len(mqtt.client_id) == len(old_id)
+        assert new.calls[0][2]["client_id"] == mqtt.client_id
+        assert new.callbacks == (mqtt._on_connect, mqtt._on_disconnect, mqtt._on_message, mqtt._on_connect_fail)
+        assert (mqtt.rebuilds, mqtt.last_rebuild_reason) == (1, "watchdog")
+
+    run(test)
+
+
+class FiringClient(FakeClient):
+    """Reports its own disconnect through on_disconnect while disconnect() runs, as paho does."""
+
+    def disconnect(self) -> None:
+        super().disconnect()
+        if self.on_disconnect is not None:
+            self.on_disconnect(self, None, {}, SUCCESS, None)
+
+
+def test_callbacks_from_a_retired_client_are_ignored(
+    fake_paho: type[FakeClient], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(mqtt_module.mqtt_client, "Client", FiringClient)
+
+    async def test() -> None:
+        seen: list[str] = []
+
+        async def hook(*_args: Any) -> None:
+            seen.append("hook")
+
+        received, handler = recording_handler()
+        mqtt = make(TCP_KWARGS)
+        mqtt.on_connected = mqtt.on_disconnected = hook
+        mqtt.on_connect_fail = hook
+        mqtt.on_message = handler
+        old = mqtt.client
+
+        mqtt.rebuild(reason="test")  # the old client fires on_disconnect during its teardown
+        old.on_connect(old, None, {}, SUCCESS, None)
+        old.on_connect(old, None, {}, NOT_AUTHORIZED, None)
+        old.on_connect_fail(old, None)
+        old.on_message(old, None, FakeMessage(STATE_TOPIC, b"{}"))
+        await drain()
+
+        assert seen == []
+        assert received == []
+        assert (mqtt.connects, mqtt.disconnects, mqtt.connect_failures) == (0, 0, 0)
+        assert (mqtt.last_disconnect_reason, mqtt.last_connect_fail_reason) == (None, None)
+        assert mqtt.last_message_at("dev-1") is None
+        assert old.named("subscribe") == []
+
+        # The new client's callbacks are delivered.
+        new = mqtt.client
+        new.on_connect(new, None, {}, SUCCESS, None)
+        await drain()
+        assert seen == ["hook"]
+        assert mqtt.connects == 1
+        assert fake_paho.instances == [old, new]
+
+    run(test)
+
+
+def test_an_error_tearing_the_old_client_down_is_logged_and_the_rebuild_goes_on(
+    fake_paho: type[FakeClient], caplog: pytest.LogCaptureFixture
+) -> None:
+    async def test() -> None:
+        mqtt = make(TCP_KWARGS)
+        old = mqtt.client
+
+        def refuse() -> None:
+            raise OSError("socket already closed")
+
+        old.disconnect = refuse  # type: ignore[method-assign]
+        with caplog.at_level(logging.DEBUG, logger="mower_sdk.mqtt"):
+            mqtt.rebuild(reason="test")
+        assert old.named("loop_stop") == [("loop_stop", (), {})]
+        assert mqtt.client is not old
+        assert mqtt.client.named("connect_async") == [("connect_async", ("broker.example.invalid", 1883, 2400), {})]
+        assert "NavimowMQTT old client refuse failed: OSError('socket already closed')" in [
+            r.getMessage() for r in caplog.records
+        ]
+        assert fake_paho.instances == [old, mqtt.client]
+
+    run(test)
+
+
+def test_force_reconnect_rebuilds_a_healthy_connection(fake_paho: type[FakeClient]) -> None:
+    async def test() -> None:
+        mqtt = make(WS_KWARGS)
+        first = mqtt.client
+        first.connected = True
+        mqtt.update_credentials(force_reconnect=True)  # nothing changed, connected: rebuilt anyway
+        second = mqtt.client
+        assert second is not first
+        assert first.named("disconnect") == [("disconnect", (), {})]
+        assert second.named("username_pw_set") == [("username_pw_set", ("user", "secret"), {})]
+        assert second.named("connect_async") == [("connect_async", ("broker.example.invalid", 8884, 2400), {})]
+        assert (mqtt.rebuilds, mqtt.last_rebuild_reason) == (1, "credentials updated, reconnect forced")
+
+        mqtt.update_credentials(password="rotated", force_reconnect=True)
+        assert mqtt.client.named("username_pw_set") == [("username_pw_set", ("user", "rotated"), {})]
+        assert mqtt.rebuilds == 2
+        assert fake_paho.instances == [first, second, mqtt.client]
+
+    run(test)
+
+
+def test_a_credential_update_while_disconnected_is_a_rebuild(fake_paho: type[FakeClient]) -> None:
+    async def test() -> None:
+        mqtt = make(WS_KWARGS)
+        mqtt.update_credentials(username="user2")
+        assert (mqtt.rebuilds, mqtt.last_rebuild_reason) == (1, "credentials updated while disconnected")
+        assert mqtt.client_id.startswith("web_user2_")
+        assert len(fake_paho.instances) == 2
+
+    run(test)
+
+
+def test_the_connect_guard_holds_through_a_failure_and_clears_on_disconnect_and_rebuild(
+    fake_paho: type[FakeClient],
+) -> None:
+    async def test() -> None:
+        mqtt = make(TCP_KWARGS)
+        first = mqtt.client
+        mqtt.connect_async()
+        mqtt._on_connect_fail(first, None)  # paho's thread goes on retrying
+        mqtt.connect_async()
+        assert len(first.named("connect_async")) == 1
+
+        mqtt.disconnect()
+        mqtt.connect_async()
+        assert len(first.named("connect_async")) == 2
+        assert len(first.named("loop_start")) == 2
+
+        mqtt.rebuild(reason="test")
+        assert len(mqtt.client.named("connect_async")) == 1
+        mqtt.connect_async()
+        assert len(mqtt.client.named("connect_async")) == 1
+        assert fake_paho.instances == [first, mqtt.client]
+
+    run(test)
+
+
+def test_a_repeated_sdk_connect_after_a_failure_does_not_restart_paho(fake_paho: type[FakeClient]) -> None:
+    async def test() -> None:
+        sdk = NavimowSDK(broker="broker.example.invalid", port=1883, allow_experimental_mqtt_commands=True)
+        sdk.connect()
+        client = sdk.mqtt.client
+        client.on_connect_fail(client, None)
+        sdk.connect()
+        with pytest.raises(RuntimeError, match="MQTT not connected"):
+            sdk.pause("dev-1")  # asks the client to connect first
+        assert client.named("connect_async") == [("connect_async", ("broker.example.invalid", 1883, 2400), {})]
+        assert client.named("loop_start") == [("loop_start", (), {})]
+        assert fake_paho.instances == [client]
+
+    run(test)
+
+
+@pytest.mark.parametrize("connected", [True, False], ids=["connected", "disconnected"])
+def test_an_empty_username_and_password_are_values(fake_paho: type[FakeClient], connected: bool) -> None:
+    async def test() -> None:
+        mqtt = make(WS_KWARGS)
+        mqtt.client.connected = connected
+        mqtt.update_credentials(username="", password="")
+        assert (mqtt.username, mqtt.password) == ("", "")
+        assert mqtt.client.named("username_pw_set")[-1] == ("username_pw_set", ("", ""), {})
+        assert len(fake_paho.instances) == (1 if connected else 2)
+
+    run(test)
+
+
+def test_a_username_without_a_password_is_still_not_applied(fake_paho: type[FakeClient]) -> None:
+    async def test() -> None:
+        mqtt = make(WSS_NO_PATH_KWARGS)
+        mqtt.rebuild(reason="test")
+        assert mqtt.client.named("username_pw_set") == []
+        assert len(fake_paho.instances) == 2
+
+    run(test)
+
+
+@pytest.mark.parametrize(
+    ("username", "password", "applied"),
+    [("", "", [("username_pw_set", ("", ""), {})]), ("user", "", [("username_pw_set", ("user", ""), {})]), ("", None, [])],
+    ids=["both_empty", "empty_password", "empty_username_no_password"],
+)
+def test_empty_credentials_at_construction(
+    fake_paho: type[FakeClient], username: str, password: str | None, applied: list[Call]
+) -> None:
+    async def test() -> None:
+        mqtt = make(TCP_KWARGS, username=username, password=password)
+        assert mqtt.client.named("username_pw_set") == applied
+        assert fake_paho.instances == [mqtt.client]
+
+    run(test)
+
+
+def test_rebuilds_from_two_threads_leave_exactly_one_running_client(fake_paho: type[FakeClient]) -> None:
+    mqtt = make(TCP_KWARGS)
+    original_build = mqtt._build_new_client
+    second: list[threading.Thread] = []
+
+    def slow_build() -> Any:
+        client = original_build()
+        if not second:  # the first rebuild: start another one while this one is mid-way
+            thread = threading.Thread(target=mqtt.rebuild, kwargs={"reason": "second"})
+            second.append(thread)
+            thread.start()
+            time.sleep(0.2)
+        return client
+
+    mqtt._build_new_client = slow_build  # type: ignore[method-assign]
+    first = threading.Thread(target=mqtt.rebuild, kwargs={"reason": "first"})
+    first.start()
+    first.join(5)
+    second[0].join(5)
+
+    original, *replacements = fake_paho.instances
+    assert len(replacements) == 2 and mqtt.client is replacements[-1]
+    for retired in (original, replacements[0]):
+        assert (len(retired.named("disconnect")), len(retired.named("loop_stop"))) == (1, 1)
+    assert mqtt.client.named("disconnect") == []
+    assert mqtt.rebuilds == 2
+
+
+def test_a_disconnect_during_a_rebuild_waits_and_then_disconnects_the_new_client(fake_paho: type[FakeClient]) -> None:
+    mqtt = make(TCP_KWARGS)
+    old = mqtt.client
+    entered, release = threading.Event(), threading.Event()
+
+    def slow_loop_stop() -> None:
+        entered.set()
+        release.wait(5)
+
+    old.loop_stop = slow_loop_stop  # type: ignore[method-assign]
+    rebuilding = threading.Thread(target=mqtt.rebuild, kwargs={"reason": "watchdog"})
+    rebuilding.start()
+    assert entered.wait(5)
+    disconnecting = threading.Thread(target=mqtt.disconnect)
+    disconnecting.start()
+    time.sleep(0.1)
+    release.set()
+    rebuilding.join(5)
+    disconnecting.join(5)
+
+    new = mqtt.client
+    assert new is not old
+    assert [name for name, _, _ in new.calls if name in ("connect_async", "loop_start", "loop_stop", "disconnect")] == [
+        "connect_async", "loop_start", "loop_stop", "disconnect"
+    ]
+    assert mqtt._loop_started is False
+    assert fake_paho.instances == [old, new]
+
+
+def test_a_connect_during_a_rebuild_waits_until_the_old_client_is_disconnected(fake_paho: type[FakeClient]) -> None:
+    mqtt = make(TCP_KWARGS)
+    old = mqtt.client
+    entered, release = threading.Event(), threading.Event()
+    original_disconnect = old.disconnect
+
+    def slow_disconnect() -> None:
+        entered.set()
+        release.wait(5)
+        original_disconnect()
+
+    old.disconnect = slow_disconnect  # type: ignore[method-assign]
+    rebuilding = threading.Thread(target=mqtt.rebuild, kwargs={"reason": "watchdog"})
+    rebuilding.start()
+    assert entered.wait(5)
+    connecting = threading.Thread(target=mqtt.connect_async)
+    connecting.start()
+    time.sleep(0.1)
+    release.set()
+    rebuilding.join(5)
+    connecting.join(5)
+
+    events = [(client is old, name) for client, name in fake_paho.events if name in ("disconnect", "loop_stop", "connect_async")]
+    assert events.index((True, "disconnect")) < events.index((False, "connect_async"))
+    assert len(mqtt.client.named("connect_async")) == 1  # the waiting connect found it started
+    assert fake_paho.instances == [old, mqtt.client]
+
+
+def test_a_credential_update_during_a_rebuild_reaches_the_new_client(fake_paho: type[FakeClient]) -> None:
+    mqtt = make(WS_KWARGS)
+    mqtt.client.connected = True
+    original_build = mqtt._build_new_client
+    built, release = threading.Event(), threading.Event()
+
+    def paused_build() -> Any:
+        client = original_build()
+        built.set()
+        release.wait(5)
+        return client
+
+    mqtt._build_new_client = paused_build  # type: ignore[method-assign]
+    rebuilding = threading.Thread(target=mqtt.rebuild, kwargs={"reason": "watchdog"})
+    rebuilding.start()
+    assert built.wait(5)
+    updating = threading.Thread(target=mqtt.update_credentials, kwargs={"password": "rotated"})
+    updating.start()
+    time.sleep(0.1)
+    release.set()
+    rebuilding.join(5)
+    updating.join(5)
+
+    assert mqtt.password == "rotated"
+    # The update waited for the rebuild, found the new client not yet connected, and
+    # rebuilt once more with the rotated password.
+    assert mqtt.client.named("username_pw_set")[-1] == ("username_pw_set", ("user", "rotated"), {})
+    assert len(fake_paho.instances) == 3
+    assert mqtt.last_rebuild_reason == "credentials updated while disconnected"
