@@ -23,7 +23,8 @@ if TYPE_CHECKING:
 # The public surface upstream published from this module, plus the community
 # additions CommandReceipt and CommandVerdict and the location channel's
 # DeviceLocation, DeviceLocationMessage, VEHICLE_STATE_TO_STATUS and
-# mower_time_ms, and RejectedMessage. The four Thing* classes now live
+# mower_time_ms, RejectedMessage, and STATE_KNOWN_FIELDS and
+# REST_STATUS_KNOWN_FIELDS. The four Thing* classes now live
 # in mower_sdk.legacy.thing_models and are served by __getattr__.
 __all__ = [
     "CommandReceipt",
@@ -39,7 +40,9 @@ __all__ = [
     "MowerCommand",
     "MowerError",
     "MowerStatus",
+    "REST_STATUS_KNOWN_FIELDS",
     "RejectedMessage",
+    "STATE_KNOWN_FIELDS",
     "VEHICLE_STATE_TO_STATUS",
     "mower_time_ms",
     "ThingEventMessage",
@@ -348,6 +351,30 @@ class Device:
         return result
 
 
+# The fields each channel has been seen to carry (the facade adds device_id to a
+# state payload). A payload with others is still read; the unknown keys are
+# what a consumer may want to record. Deliberately the observed set, not the set
+# the readers accept: DeviceStateMessage.from_dict also reads position, error,
+# metrics and signal_strength, which no mower has been seen to send, so a state
+# message carrying one of them is reported as a new field.
+STATE_KNOWN_FIELDS = frozenset({
+    "state", "vehicleState", "status", "battery", "capacityRemaining",
+    "timestamp", "device_id",
+})
+REST_STATUS_KNOWN_FIELDS = frozenset({
+    "id", "device_id", "deviceId", "vehicleState", "capacityRemaining",
+    "descriptiveCapacityRemaining", "battery",
+})
+
+# The payload keys DeviceStatus.from_dict reads into a field; every other key is
+# kept in extra.
+_DEVICE_STATUS_READ_KEYS = frozenset({
+    "status", "state", "vehicleState", "error_code", "capacityRemaining", "battery",
+    "descriptiveCapacityRemaining", "extra", "device_id", "id", "position",
+    "error_message", "mowing_time", "total_mowing_time", "signal_strength", "timestamp",
+})
+
+
 @dataclass
 class DeviceStatus:
     """Device status.
@@ -405,7 +432,13 @@ class DeviceStatus:
 
         battery = _extract_battery_value(data)
 
-        extra = data.get("extra") or {}
+        # A new dict: the caller's extra, every payload key no field reads, and the
+        # raw status keys. The caller's dict is never written to.
+        caller_extra = data.get("extra")
+        extra = dict(caller_extra) if isinstance(caller_extra, dict) else {}
+        for key, value in data.items():
+            if key not in _DEVICE_STATUS_READ_KEYS:
+                extra[key] = value
         if "vehicleState" in data:
             extra["vehicleState"] = data.get("vehicleState")
         if "descriptiveCapacityRemaining" in data:
@@ -472,11 +505,19 @@ class DeviceStateMessage:
     position: dict[str, float] | None = None
     error: dict[str, Any] | None = None
     metrics: dict[str, Any] | None = None
+    # The payload as decoded, for a message made by from_dict; None for one built by
+    # hand. Not compared and not in to_dict().
+    raw: dict[str, Any] | None = field(default=None, compare=False, repr=False)
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "DeviceStateMessage":
         raw_state = _raw_state(payload, ("state", "status", "vehicleState"))
         normalized_state = _normalize_state_value(raw_state)
+        # Taken before metrics is extended below (in place, for a dict), so raw is the
+        # payload as decoded.
+        raw = dict(payload)
+        if isinstance(payload.get("metrics"), dict):
+            raw["metrics"] = dict(payload["metrics"])
         metrics = payload.get("metrics")
         if not isinstance(metrics, dict):
             metrics = dict(metrics or {})
@@ -492,6 +533,7 @@ class DeviceStateMessage:
             position=payload.get("position"),
             error=payload.get("error"),
             metrics=metrics or None,
+            raw=raw,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -518,6 +560,8 @@ class DeviceEventMessage:
     level: str | None = None
     message: str | None = None
     params: dict[str, Any] | None = None
+    # The payload as decoded, as on DeviceStateMessage.
+    raw: dict[str, Any] | None = field(default=None, compare=False, repr=False)
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "DeviceEventMessage":
@@ -529,6 +573,7 @@ class DeviceEventMessage:
             level=payload.get("level"),
             message=payload.get("message"),
             params=payload.get("params"),
+            raw=dict(payload),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -549,12 +594,15 @@ class DeviceAttributesMessage:
 
     device_id: str
     attributes: dict[str, Any]
+    # The payload as decoded, as on DeviceStateMessage.
+    raw: dict[str, Any] | None = field(default=None, compare=False, repr=False)
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "DeviceAttributesMessage":
         return cls(
             device_id=payload.get("device_id", ""),
             attributes=payload.get("attributes", {}) or {},
+            raw=dict(payload),
         )
 
     def to_dict(self) -> dict[str, Any]:

@@ -12,12 +12,20 @@ their own.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
 
 from mower_sdk import models
-from mower_sdk.models import DeviceStateMessage, DeviceStatus, MowerError, MowerStatus
+from mower_sdk.models import (
+    DeviceAttributesMessage,
+    DeviceEventMessage,
+    DeviceStateMessage,
+    DeviceStatus,
+    MowerError,
+    MowerStatus,
+)
 
 # Every raw-state spelling the table maps today, with its canonical value.
 RAW_STATE_TABLE = [
@@ -255,19 +263,63 @@ def test_device_status_extra_merges_the_raw_status_keys() -> None:
     }
     assert DeviceStatus.from_dict({"extra": {}}).extra is None
     assert DeviceStatus.from_dict({"extra": None, "vehicleState": "x"}).extra == {"vehicleState": "x"}
+    assert DeviceStatus.from_dict({"vehicleState": "x", "zone": 2}).extra == {"zone": 2, "vehicleState": "x"}
 
 
-def test_device_status_writes_the_raw_status_keys_into_the_callers_extra_dict() -> None:
+def test_device_status_never_writes_to_the_callers_extra_dict() -> None:
     extra = {"k": 1}
     status = DeviceStatus.from_dict({"extra": extra, "vehicleState": "isDocked"})
-    assert status.extra is extra
-    assert extra == {"k": 1, "vehicleState": "isDocked"}
+    assert status.extra is not extra
+    assert status.extra == {"k": 1, "vehicleState": "isDocked"}
+    assert extra == {"k": 1}
 
 
-def test_device_status_drops_a_rest_key_the_model_does_not_read() -> None:
-    status = DeviceStatus.from_dict({"id": "d", "vehicleState": "isDocked", "mowingZone": "front"})
-    assert status.extra == {"vehicleState": "isDocked"}
-    assert "mowingZone" not in status.to_dict()
+def test_device_status_keeps_a_rest_key_the_model_does_not_read_in_extra() -> None:
+    status = DeviceStatus.from_dict({"id": "d", "vehicleState": "isDocked", "mowingZone": "front", "deviceId": "d"})
+    assert status.extra == {"mowingZone": "front", "deviceId": "d", "vehicleState": "isDocked"}
+    assert status.to_dict()["extra"] == status.extra
+
+
+def test_the_known_field_sets() -> None:
+    assert {
+        "state", "vehicleState", "status", "battery", "capacityRemaining", "timestamp", "device_id",
+    } == models.STATE_KNOWN_FIELDS
+    assert {
+        "id", "device_id", "deviceId", "vehicleState", "capacityRemaining", "descriptiveCapacityRemaining", "battery",
+    } == models.REST_STATUS_KNOWN_FIELDS
+
+
+STATE_PAYLOAD = {"device_id": "d", "state": "isDocked", "battery": 50, "speed": 1, "metrics": {"rpm": 3}}
+EVENT_PAYLOAD = {"device_id": "d", "type": "system", "event": "started", "extra": True}
+ATTRIBUTES_PAYLOAD = {"device_id": "d", "attributes": {"a": 1}, "other": 2}
+
+
+@pytest.mark.parametrize(
+    ("cls", "payload", "by_hand"),
+    [
+        (
+            DeviceStateMessage,
+            STATE_PAYLOAD,
+            DeviceStateMessage(
+                device_id="d", timestamp=None, state="docked", battery=50, metrics={"rpm": 3, "raw_state": "isDocked"}
+            ),
+        ),
+        (DeviceEventMessage, EVENT_PAYLOAD, DeviceEventMessage(device_id="d", timestamp=None, type="system", event="started")),
+        (DeviceAttributesMessage, ATTRIBUTES_PAYLOAD, DeviceAttributesMessage(device_id="d", attributes={"a": 1})),
+    ],
+    ids=["state", "event", "attributes"],
+)
+def test_the_message_dataclasses_keep_the_payload_as_raw_outside_equality_repr_and_to_dict(
+    cls: Any, payload: dict[str, Any], by_hand: Any
+) -> None:
+    decoded = json.loads(json.dumps(payload))
+    message = cls.from_dict(decoded)
+    assert message.raw == payload  # as decoded: the metrics raw_state the reader adds is not in it
+    assert message.raw is not decoded
+    assert message == by_hand
+    assert by_hand.raw is None
+    assert "raw" not in message.to_dict()
+    assert "raw=" not in repr(message)
 
 
 @pytest.mark.parametrize(
