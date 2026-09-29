@@ -15,7 +15,10 @@ from mower_sdk._deprecation import warn_legacy
 from mower_sdk.api import MowerAPI
 from mower_sdk.errors import (
     MowerAPIError,
+    MowerAuthRequiredError,
     MowerMQTTError,
+    MowerRateLimitedError,
+    MowerTransportError,
     MowerUnsupportedOperationError,
     ERROR_MESSAGES,
 )
@@ -97,7 +100,10 @@ __all__ = [
     "ThingEventMessage",
     # Exceptions
     "MowerAPIError",
+    "MowerAuthRequiredError",
     "MowerMQTTError",
+    "MowerRateLimitedError",
+    "MowerTransportError",
     "MowerUnsupportedOperationError",
     "ERROR_MESSAGES",
     "COMMAND_ERRORS",

@@ -25,7 +25,7 @@ def test_the_runtime_strings_are_the_ones_upstream_shipped() -> None:
     }
 
 
-def test_unsupported_operation_error_has_no_message_attribute() -> None:
+def test_unsupported_operation_error_has_a_message_attribute() -> None:
     error = MowerUnsupportedOperationError("not sent")
     assert str(error) == "not sent"
-    assert not hasattr(error, "message")
+    assert error.message == "not sent"

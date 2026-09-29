@@ -225,9 +225,9 @@ class CommandReceipt:
     """What the cloud replied to one command, classified.
 
     Returned by MowerAPI.async_send_command_receipt. No receipt exists for a
-    command the cloud refused (MowerAPIError) or that got no reply
-    (MowerAPIError with the transport error or TimeoutError as its cause; the
-    cloud may still have accepted it).
+    command the cloud refused (MowerAPIError) or that got no usable reply
+    (MowerTransportError: a timeout, a connection error, an HTTP 5xx, or a body
+    that is not a JSON object; the cloud may still have accepted it).
 
     Attributes:
         device_id: The device the command was sent to

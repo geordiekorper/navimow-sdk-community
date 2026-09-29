@@ -14,6 +14,7 @@ command number only from a recognised key, never a bare scalar from a list.
 from __future__ import annotations
 
 import asyncio
+import json
 import dataclasses
 from typing import Any
 
@@ -49,6 +50,9 @@ class FakeResponse:
 
     async def json(self) -> Any:
         return self._body
+
+    async def read(self) -> bytes:
+        return json.dumps(self._body).encode()
 
     async def text(self) -> str:
         return ""

@@ -9,6 +9,7 @@ matches, an entry without an id included.
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any
 
 import pytest
@@ -36,6 +37,9 @@ class FakeResponse:
 
     async def json(self) -> Any:
         return self._body
+
+    async def read(self) -> bytes:
+        return json.dumps(self._body).encode()
 
     async def text(self) -> str:
         return ""
