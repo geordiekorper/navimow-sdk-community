@@ -371,12 +371,15 @@ def test_missing_data_key_is_an_empty_result(name: str, args: tuple, expected: A
 def test_explicit_null_data_is_passed_through_as_none(name: str, args: tuple) -> None:
     """``response.get("data", {})`` returns None for an explicit null, unlike a missing key.
 
-    async_get_mqtt_user_info returns that None; the other four call ``.get`` on
-    it and raise AttributeError. Both are today's behaviour.
+    async_get_mqtt_user_info returns that None; async_get_device_statuses, read
+    through async_get_vehicle_status_raw, gives an empty result as for a missing
+    key; the other three call ``.get`` on it and raise AttributeError.
     """
     api, _ = api_with(FakeResponse({"code": 1, "desc": "success", "data": None}))
     if name == "async_get_mqtt_user_info":
         assert run(getattr(api, name)(*args)) is None
+    elif name == "async_get_device_statuses":
+        assert run(getattr(api, name)(*args)) == {}
     else:
         with pytest.raises(AttributeError):
             run(getattr(api, name)(*args))
@@ -514,6 +517,14 @@ def test_get_device_status_maps_http_404_to_device_not_found() -> None:
     assert isinstance(cause, MowerAPIError)
     assert cause.status_code == 404
     assert cause.message == f"{ERROR_MESSAGES['API_REQUEST_FAILED']}: no such vehicle"
+
+
+@pytest.mark.parametrize("data", [None, {"payload": None}, {"payload": {"devices": None}}], ids=["data", "payload", "devices"])
+def test_get_device_status_with_null_entries_is_device_not_found(data: dict[str, Any] | None) -> None:
+    api, _ = api_with(FakeResponse({"code": 1, "desc": "success", "data": data}))
+    with pytest.raises(MowerAPIError) as info:
+        run(api.async_get_device_status(DEVICE_ID))
+    assert_device_not_found(info.value)
 
 
 def test_get_device_status_missing_from_the_reply_is_device_not_found() -> None:
@@ -744,10 +755,16 @@ def test_no_ids_make_no_raw_status_request() -> None:
 
 @pytest.mark.parametrize(
     "data",
-    [{}, {"payload": {}}],
-    ids=["no_payload", "no_devices"],
+    [
+        {}, {"payload": {}}, None, {"payload": None}, {"payload": {"devices": None}},
+        42, {"payload": 42}, {"payload": {"devices": 42}}, {"payload": {"devices": {}}},
+    ],
+    ids=[
+        "no_payload", "no_devices", "null_data", "null_payload", "null_devices",
+        "data_a_number", "payload_a_number", "devices_a_number", "devices_an_object",
+    ],
 )
-def test_a_reply_without_entries_is_an_empty_list(data: dict[str, Any]) -> None:
+def test_a_reply_without_entries_is_an_empty_list(data: dict[str, Any] | None) -> None:
     api, _ = api_with(FakeResponse({"code": 1, "desc": "success", "data": data}))
     assert run(api.async_get_vehicle_status_raw([DEVICE_ID])) == []
 

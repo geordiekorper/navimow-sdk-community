@@ -350,8 +350,9 @@ class MowerAPI:
         """Fetch the status entries of several devices as the cloud sent them.
 
         One getVehicleStatus request; returns the dict entries of the reply's
-        data.payload.devices unchanged, and an empty list, without a request, for
-        no ids. An X430's entry carried id, capacityRemaining, vehicleState and
+        data.payload.devices unchanged, an empty list for a successful reply
+        without entries (data, payload or devices missing or null), and an empty
+        list, without a request, for no ids. An X430's entry carried id, capacityRemaining, vehicleState and
         descriptiveCapacityRemaining; a field the cloud starts sending reaches the
         caller here first. async_get_device_statuses reads the same entries into
         DeviceStatus.
@@ -372,8 +373,12 @@ class MowerAPI:
             "/openapi/smarthome/getVehicleStatus",
             data={"devices": [{"id": device_id} for device_id in device_ids]},
         )
-        payload = self._unwrap(response).get("payload", {})
-        return [entry for entry in payload.get("devices", []) if isinstance(entry, dict)]
+        # A successful reply without entries, whether the keys are missing or null,
+        # is an empty list.
+        data = self._unwrap(response)
+        payload = data.get("payload") if isinstance(data, dict) else None
+        devices = payload.get("devices") if isinstance(payload, dict) else None
+        return [entry for entry in devices if isinstance(entry, dict)] if isinstance(devices, list) else []
 
     async def async_get_device_statuses(
         self, device_ids: list[str]
