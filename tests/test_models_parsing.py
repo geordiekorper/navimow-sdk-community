@@ -5,10 +5,9 @@ normaliser but read the raw state with different key precedence, and both use
 the same battery reader: ``capacityRemaining``'s PERCENTAGE entry, then any
 entry whose ``rawValue`` parses, then ``battery``, and None when nothing
 parses (a missing, unparsable, bool or non-finite value); out-of-range numbers
-pass through. The state values are pinned at today's values, falsy fallbacks
-included. One planned behaviour change, new MowerStatus members for mapping,
-updating and offline, will change several of the state values later; the
-affected tests are then updated on purpose, in the same commit.
+pass through. The state values are pinned, falsy fallbacks included: isMapping,
+inSoftwareUpdate and both spellings of offline have MowerStatus members of
+their own.
 """
 
 from __future__ import annotations
@@ -25,23 +24,30 @@ RAW_STATE_TABLE = [
     ("isDocked", "docked"),
     ("isIdel", "idle"),
     ("isIdle", "idle"),
-    ("isMapping", "mowing"),
+    ("isMapping", "mapping"),
     ("isRunning", "mowing"),
     ("isPaused", "paused"),
     ("isDocking", "returning"),
     ("Error", "error"),
     ("error", "error"),
     ("isLifted", "error"),
-    ("inSoftwareUpdate", "paused"),
+    ("inSoftwareUpdate", "updating"),
     ("Self-Checking", "idle"),
     ("Self-checking", "idle"),
-    ("Offline", "unknown"),
-    ("offline", "unknown"),
+    ("Offline", "offline"),
+    ("offline", "offline"),
 ]
 
 
 def test_raw_state_table_is_exactly_this() -> None:
     assert dict(RAW_STATE_TABLE) == models._RAW_STATE_TO_CANONICAL
+
+
+def test_mower_status_members() -> None:
+    assert [status.value for status in MowerStatus] == [
+        "idle", "mowing", "paused", "docked", "charging", "error", "returning",
+        "mapping", "updating", "offline", "unknown",
+    ]
 
 
 @pytest.mark.parametrize(("raw", "canonical"), RAW_STATE_TABLE)

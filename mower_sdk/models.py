@@ -45,18 +45,18 @@ _RAW_STATE_TO_CANONICAL: dict[str, str] = {
     "isDocked": "docked",
     "isIdel": "idle",
     "isIdle": "idle",
-    "isMapping": "mowing",
+    "isMapping": "mapping",
     "isRunning": "mowing",
     "isPaused": "paused",
     "isDocking": "returning",
     "Error": "error",
     "error": "error",
     "isLifted": "error",
-    "inSoftwareUpdate": "paused",
+    "inSoftwareUpdate": "updating",
     "Self-Checking": "idle",
     "Self-checking": "idle",
-    "Offline": "unknown",
-    "offline": "unknown",
+    "Offline": "offline",
+    "offline": "offline",
 }
 
 
@@ -145,7 +145,15 @@ def _extract_battery_value(data: dict[str, Any]) -> int | None:
 
 
 class MowerStatus(Enum):
-    """Mower status."""
+    """Mower status.
+
+    The state channel and the REST status never report CHARGING; the location
+    channel's pose code does (a docked mower that is charging). MAPPING,
+    UPDATING and OFFLINE are the raw states isMapping, inSoftwareUpdate and
+    Offline/offline. A state message keeps a raw state that normalisation
+    changed in metrics["raw_state"]; a DeviceStatus keeps a vehicleState key
+    in extra["vehicleState"].
+    """
 
     IDLE = "idle"  # Idle
     MOWING = "mowing"  # Mowing
@@ -154,6 +162,9 @@ class MowerStatus(Enum):
     CHARGING = "charging"  # Charging
     ERROR = "error"  # Error
     RETURNING = "returning"  # Returning to the dock
+    MAPPING = "mapping"  # Mapping the lawn
+    UPDATING = "updating"  # Installing a software update
+    OFFLINE = "offline"  # Not connected to the cloud
     UNKNOWN = "unknown"  # Unknown state
 
 
