@@ -23,7 +23,6 @@ time of its type is stale.
 
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass, field, fields, replace
 from datetime import datetime
 from typing import Any
@@ -67,6 +66,8 @@ REASON_PRIORITY = (
 # latest observation time of that type.
 _OBSERVED_AT = {1: "pose_at", 2: "task_at", 3: "target_last_at"}
 
+_RECORD_FIELDS = tuple(item.name for item in fields(DeviceLocation))
+
 
 @dataclass
 class ParsedLocation:
@@ -91,6 +92,11 @@ class ParsedLocation:
         return next((reason for reason in REASON_PRIORITY if reason in self.reasons), None)
 
 
+def _plausible(ms: int, now_ms: int) -> bool:
+    """Whether a mower time is believed: from 2020 to TIME_AHEAD_MAX_MS past now_ms."""
+    return PLAUSIBLE_MIN_MS <= ms <= now_ms + TIME_AHEAD_MAX_MS
+
+
 def _entry_time(item: dict[str, Any]) -> int | None:
     value = _whole(item.get("time"))
     return value if value is not None and value > 0 else None
@@ -103,14 +109,15 @@ def _in_time_order(entries: list[Any]) -> list[Any]:
     order, the stale check would take the newest and reject the rest. The sort
     is stable, so equal times keep their order.
     """
-    slots = [
-        i for i, item in enumerate(entries)
-        if isinstance(item, dict) and type(item.get("type")) is int and item["type"] in _OBSERVED_AT and _entry_time(item)
+    timed = [
+        (i, entry_time) for i, item in enumerate(entries)
+        if isinstance(item, dict) and type(item.get("type")) is int and item["type"] in _OBSERVED_AT
+        and (entry_time := _entry_time(item))
     ]
-    ordered = sorted((entries[i] for i in slots), key=_entry_time)
+    ordered = sorted(timed, key=lambda slot: slot[1])
     result = list(entries)
-    for slot, item in zip(slots, ordered, strict=True):
-        result[slot] = item
+    for (slot, _), (source, _) in zip(timed, ordered, strict=True):
+        result[slot] = entries[source]
     return result
 
 
@@ -188,10 +195,10 @@ class LocationDecoder:
             result._reject("unparsable")
             return result
         if now_ms is None:
-            now_ms = round(received_at.timestamp() * 1000) if received_at else round(time.time() * 1000)
+            now_ms = round(received_at.timestamp() * 1000)
 
         current = self._records.get(device_id) or DeviceLocation(device_id=device_id)
-        record = {item.name: getattr(current, item.name) for item in fields(DeviceLocation)}
+        record = {name: getattr(current, name) for name in _RECORD_FIELDS}
         record["device_id"] = device_id
         record["marks"] = dict(current.marks)
 
@@ -199,24 +206,22 @@ class LocationDecoder:
             if not isinstance(item, dict):
                 continue
             entry_type = item.get("type")
-            if not set(item) <= LOCATION_KNOWN_FIELDS:
+            if not item.keys() <= LOCATION_KNOWN_FIELDS:
                 result._reject("unknown_field")
             if type(entry_type) is not int or entry_type not in LOCATION_ENTRY_TYPES:
                 result._reject("unknown_type")
                 continue
             if entry_type == 4 and "taskDelay" not in item:
                 continue  # the reconnect-time shape: no delay in it, the pose has the state
-            entry_time = _entry_time(item)
-            if entry_time is None and item.get("time") is not None and entry_type in _OBSERVED_AT:
-                # A time was sent but is zero, negative or unreadable: not believed, and
-                # not taken as "no time", which would skip the stale check.
-                result._reject("implausible_time")
-                continue
-            if entry_type not in _OBSERVED_AT:
-                entry_time = None  # a delay entry carries no time of its own and is never guarded
-            elif entry_time is not None and not PLAUSIBLE_MIN_MS <= entry_time <= now_ms + TIME_AHEAD_MAX_MS:
-                result._reject("implausible_time")
-                continue
+            # A delay entry carries no time of its own and is never guarded. A time sent
+            # as zero, negative or unreadable is not believed either, rather than taken
+            # as "no time", which would skip the stale check.
+            entry_time = None
+            if entry_type in _OBSERVED_AT and item.get("time") is not None:
+                entry_time = _whole(item["time"])
+                if entry_time is None or not _plausible(entry_time, now_ms):
+                    result._reject("implausible_time")
+                    continue
             newest = self._newest(record, entry_type)
             if entry_time is not None and newest is not None and entry_time <= newest:
                 result._reject("stale")
@@ -262,14 +267,14 @@ class LocationDecoder:
                 own["task_delay"] = _task_delay(item.get("taskDelay"))
                 record.update(task_delay=own["task_delay"], delay_received_at=received_at)
 
-            if entry_time is not None and entry_type in _OBSERVED_AT:
-                record["marks"] = {**record["marks"], entry_type: entry_time}
+            if entry_time is not None:
+                record["marks"][entry_type] = entry_time
             location = DeviceLocation(**{**record, "marks": dict(record["marks"])})
             result.messages.append(
                 DeviceLocationMessage(
                     device_id=device_id,
                     entry_type=entry_type,
-                    timestamp=entry_time if entry_type != 4 else None,
+                    timestamp=entry_time,
                     received_at=received_at,
                     location=location,
                     raw=dict(item),

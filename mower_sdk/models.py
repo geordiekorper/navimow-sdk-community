@@ -383,6 +383,22 @@ _DEVICE_STATUS_READ_KEYS = frozenset({
 })
 
 
+def _mower_status(value: Any) -> MowerStatus:
+    """MowerStatus(value), UNKNOWN for a value the enum lacks."""
+    try:
+        return MowerStatus(value)
+    except ValueError:
+        return MowerStatus.UNKNOWN
+
+
+def _mower_error(value: Any) -> MowerError:
+    """MowerError(value), UNKNOWN for a value the enum lacks."""
+    try:
+        return MowerError(value)
+    except ValueError:
+        return MowerError.UNKNOWN
+
+
 @dataclass
 class DeviceStatus:
     """Device status.
@@ -427,16 +443,8 @@ class DeviceStatus:
         """
         status_source = _raw_state(data, ("status", "state", "vehicleState"))
         normalized_state = _normalize_state_value(status_source)
-        try:
-            status = MowerStatus(normalized_state)
-        except ValueError:
-            status = MowerStatus.UNKNOWN
-
-        error_str = data.get("error_code", "none")
-        try:
-            error_code = MowerError(error_str)
-        except ValueError:
-            error_code = MowerError.UNKNOWN
+        status = _mower_status(normalized_state)
+        error_code = _mower_error(data.get("error_code", "none"))
 
         battery = _extract_battery_value(data)
 
@@ -520,10 +528,7 @@ class DeviceStatus:
         error_code (UNKNOWN for a code the enum lacks) and error_message; the raw
         state kept in metrics["raw_state"] becomes extra["vehicleState"].
         """
-        try:
-            status = MowerStatus(message.state)
-        except ValueError:
-            status = MowerStatus.UNKNOWN
+        status = _mower_status(message.state)
         if message.raw is not None:
             carries_state = any(message.raw.get(key) is not None for key in ("state", "status", "vehicleState"))
         else:
@@ -537,10 +542,7 @@ class DeviceStatus:
             code = message.error.get("code") or message.error.get("error_code")
             error_message = message.error.get("message")
             if code:
-                try:
-                    error_code = MowerError(code)
-                except ValueError:
-                    error_code = MowerError.UNKNOWN
+                error_code = _mower_error(code)
         raw_state = (message.metrics or {}).get("raw_state")
         return cls(
             device_id=message.device_id,
@@ -925,15 +927,13 @@ class DeviceLocation:
         values["map_work_position"] = position if isinstance(position, str) else None
         delay = data.get("task_delay")
         values["task_delay"] = delay if isinstance(delay, bool) else None
-        values["partition_ids"] = data.get("partition_ids")
-        values["marks"] = data.get("marks")
-        partition_ids = values.get("partition_ids")
+        partition_ids = data.get("partition_ids")
         values["partition_ids"] = (
             tuple(pid for pid in (_whole(v) for v in partition_ids) if pid is not None)
             if isinstance(partition_ids, list | tuple)
             else None
         )
-        marks = values.get("marks")
+        marks = data.get("marks")
         values["marks"] = {
             entry_type: mark
             for entry_type, mark in (

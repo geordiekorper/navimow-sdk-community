@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import functools
-import json
 import logging
 import time
 import uuid
@@ -13,13 +12,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from mower_sdk.errors import ERROR_MESSAGES, MowerAPIError, MowerUnsupportedOperationError
-from mower_sdk.location import (
-    PLAUSIBLE_MIN_MS,
-    REASON_PRIORITY,
-    TIME_AHEAD_MAX_MS,
-    LocationDecoder,
-    ParsedLocation,
-)
+from mower_sdk.location import REASON_PRIORITY, LocationDecoder, _plausible
 from mower_sdk.models import (
     DeviceAttributesMessage,
     DeviceCommandMessage,
@@ -31,7 +24,7 @@ from mower_sdk.models import (
     STATE_KNOWN_FIELDS,
     mower_time_ms,
 )
-from mower_sdk.mqtt import NavimowMQTT, _resolve_event_loop
+from mower_sdk.mqtt import NavimowMQTT, _decode_json, _parse_topic, _resolve_event_loop
 
 if TYPE_CHECKING:
     from mower_sdk.api import MowerAPI
@@ -349,16 +342,7 @@ class NavimowSDK:
     async def _on_mqtt_message(
         self, topic: str, payload: bytes, device_id: str
     ) -> None:
-        parts = topic.split("/")
-        if parts and parts[0] == "":
-            parts = parts[1:]
-        if len(parts) != 5:
-            return
-        if parts[0] != "downlink" or parts[1] != "vehicle":
-            return
-        if parts[3] != "realtimeDate":
-            return
-        channel = parts[4]
+        _, channel = _parse_topic(topic)
         if channel == "location":
             self._on_location_message(topic, payload, device_id)
             return
@@ -367,10 +351,7 @@ class NavimowSDK:
             return
 
         received_at = datetime.now(UTC)
-        try:
-            payload_dict = json.loads(payload.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            payload_dict = None
+        payload_dict = _decode_json(payload)
         if not isinstance(payload_dict, dict):
             self._reject(channel, topic, device_id, "unparsable", ["unparsable"], payload, received_at)
             return
@@ -405,20 +386,22 @@ class NavimowSDK:
         msg = DeviceStateMessage.from_dict(payload_dict)
         msg.received_at = received_at
         reasons = []
-        if not set(payload_dict) <= STATE_KNOWN_FIELDS:
+        if not payload_dict.keys() <= STATE_KNOWN_FIELDS:
             reasons.append("unknown_field")
+        # The one reason, if any, that keeps the message from being applied.
+        blocked = None
         stamp = mower_time_ms(msg.timestamp) if self._reject_late_state else None
         if stamp is not None:
-            now_ms = round(received_at.timestamp() * 1000)
             mark = self._state_marks.get(msg.device_id)
-            if not PLAUSIBLE_MIN_MS <= stamp <= now_ms + TIME_AHEAD_MAX_MS:
-                reasons.append("implausible_time")
+            if not _plausible(stamp, round(received_at.timestamp() * 1000)):
+                blocked = "implausible_time"
             elif mark is not None and stamp < mark:
-                reasons.append("stale")
-        blocking = [reason for reason in reasons if reason in ("implausible_time", "stale")]
-        if not blocking:
+                blocked = "stale"
+        if blocked is not None:
+            reasons.append(blocked)
+        else:
             if stamp is not None:
-                self._state_marks[msg.device_id] = max(stamp, self._state_marks.get(msg.device_id, stamp))
+                self._state_marks[msg.device_id] = stamp  # not stale, so at or above the mark
             self._state_cache[msg.device_id] = msg
             self._state_cache_updated_at[msg.device_id] = time.monotonic()
             self._state_cache_received_at[msg.device_id] = received_at
@@ -427,20 +410,16 @@ class NavimowSDK:
             # A message that was not applied names the reason that blocked it; one that
             # was applied names unknown_field.
             ordered = [reason for reason in REASON_PRIORITY if reason in reasons]
-            reason = blocking[0] if blocking else ordered[0]
-            self._reject("state", topic, msg.device_id, reason, ordered, payload, received_at)
+            self._reject("state", topic, msg.device_id, blocked or ordered[0], ordered, payload, received_at)
 
     def _on_location_message(self, topic: str, payload: bytes, device_id: str) -> None:
         received_at = datetime.now(UTC)
-        try:
-            value = json.loads(payload.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            parsed = ParsedLocation(reasons=["unparsable"])
-        else:
-            if isinstance(value, dict) and value.get("device_id") == device_id:
-                # The MQTT client adds device_id to an object payload; the mower did not send it.
-                value = {key: item for key, item in value.items() if key != "device_id"}
-            parsed = self._location.decode(device_id, value, received_at)
+        # A payload that is not JSON decodes to None, which decode() reports as unparsable.
+        value = _decode_json(payload)
+        if isinstance(value, dict) and value.get("device_id") == device_id:
+            # The MQTT client adds device_id to an object payload; the mower did not send it.
+            del value["device_id"]
+        parsed = self._location.decode(device_id, value, received_at)
         for message in parsed.messages:
             self._dispatch(self._location_callbacks, message, "location")
         if parsed.reasons:
