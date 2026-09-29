@@ -526,22 +526,70 @@ def test_a_second_connect_before_the_first_completes_is_a_no_op(fake_paho: type[
     run(test)
 
 
-def test_the_init_and_connect_logs_carry_the_client_id_and_the_websocket_path(
+def test_the_connection_logs_redact_the_client_id_the_account_id_and_the_websocket_path(
+    fake_paho: type[FakeClient], caplog: pytest.LogCaptureFixture
+) -> None:
+    async def test() -> None:
+        with caplog.at_level(logging.DEBUG, logger="mower_sdk.mqtt"):
+            mqtt = make(WS_KWARGS, username="12345678", ws_path="/mqtt/12345678")
+            mqtt.connect_async()
+            suffix = mqtt.client_id.rsplit("_", 1)[1]
+            mqtt._on_connect(mqtt.client, None, {}, SUCCESS, None)
+            mqtt._on_disconnect(mqtt.client, None, {}, UNSPECIFIED, None)
+            mqtt.rebuild(reason="watchdog")
+            new_suffix = mqtt.client_id.rsplit("_", 1)[1]
+        lines = [r.getMessage() for r in caplog.records if "subscribing" not in r.getMessage()]
+        assert lines[:4] == [
+            f"NavimowMQTT init: broker=broker.example.invalid port=8884 ws_path=/mqtt/… tls=True client_id=web_…_{suffix}",
+            "NavimowMQTT connect details: transport=websockets broker=broker.example.invalid port=8884 "
+            "ws_path=/mqtt/… tls=True username=configured auth_headers={'Authorization': 'Be***ok'}",
+            f"NavimowMQTT connecting: broker=broker.example.invalid port=8884 ws_path=/mqtt/… client_id=web_…_{suffix}",
+            f"NavimowMQTT connected: broker=broker.example.invalid port=8884 client_id=web_…_{suffix}",
+        ]
+        assert f"NavimowMQTT disconnected: broker=broker.example.invalid port=8884 client_id=web_…_{suffix} rc=Unspecified error" in lines
+        assert (
+            f"NavimowMQTT rebuilding the client: reason=watchdog broker=broker.example.invalid port=8884 "
+            f"client_id=web_…_{new_suffix}"
+        ) in lines
+        assert not any("12345678" in line for line in lines)
+        # What goes to the broker is untouched.
+        assert mqtt.client_id == f"web_12345678_{new_suffix}"
+        assert mqtt.client.named("ws_set_options")[0][2]["path"] == "/mqtt/12345678"
+        assert len(fake_paho.instances) == 2
+
+    run(test)
+
+
+@pytest.mark.parametrize(
+    ("value", "redacted"),
+    [
+        ("web_12345678_a1b2c3d4e5", "web_…_a1b2c3d4e5"),
+        ("web_unknown_a1b2c3d4e5", "web_…_a1b2c3d4e5"),
+        ("web_user_name_a1b2c3d4e5", "web_…_a1b2c3d4e5"),
+        ("opaque", "…"),
+    ],
+)
+def test_redact_client_id(value: str, redacted: str) -> None:
+    assert mqtt_module._redact_client_id(value) == redacted
+
+
+@pytest.mark.parametrize(
+    ("path", "redacted"),
+    [("/mqtt/12345678", "/mqtt/…"), ("/mqtt/1/2", "/mqtt/…"), ("/mqtt", "/mqtt"), ("", ""), (None, None)],
+)
+def test_redact_ws_path(path: str | None, redacted: str | None) -> None:
+    assert mqtt_module._redact_ws_path(path) == redacted
+
+
+def test_the_username_is_logged_as_configured_or_not(
     fake_paho: type[FakeClient], caplog: pytest.LogCaptureFixture
 ) -> None:
     async def test() -> None:
         with caplog.at_level(logging.INFO, logger="mower_sdk.mqtt"):
-            mqtt = make(WS_KWARGS, username="account-1234")
-            mqtt.connect_async()
-        assert [r.getMessage() for r in caplog.records] == [
-            "NavimowMQTT init: broker=broker.example.invalid port=8884 ws_path=/mqtt tls=True "
-            f"client_id={mqtt._client_id}",
-            "NavimowMQTT connect details: transport=websockets broker=broker.example.invalid port=8884 "
-            "ws_path=/mqtt tls=True username=ac***34 auth_headers={'Authorization': 'Be***ok'}",
-            "NavimowMQTT connecting: broker=broker.example.invalid port=8884 ws_path=/mqtt",
-        ]
-        assert mqtt._client_id.startswith("web_account-1234_")
-        assert fake_paho.instances == [mqtt.client]
+            make(TCP_KWARGS).connect_async()
+        (details,) = [r.getMessage() for r in caplog.records if "connect details" in r.getMessage()]
+        assert "username=not configured" in details
+        assert len(fake_paho.instances) == 1
 
     run(test)
 

@@ -91,6 +91,26 @@ def _build_web_client_id(username: str | None) -> str:
     return f"web_{base}_{rand}"
 
 
+def _redact_client_id(client_id: str) -> str:
+    """The client id for a log line: web_…_<random suffix>, without the account id in the middle."""
+    prefix, _, rest = client_id.partition("_")
+    _, _, suffix = rest.rpartition("_")
+    return f"{prefix}_…_{suffix}" if prefix and suffix else "…"
+
+
+def _redact_ws_path(path: str | None) -> str | None:
+    """The WebSocket path for a log line: its first segment only (/mqtt/{userId} logs as /mqtt/…)."""
+    if not path:
+        return path
+    first, sep, _ = path.lstrip("/").partition("/")
+    return f"/{first}/…" if sep else path
+
+
+def _configured(value: str | None) -> str:
+    """Whether a value is set, for a log line that must not show it."""
+    return "configured" if value is not None else "not configured"
+
+
 def _mask_secret(value: str | None) -> str:
     if not value:
         return "<empty>"
@@ -221,9 +241,9 @@ class NavimowMQTT:
             "NavimowMQTT init: broker=%s port=%s ws_path=%s tls=%s client_id=%s",
             self.broker,
             self.port,
-            self.ws_path,
+            _redact_ws_path(self.ws_path),
             self._use_tls,
-            self._client_id,
+            _redact_client_id(self._client_id),
         )
 
     @property
@@ -435,10 +455,11 @@ class NavimowMQTT:
         self.client = self._build_new_client()
         self._loop_started = False
         _LOGGER.info(
-            "NavimowMQTT rebuilding the client: reason=%s broker=%s port=%s",
+            "NavimowMQTT rebuilding the client: reason=%s broker=%s port=%s client_id=%s",
             reason,
             self.broker,
             self.port,
+            _redact_client_id(self._client_id),
         )
         for teardown in (old.disconnect, old.loop_stop):
             try:
@@ -486,16 +507,17 @@ class NavimowMQTT:
                 "websockets" if self.ws_path else "tcp",
                 self.broker,
                 self.port,
-                self.ws_path,
+                _redact_ws_path(self.ws_path),
                 self._use_tls,
-                _mask_secret(self.username),
+                _configured(self.username),
                 _format_auth_headers(self.auth_headers),
             )
             _LOGGER.info(
-                "NavimowMQTT connecting: broker=%s port=%s ws_path=%s",
+                "NavimowMQTT connecting: broker=%s port=%s ws_path=%s client_id=%s",
                 self.broker,
                 self.port,
-                self.ws_path,
+                _redact_ws_path(self.ws_path),
+                _redact_client_id(self._client_id),
             )
             self.client.connect_async(self.broker, self.port, self.keepalive_seconds)
             self.client.loop_start()
@@ -624,9 +646,10 @@ class NavimowMQTT:
         self.connects += 1
         self.last_connected_at = datetime.now(UTC)
         _LOGGER.info(
-            "NavimowMQTT connected: broker=%s port=%s",
+            "NavimowMQTT connected: broker=%s port=%s client_id=%s",
             self.broker,
             self.port,
+            _redact_client_id(self._client_id),
         )
         # Called with both arguments so an override with the original two-argument
         # signature keeps working.
@@ -659,9 +682,10 @@ class NavimowMQTT:
         self.disconnects += 1
         self.last_disconnect_reason = "requested" if not reason_code.is_failure else str(reason_code)
         _LOGGER.debug(
-            "NavimowMQTT disconnected: broker=%s port=%s rc=%s",
+            "NavimowMQTT disconnected: broker=%s port=%s client_id=%s rc=%s",
             self.broker,
             self.port,
+            _redact_client_id(self._client_id),
             reason_code,
         )
         if self.on_disconnected is not None:
@@ -680,6 +704,12 @@ class NavimowMQTT:
         return parts[2], parts[4]
 
     def _on_message(self, client, _userdata, msg) -> None:
+        """paho's on_message.
+
+        The payload debug line logs every payload whole. With the location
+        channel subscribed that is a movement trace of the mower: keep this
+        logger above DEBUG outside troubleshooting.
+        """
         if client is not self.client:
             return
         topic = msg.topic
