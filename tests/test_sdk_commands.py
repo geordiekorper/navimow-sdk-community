@@ -95,7 +95,7 @@ def test_construction_passes_the_parameters_through_and_wires_on_message(
             "ws_path": "/mqtt",
             "auth_headers": {"Authorization": "Bearer t"},
             "loop": asyncio.get_running_loop(),
-            "keepalive_seconds": 2400,
+            "keepalive_seconds": 60,
             "reconnect_min_delay": 1,
             "reconnect_max_delay": 60,
         }

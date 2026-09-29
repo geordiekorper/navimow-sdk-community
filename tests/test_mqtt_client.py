@@ -518,7 +518,7 @@ def test_a_second_connect_before_the_first_completes_is_a_no_op(fake_paho: type[
         mqtt.connect_async()
         mqtt.connect_async()  # not connected yet, but paho's thread is running: nothing more
         assert mqtt.client.named("connect_async") == [
-            ("connect_async", ("broker.example.invalid", 1883, 2400), {}),
+            ("connect_async", ("broker.example.invalid", 1883, 60), {}),
         ]
         assert mqtt.client.named("loop_start") == [("loop_start", (), {})]
         assert fake_paho.instances == [mqtt.client]
@@ -621,7 +621,7 @@ def test_update_credentials(fake_paho: type[FakeClient]) -> None:
             ("ws_set_options", (), {"path": "/mqtt", "headers": {"Authorization": "Bearer new"}})
         ]
         assert second.named("connect_async") == [
-            ("connect_async", ("broker.example.invalid", 8884, 2400), {})
+            ("connect_async", ("broker.example.invalid", 8884, 60), {})
         ]
         assert second.named("loop_start") == [("loop_start", (), {})]
         assert second.callbacks == (mqtt._on_connect, mqtt._on_disconnect, mqtt._on_message, mqtt._on_connect_fail)
@@ -871,7 +871,7 @@ def test_a_client_constructed_outside_a_loop_binds_the_loop_it_connects_from(
         assert seen == ["disconnected"]
 
     run(test)
-    assert mqtt.client.named("connect_async") == [("connect_async", ("broker.example.invalid", 1883, 2400), {})]
+    assert mqtt.client.named("connect_async") == [("connect_async", ("broker.example.invalid", 1883, 60), {})]
     assert fake_paho.instances == [mqtt.client]
 
 
@@ -969,7 +969,7 @@ def test_a_loop_set_as_current_but_not_running_is_bound_and_receives_the_callbac
         current.close()
     assert seen == ["disconnected"]
     assert mqtt.client.named("connect_async") == [
-        ("connect_async", ("broker.example.invalid", 1883, 2400), {})
+        ("connect_async", ("broker.example.invalid", 1883, 60), {})
     ]
     assert fake_paho.instances == [mqtt.client]
 
@@ -1308,7 +1308,7 @@ def test_an_error_tearing_the_old_client_down_is_logged_and_the_rebuild_goes_on(
             mqtt.rebuild(reason="test")
         assert old.named("loop_stop") == [("loop_stop", (), {})]
         assert mqtt.client is not old
-        assert mqtt.client.named("connect_async") == [("connect_async", ("broker.example.invalid", 1883, 2400), {})]
+        assert mqtt.client.named("connect_async") == [("connect_async", ("broker.example.invalid", 1883, 60), {})]
         assert "NavimowMQTT old client refuse failed: OSError('socket already closed')" in [
             r.getMessage() for r in caplog.records
         ]
@@ -1327,7 +1327,7 @@ def test_force_reconnect_rebuilds_a_healthy_connection(fake_paho: type[FakeClien
         assert second is not first
         assert first.named("disconnect") == [("disconnect", (), {})]
         assert second.named("username_pw_set") == [("username_pw_set", ("user", "secret"), {})]
-        assert second.named("connect_async") == [("connect_async", ("broker.example.invalid", 8884, 2400), {})]
+        assert second.named("connect_async") == [("connect_async", ("broker.example.invalid", 8884, 60), {})]
         assert (mqtt.rebuilds, mqtt.last_rebuild_reason) == (1, "credentials updated, reconnect forced")
 
         mqtt.update_credentials(password="rotated", force_reconnect=True)
@@ -1383,7 +1383,7 @@ def test_a_repeated_sdk_connect_after_a_failure_does_not_restart_paho(fake_paho:
         sdk.connect()
         with pytest.raises(RuntimeError, match="MQTT not connected"):
             sdk.pause("dev-1")  # asks the client to connect first
-        assert client.named("connect_async") == [("connect_async", ("broker.example.invalid", 1883, 2400), {})]
+        assert client.named("connect_async") == [("connect_async", ("broker.example.invalid", 1883, 60), {})]
         assert client.named("loop_start") == [("loop_start", (), {})]
         assert fake_paho.instances == [client]
 
@@ -1629,3 +1629,15 @@ def test_the_facades_loop_follows_the_clients_binding(fake_paho: type[FakeClient
 
     run(test)
     assert fake_paho.instances == [sdk.mqtt.client]
+
+
+def test_the_keepalive_defaults_to_60_seconds_and_2400_can_still_be_passed(fake_paho: type[FakeClient]) -> None:
+    async def test() -> None:
+        mqtt = make(TCP_KWARGS)
+        assert mqtt.keepalive_seconds == 60
+        upstream = make(TCP_KWARGS, keepalive_seconds=2400)
+        upstream.connect_async()
+        assert upstream.client.named("connect_async") == [("connect_async", ("broker.example.invalid", 1883, 2400), {})]
+        assert fake_paho.instances == [mqtt.client, upstream.client]
+
+    run(test)

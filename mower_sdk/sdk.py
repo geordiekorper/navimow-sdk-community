@@ -50,6 +50,9 @@ class NavimowSDK:
           ``loop`` property reads the MQTT client's binding. A closed
           ``loop=`` raises ValueError, and connecting from a running loop
           other than the bound one raises RuntimeError.
+        - keepalive_seconds defaults to 60: idle links die after about ten
+          minutes, and a ping a minute keeps them alive and finds a dead one
+          within about two minutes (NavimowMQTT says more).
         - get_cached_state and get_cached_attributes return the last message
           seen for a device; get_cached_state_age, get_cached_attributes_age
           and get_cached_state_received_at say when it arrived, so a consumer
@@ -75,7 +78,7 @@ class NavimowSDK:
         auth_headers: dict[str, str] | None = None,
         loop: asyncio.AbstractEventLoop | None = None,
         records: list[Any] | None = None,
-        keepalive_seconds: int = 2400,
+        keepalive_seconds: int = 60,
         reconnect_min_delay: int = 1,
         reconnect_max_delay: int = 60,
         allow_experimental_mqtt_commands: bool = False,

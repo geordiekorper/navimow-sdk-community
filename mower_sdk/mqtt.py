@@ -141,6 +141,11 @@ class NavimowMQTT:
     ``connect_async()`` starts paho once: while the current client's network
     thread runs (connected, connecting or retrying after a failure) a repeated
     call does nothing.
+
+    ``keepalive_seconds`` defaults to 60 (at least 30 is used): the cloud's
+    idle links die after about ten minutes without a FIN or DISCONNECT, and a
+    ping a minute keeps them alive and detects a dead one within about two
+    minutes. Pass 2400 for the previous default.
     """
 
     def __init__(
@@ -153,7 +158,7 @@ class NavimowMQTT:
         ws_path: str | None = None,
         auth_headers: dict[str, str] | None = None,
         loop: asyncio.AbstractEventLoop | None = None,
-        keepalive_seconds: int = 2400,
+        keepalive_seconds: int = 60,
         reconnect_min_delay: int = 1,
         reconnect_max_delay: int = 60,
     ) -> None:
