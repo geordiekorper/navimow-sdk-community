@@ -492,6 +492,60 @@ class DeviceStatus:
             result["extra"] = self.extra
         return result
 
+    @classmethod
+    def from_state_message(
+        cls,
+        message: "DeviceStateMessage",
+        fallback_status: MowerStatus | None = None,
+        fallback_battery: int | None = None,
+    ) -> "DeviceStatus":
+        """A new DeviceStatus from an MQTT state message; the message is not changed.
+
+        status is MowerStatus(message.state), UNKNOWN for a value the enum lacks.
+        The state channel sends partial messages, so the fallbacks (a consumer's
+        last known values, say) apply only to what the message does not carry:
+        fallback_status when it carries no state (its raw payload has no state,
+        status or vehicleState value, or, for a message built by hand, its state
+        is "unknown"), and fallback_battery when it carries no readable battery.
+        An explicit "unknown" in a payload is kept. timestamp is the message's in
+        milliseconds (mower_time_ms); the error dict's code and message become
+        error_code (UNKNOWN for a code the enum lacks) and error_message; the raw
+        state kept in metrics["raw_state"] becomes extra["vehicleState"].
+        """
+        try:
+            status = MowerStatus(message.state)
+        except ValueError:
+            status = MowerStatus.UNKNOWN
+        if message.raw is not None:
+            carries_state = any(message.raw.get(key) is not None for key in ("state", "status", "vehicleState"))
+        else:
+            carries_state = message.state != MowerStatus.UNKNOWN.value
+        if not carries_state and fallback_status is not None:
+            status = fallback_status
+        battery = message.battery if message.battery is not None else fallback_battery
+
+        error_code, error_message = MowerError.NONE, None
+        if isinstance(message.error, dict):
+            code = message.error.get("code") or message.error.get("error_code")
+            error_message = message.error.get("message")
+            if code:
+                try:
+                    error_code = MowerError(code)
+                except ValueError:
+                    error_code = MowerError.UNKNOWN
+        raw_state = (message.metrics or {}).get("raw_state")
+        return cls(
+            device_id=message.device_id,
+            status=status,
+            battery=battery,
+            position=message.position,
+            error_code=error_code,
+            error_message=error_message,
+            signal_strength=message.signal_strength,
+            timestamp=mower_time_ms(message.timestamp),
+            extra={"vehicleState": raw_state} if raw_state is not None else None,
+        )
+
 
 @dataclass
 class DeviceStateMessage:
@@ -537,6 +591,30 @@ class DeviceStateMessage:
             error=payload.get("error"),
             metrics=metrics or None,
             raw=raw,
+        )
+
+    @classmethod
+    def from_status(cls, status: "DeviceStatus", received_at: datetime | None = None) -> "DeviceStateMessage":
+        """A new state message from a REST DeviceStatus; the status is not changed.
+
+        state is the status's enum value; battery, signal_strength and position
+        are carried over; a non-NONE error code becomes {"code", "message"};
+        timestamp is the status's in milliseconds (mower_time_ms, None if absent);
+        received_at is as given and raw None. mowing_time, total_mowing_time and
+        extra have no field on a state message and are not carried.
+        """
+        error = None
+        if status.error_code is not MowerError.NONE:
+            error = {"code": status.error_code.value, "message": status.error_message}
+        return cls(
+            device_id=status.device_id,
+            timestamp=mower_time_ms(status.timestamp),
+            state=status.status.value,
+            battery=status.battery,
+            signal_strength=status.signal_strength,
+            position=status.position,
+            error=error,
+            received_at=received_at,
         )
 
     def to_dict(self) -> dict[str, Any]:
