@@ -131,17 +131,17 @@ class MowerUnsupportedOperationError(Exception):
 
 # Error message dictionary
 ERROR_MESSAGES = {
-    "AUTH_FAILED": "认证失败，请检查 client_id 和 client_secret",
-    "TOKEN_EXPIRED": "Token 已过期，请重新登录",
-    "TOKEN_REFRESH_FAILED": "Token 刷新失败",
-    "DEVICE_NOT_FOUND": "设备未找到",
-    "DEVICE_OFFLINE": "设备离线",
-    "COMMAND_FAILED": "指令执行失败",
-    "API_REQUEST_FAILED": "API 请求失败",
-    "MQTT_CONNECTION_FAILED": "MQTT 连接失败",
-    "MQTT_SUBSCRIBE_FAILED": "MQTT 订阅失败",
-    "INVALID_COMMAND": "无效的指令",
-    "INVALID_DEVICE_STATUS": "无效的设备状态",
+    "AUTH_FAILED": "Authentication failed; check client_id and client_secret",
+    "TOKEN_EXPIRED": "Token expired; sign in again",
+    "TOKEN_REFRESH_FAILED": "Token refresh failed",
+    "DEVICE_NOT_FOUND": "Device not found",
+    "DEVICE_OFFLINE": "Device offline",
+    "COMMAND_FAILED": "Command failed",
+    "API_REQUEST_FAILED": "API request failed",
+    "MQTT_CONNECTION_FAILED": "MQTT connection failed",
+    "MQTT_SUBSCRIBE_FAILED": "MQTT subscribe failed",
+    "INVALID_COMMAND": "Invalid command",
+    "INVALID_DEVICE_STATUS": "Invalid device status",
 }
 
 

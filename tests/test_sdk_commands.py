@@ -336,3 +336,17 @@ def test_update_mqtt_credentials_passes_everything_through(fake_mqtt: type[FakeM
         assert fake_mqtt.instances == [mqtt]
 
     run(test)
+
+
+def test_a_command_without_a_known_alternative_gets_a_neutral_refusal(fake_mqtt: type[FakeMQTT]) -> None:
+    async def test() -> None:
+        sdk, mqtt = make()
+        with pytest.raises(MowerUnsupportedOperationError) as info:
+            sdk._send_mqtt_command(DEVICE_ID, "set_cutting_pattern", {})
+        text = str(info.value)
+        assert "No supported alternative is known;" in text
+        assert "blade height" not in text
+        assert mqtt.calls == []
+        assert fake_mqtt.instances == [mqtt]
+
+    run(test)

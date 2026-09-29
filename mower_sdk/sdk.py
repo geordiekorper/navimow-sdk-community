@@ -41,6 +41,11 @@ _REST_ALTERNATIVES: dict[str, str] = {
     "pause": "MowerCommand.PAUSE",
     "return_to_base": "MowerCommand.DOCK",
 }
+# What the refusal says when there is no REST alternative.
+_NO_ALTERNATIVE: dict[str, str] = {
+    "set_blade_height": "No supported call sets the blade height (the REST API has no such command);",
+}
+_NO_ALTERNATIVE_KNOWN = "No supported alternative is known;"
 
 
 class NavimowSDK:
@@ -420,7 +425,7 @@ class NavimowSDK:
             alternative = (
                 f"Use MowerAPI.async_send_command(device_id, {rest_command}) over REST instead, or"
                 if rest_command is not None
-                else "No supported call sets the blade height (the REST API has no such command);"
+                else _NO_ALTERNATIVE.get(command, _NO_ALTERNATIVE_KNOWN)
             )
             raise MowerUnsupportedOperationError(
                 f"MQTT command {command!r} not sent: NavimowSDK publishes it to "
