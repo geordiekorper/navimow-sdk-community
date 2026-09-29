@@ -3,22 +3,31 @@
 from __future__ import annotations
 
 import asyncio
-import json
+import functools
 import logging
 import time
 import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from mower_sdk.errors import MowerUnsupportedOperationError
+from mower_sdk.errors import ERROR_MESSAGES, MowerAPIError, MowerUnsupportedOperationError
+from mower_sdk.location import REASON_PRIORITY, LocationDecoder, _plausible
 from mower_sdk.models import (
     DeviceAttributesMessage,
     DeviceCommandMessage,
     DeviceEventMessage,
+    DeviceLocation,
+    DeviceLocationMessage,
     DeviceStateMessage,
+    RejectedMessage,
+    STATE_KNOWN_FIELDS,
+    mower_time_ms,
 )
-from mower_sdk.mqtt import NavimowMQTT, _resolve_event_loop
+from mower_sdk.mqtt import NavimowMQTT, _decode_json, _parse_topic, _resolve_event_loop
+
+if TYPE_CHECKING:
+    from mower_sdk.api import MowerAPI
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -29,6 +38,11 @@ _REST_ALTERNATIVES: dict[str, str] = {
     "pause": "MowerCommand.PAUSE",
     "return_to_base": "MowerCommand.DOCK",
 }
+# What the refusal says when there is no REST alternative.
+_NO_ALTERNATIVE: dict[str, str] = {
+    "set_blade_height": "No supported call sets the blade height (the REST API has no such command);",
+}
+_NO_ALTERNATIVE_KNOWN = "No supported alternative is known;"
 
 
 class NavimowSDK:
@@ -46,7 +60,22 @@ class NavimowSDK:
           ``asyncio.set_event_loop()`` at that time, else the same two at the
           first ``connect()``. A facade constructed and connected with no
           running or current loop must be given ``loop=``; a callback that
-          arrives while no loop is bound is dropped with a warning.
+          arrives while no loop is bound is dropped with a warning. The
+          ``loop`` property reads the MQTT client's binding. A closed
+          ``loop=`` raises ValueError, and connecting from a running loop
+          other than the bound one raises RuntimeError.
+        - on_rejected reports every message that was not applied, or was
+          applied with something unknown in it: a state, event or attributes
+          payload that is not a JSON object (unparsable), a state payload with
+          a field outside STATE_KNOWN_FIELDS (unknown_field, still applied),
+          and the location channel's reasons. With reject_late_state=True, a
+          state message whose timestamp is implausible (implausible_time) or
+          older than the device's newest accepted one (stale) is not applied;
+          one without a timestamp is. Every delivered message carries
+          received_at, the UTC receipt time.
+        - keepalive_seconds defaults to 60: idle links die after about ten
+          minutes, and a ping a minute keeps them alive and finds a dead one
+          within about two minutes (NavimowMQTT says more).
         - get_cached_state and get_cached_attributes return the last message
           seen for a device; get_cached_state_age, get_cached_attributes_age
           and get_cached_state_received_at say when it arrived, so a consumer
@@ -72,13 +101,19 @@ class NavimowSDK:
         auth_headers: dict[str, str] | None = None,
         loop: asyncio.AbstractEventLoop | None = None,
         records: list[Any] | None = None,
-        keepalive_seconds: int = 2400,
+        keepalive_seconds: int = 60,
         reconnect_min_delay: int = 1,
         reconnect_max_delay: int = 60,
         allow_experimental_mqtt_commands: bool = False,
+        subscribe_location: bool = False,
+        extra_topics: list[str] | None = None,
+        reject_late_state: bool = False,
     ) -> None:
-        self._loop = _resolve_event_loop(loop)
         self._allow_experimental_mqtt_commands = allow_experimental_mqtt_commands
+        self._reject_late_state = reject_late_state
+        # device id -> the newest accepted state timestamp (mower milliseconds), kept
+        # only with reject_late_state.
+        self._state_marks: dict[str, int] = {}
         self._mqtt = NavimowMQTT(
             broker=broker,
             port=port,
@@ -87,16 +122,24 @@ class NavimowSDK:
             records=records or [],
             ws_path=ws_path,
             auth_headers=auth_headers,
-            loop=self._loop,
+            loop=_resolve_event_loop(loop),
             keepalive_seconds=keepalive_seconds,
             reconnect_min_delay=reconnect_min_delay,
             reconnect_max_delay=reconnect_max_delay,
+            subscribe_location=subscribe_location,
+            extra_topics=extra_topics,
         )
         self._mqtt.on_message = self._on_mqtt_message
 
         self._state_callbacks: list[Callable[[DeviceStateMessage], None]] = []
         self._event_callbacks: list[Callable[[DeviceEventMessage], None]] = []
         self._attributes_callbacks: list[Callable[[DeviceAttributesMessage], None]] = []
+        self._location_callbacks: list[Callable[[DeviceLocationMessage], None]] = []
+        self._rejected_callbacks: list[Callable[[RejectedMessage], None]] = []
+        self._raw_callbacks: list[Callable[[str, bytes], None]] = []
+        self._location = LocationDecoder()
+        self._credentials_lock = asyncio.Lock()
+        self._credentials_attempted_at: float | None = None
 
         self._state_cache: dict[str, DeviceStateMessage] = {}
         self._attributes_cache: dict[str, DeviceAttributesMessage] = {}
@@ -106,6 +149,16 @@ class NavimowSDK:
         self._state_cache_updated_at: dict[str, float] = {}
         self._attributes_cache_updated_at: dict[str, float] = {}
         self._state_cache_received_at: dict[str, datetime] = {}
+
+    @property
+    def loop(self) -> asyncio.AbstractEventLoop | None:
+        """The event loop the callbacks run on: the MQTT client's, which it may bind at connect."""
+        return self._mqtt.loop
+
+    @property
+    def mqtt(self) -> NavimowMQTT:
+        """The MQTT client: its connection hooks, counters, reasons and message times."""
+        return self._mqtt
 
     def connect(self) -> None:
         """Connect to MQTT broker and start consuming."""
@@ -120,6 +173,8 @@ class NavimowSDK:
         username: str | None = None,
         password: str | None = None,
         auth_headers: dict[str, str] | None = None,
+        *,
+        force_reconnect: bool = False,
     ) -> None:
         """Update the MQTT credentials.
 
@@ -129,6 +184,10 @@ class NavimowSDK:
         purpose, so hourly OAuth token rotation does not force a disconnect; paho uses
         them at its next connect, automatic reconnects included. While disconnected,
         changed values rebuild the paho client and start an asynchronous reconnect.
+        force_reconnect=True rebuilds and reconnects in any case (NavimowMQTT.rebuild).
+        The rebuilding paths block and must be called off the event loop; every
+        path, like connect(), disconnect() and the command methods, waits while a
+        rebuild runs on another thread.
 
         Used after an OAuth token refresh to update the MQTT WebSocket auth header,
         and to update the MQTT username/password issued by the server.
@@ -137,7 +196,78 @@ class NavimowSDK:
             username=username,
             password=password,
             auth_headers=auth_headers,
+            force_reconnect=force_reconnect,
         )
+
+    async def async_refresh_broker_credentials(
+        self,
+        api: MowerAPI,
+        *,
+        auth_headers: dict[str, str] | None = None,
+        force_reconnect: bool = False,
+        cooldown: float = 65.0,
+    ) -> bool:
+        """Fetch the broker username and password from the cloud and apply them.
+
+        When to call it: at startup, then connect() (or construct the facade
+        from the reply instead); and after on_connect_fail, where paho's thread
+        is still retrying and uses the applied values at its next attempt, or
+        at once with force_reconnect=True. Never on a timer, and never on an
+        OAuth token refresh, which is update_mqtt_credentials(auth_headers=...)
+        alone. It does not refresh the OAuth token: do that first, and pass the
+        new bearer header as auth_headers.
+
+        The endpoint allows about one call a minute, so a call within cooldown
+        seconds of the last attempt (a failed one included, since the cloud
+        counted it) returns False without a request; concurrent calls run one
+        at a time. Otherwise userName and pwdInfo from the reply are applied,
+        as strings, through update_mqtt_credentials(..., force_reconnect=...),
+        run in the default executor because its rebuilding paths block, and
+        True is returned. It does not start a connection of its own: unchanged
+        values without force_reconnect leave the client alone. Changed values
+        on a client that is not connected go through a rebuild, which connects,
+        as update_mqtt_credentials always has; a connect() after it is then a
+        no-op.
+
+        The loop the call is made from is bound to the MQTT client if none is,
+        before any executor work, so the callbacks of a facade constructed
+        outside a loop go to the caller's loop. A client bound to another loop
+        raises RuntimeError.
+
+        Raises:
+            RuntimeError: The client is bound to another event loop.
+            MowerAPIError: The request failed (MowerRateLimitedError: too early),
+                or the reply carried no credentials.
+        """
+        running = asyncio.get_running_loop()
+        if self._mqtt.loop is None:
+            self._mqtt.loop = running
+        elif self._mqtt.loop is not running:
+            raise RuntimeError(
+                f"NavimowSDK is bound to event loop {self._mqtt.loop!r}; "
+                f"async_refresh_broker_credentials() was called from another, {running!r}"
+            )
+        async with self._credentials_lock:
+            now = time.monotonic()
+            if self._credentials_attempted_at is not None and now - self._credentials_attempted_at < cooldown:
+                return False
+            self._credentials_attempted_at = now
+            info = await api.async_get_mqtt_user_info()
+            username = info.get("userName") if isinstance(info, dict) else None
+            password = info.get("pwdInfo") if isinstance(info, dict) else None
+            if username is None and password is None:
+                raise MowerAPIError(f"{ERROR_MESSAGES['API_REQUEST_FAILED']}: no broker credentials in the reply")
+            await running.run_in_executor(
+                None,
+                functools.partial(
+                    self.update_mqtt_credentials,
+                    None if username is None else str(username),
+                    None if password is None else str(password),
+                    auth_headers,
+                    force_reconnect=force_reconnect,
+                ),
+            )
+            return True
 
     def on_state(self, callback: Callable[[DeviceStateMessage], None]) -> None:
         self._state_callbacks.append(callback)
@@ -147,6 +277,39 @@ class NavimowSDK:
 
     def on_attributes(self, callback: Callable[[DeviceAttributesMessage], None]) -> None:
         self._attributes_callbacks.append(callback)
+
+    def on_location(self, callback: Callable[[DeviceLocationMessage], None]) -> None:
+        """Call callback with each applied entry of a location message, in the order applied.
+
+        Each message carries the merged record as it stood after its entry. The
+        channel is subscribed only with subscribe_location=True.
+        """
+        self._location_callbacks.append(callback)
+
+    def on_rejected(self, callback: Callable[[RejectedMessage], None]) -> None:
+        """Call callback once for each message that was not applied, or was applied with
+        something unknown in it, after whatever was applied has been delivered."""
+        self._rejected_callbacks.append(callback)
+
+    def on_raw(self, callback: Callable[[str, bytes], None]) -> None:
+        """Call callback(topic, payload) for every MQTT message, on any topic, with the bytes as received.
+
+        Nothing extra runs per message until the first raw callback is registered.
+        """
+        self._raw_callbacks.append(callback)
+        self._mqtt.on_raw = self._on_mqtt_raw
+
+    def get_cached_location(self, device_id: str) -> DeviceLocation | None:
+        """The merged location record for device_id, or None before any location entry or restore."""
+        return self._location.get(device_id)
+
+    def restore_location(self, device_id: str, location: DeviceLocation) -> None:
+        """Install a location record persisted earlier (DeviceLocation.to_dict / from_dict).
+
+        Call it before connecting, so a late entry older than what was applied
+        before a restart is rejected as stale rather than applied.
+        """
+        self._location.restore(device_id, location)
 
     def get_cached_state(self, device_id: str) -> DeviceStateMessage | None:
         return self._state_cache.get(device_id)
@@ -168,44 +331,120 @@ class NavimowSDK:
         """The UTC time the cached state message for device_id arrived, or None without one."""
         return self._state_cache_received_at.get(device_id)
 
+    async def _on_mqtt_raw(self, topic: str, payload: bytes) -> None:
+        """Call each raw callback with the topic and bytes; one that raises is logged and the rest still run."""
+        for callback in list(self._raw_callbacks):
+            try:
+                callback(topic, payload)
+            except Exception:
+                _LOGGER.exception("Navimow raw callback %r failed for topic %s", callback, topic)
+
     async def _on_mqtt_message(
         self, topic: str, payload: bytes, device_id: str
     ) -> None:
-        try:
-            payload_dict = json.loads(payload.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError):
+        _, channel = _parse_topic(topic)
+        if channel == "location":
+            self._on_location_message(topic, payload, device_id)
             return
+
+        if channel not in ("state", "event", "attributes"):
+            return
+
+        received_at = datetime.now(UTC)
+        payload_dict = _decode_json(payload)
         if not isinstance(payload_dict, dict):
+            self._reject(channel, topic, device_id, "unparsable", ["unparsable"], payload, received_at)
             return
 
         payload_dict.setdefault("device_id", device_id)
-        parts = topic.split("/")
-        if parts and parts[0] == "":
-            parts = parts[1:]
-        if len(parts) != 5:
-            return
-        if parts[0] != "downlink" or parts[1] != "vehicle":
-            return
-        if parts[3] != "realtimeDate":
-            return
-        channel = parts[4]
 
         if channel == "state":
-            msg = DeviceStateMessage.from_dict(payload_dict)
-            self._state_cache[msg.device_id] = msg
-            self._state_cache_updated_at[msg.device_id] = time.monotonic()
-            self._state_cache_received_at[msg.device_id] = datetime.now(UTC)
-            self._dispatch(self._state_callbacks, msg, channel)
+            self._on_state_payload(topic, payload, payload_dict, received_at)
             return
         if channel == "event":
             msg = DeviceEventMessage.from_dict(payload_dict)
+            msg.received_at = received_at
             self._dispatch(self._event_callbacks, msg, channel)
             return
-        if channel == "attributes":
-            msg = DeviceAttributesMessage.from_dict(payload_dict)
-            self._attributes_cache[msg.device_id] = msg
-            self._attributes_cache_updated_at[msg.device_id] = time.monotonic()
-            self._dispatch(self._attributes_callbacks, msg, channel)
+        msg = DeviceAttributesMessage.from_dict(payload_dict)
+        msg.received_at = received_at
+        self._attributes_cache[msg.device_id] = msg
+        self._attributes_cache_updated_at[msg.device_id] = time.monotonic()
+        self._dispatch(self._attributes_callbacks, msg, channel)
+
+    def _on_state_payload(
+        self, topic: str, payload: bytes, payload_dict: dict[str, Any], received_at: datetime
+    ) -> None:
+        """Apply a state payload unless the late-state filter blocks it; report what it earned.
+
+        A key outside STATE_KNOWN_FIELDS earns unknown_field and never blocks. With
+        reject_late_state, a timestamp outside the plausibility window earns
+        implausible_time and one older than the device's newest accepted timestamp
+        earns stale; both block, and a blocked message names the blocking reason as
+        its reason. A message without a timestamp is applied.
+        """
+        msg = DeviceStateMessage.from_dict(payload_dict)
+        msg.received_at = received_at
+        reasons = []
+        if not payload_dict.keys() <= STATE_KNOWN_FIELDS:
+            reasons.append("unknown_field")
+        # The one reason, if any, that keeps the message from being applied.
+        blocked = None
+        stamp = mower_time_ms(msg.timestamp) if self._reject_late_state else None
+        if stamp is not None:
+            mark = self._state_marks.get(msg.device_id)
+            if not _plausible(stamp, round(received_at.timestamp() * 1000)):
+                blocked = "implausible_time"
+            elif mark is not None and stamp < mark:
+                blocked = "stale"
+        if blocked is not None:
+            reasons.append(blocked)
+        else:
+            if stamp is not None:
+                self._state_marks[msg.device_id] = stamp  # not stale, so at or above the mark
+            self._state_cache[msg.device_id] = msg
+            self._state_cache_updated_at[msg.device_id] = time.monotonic()
+            self._state_cache_received_at[msg.device_id] = received_at
+            self._dispatch(self._state_callbacks, msg, "state")
+        if reasons:
+            # A message that was not applied names the reason that blocked it; one that
+            # was applied names unknown_field.
+            ordered = [reason for reason in REASON_PRIORITY if reason in reasons]
+            self._reject("state", topic, msg.device_id, blocked or ordered[0], ordered, payload, received_at)
+
+    def _on_location_message(self, topic: str, payload: bytes, device_id: str) -> None:
+        received_at = datetime.now(UTC)
+        # A payload that is not JSON decodes to None, which decode() reports as unparsable.
+        value = _decode_json(payload)
+        if isinstance(value, dict) and value.get("device_id") == device_id:
+            # The MQTT client adds device_id to an object payload; the mower did not send it.
+            del value["device_id"]
+        parsed = self._location.decode(device_id, value, received_at)
+        for message in parsed.messages:
+            self._dispatch(self._location_callbacks, message, "location")
+        if parsed.reasons:
+            self._reject("location", topic, device_id, parsed.reason, parsed.reasons, payload, received_at)
+
+    def _reject(
+        self,
+        channel: str,
+        topic: str,
+        device_id: str,
+        reason: str | None,
+        reasons: list[str],
+        payload: bytes,
+        received_at: datetime,
+    ) -> None:
+        rejected = RejectedMessage(
+            channel=channel,
+            topic=topic,
+            device_id=device_id,
+            reason=reason or reasons[0],
+            reasons=tuple(reasons),
+            payload=payload,
+            received_at=received_at,
+        )
+        self._dispatch(self._rejected_callbacks, rejected, "rejected")
 
     @staticmethod
     def _dispatch(callbacks: list[Callable[[Any], None]], message: Any, channel: str) -> None:
@@ -241,7 +480,7 @@ class NavimowSDK:
             alternative = (
                 f"Use MowerAPI.async_send_command(device_id, {rest_command}) over REST instead, or"
                 if rest_command is not None
-                else "No supported call sets the blade height (the REST API has no such command);"
+                else _NO_ALTERNATIVE.get(command, _NO_ALTERNATIVE_KNOWN)
             )
             raise MowerUnsupportedOperationError(
                 f"MQTT command {command!r} not sent: NavimowSDK publishes it to "

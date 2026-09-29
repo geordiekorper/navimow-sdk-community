@@ -9,6 +9,7 @@ what the async method returns.
 
 from __future__ import annotations
 
+import json
 import warnings
 from typing import Any
 
@@ -33,6 +34,9 @@ class FakeResponse:
 
     async def json(self) -> Any:
         return self._body
+
+    async def read(self) -> bytes:
+        return json.dumps(self._body).encode()
 
     async def text(self) -> str:
         return ""

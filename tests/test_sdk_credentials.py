@@ -1,0 +1,261 @@
+"""NavimowSDK.async_refresh_broker_credentials: the cooldown, one call at a time, the applied values, the loop.
+
+The real NavimowMQTT runs on a recording fake paho client, so what the helper
+applies can be read off the client; a fake API returns the credential reply, and
+a fake clock is patched into the sdk module in place of time.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import threading
+from typing import Any
+
+import pytest
+
+from mower_sdk import mqtt as mqtt_module
+from mower_sdk import sdk as sdk_module
+from mower_sdk.errors import MowerAPIError, MowerRateLimitedError
+from mower_sdk.sdk import NavimowSDK
+
+HEADERS = {"Authorization": "Bearer tok"}
+
+
+class FakeClient:
+    instances: list[FakeClient] = []
+
+    def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+        self.calls: list[tuple[str, tuple[Any, ...]]] = []
+        self.connected = False
+        FakeClient.instances.append(self)
+
+    def __getattr__(self, name: str) -> Any:
+        def record(*args: Any, **_kwargs: Any) -> None:
+            self.calls.append((name, args))
+
+        return record
+
+    def is_connected(self) -> bool:
+        return self.connected
+
+    def named(self, name: str) -> list[tuple[Any, ...]]:
+        return [args for called, args in self.calls if called == name]
+
+
+class FakeClock:
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+
+class FakeAPI:
+    def __init__(self, *replies: Any) -> None:
+        self.replies = list(replies)
+        self.calls = 0
+
+    async def async_get_mqtt_user_info(self) -> Any:
+        self.calls += 1
+        await asyncio.sleep(0)
+        reply = self.replies.pop(0)
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+
+pytestmark = pytest.mark.usefixtures("clock")
+
+
+@pytest.fixture
+def clock(monkeypatch: pytest.MonkeyPatch) -> FakeClock:
+    FakeClient.instances = []
+    monkeypatch.setattr(mqtt_module.mqtt_client, "Client", FakeClient)
+    fake = FakeClock()
+    monkeypatch.setattr(sdk_module, "time", fake)
+    return fake
+
+
+def facade(**kwargs: Any) -> NavimowSDK:
+    return NavimowSDK(broker="wss://broker.example.invalid", port=443, ws_path="/mqtt", **kwargs)
+
+
+def reply(user: Any = "user", password: Any = "secret") -> dict[str, Any]:
+    return {"mqttHost": "wss://broker.example.invalid", "userName": user, "pwdInfo": password}
+
+
+def test_the_reply_is_applied_as_strings_with_the_header() -> None:
+    async def test() -> None:
+        sdk = facade(username="old", password="old", auth_headers={"Authorization": "Bearer old"})
+        sdk.connect()
+        sdk.mqtt.client.connected = True
+        assert await sdk.async_refresh_broker_credentials(FakeAPI(reply(12345, 678)), auth_headers=HEADERS) is True
+        assert (sdk.mqtt.username, sdk.mqtt.password, sdk.mqtt.auth_headers) == ("12345", "678", HEADERS)
+        assert sdk.mqtt.client.named("username_pw_set")[-1] == ("12345", "678")  # set on the live client
+        assert len(FakeClient.instances) == 1  # connected, not forced: no rebuild
+
+    asyncio.run(test())
+
+
+def test_a_call_within_the_cooldown_makes_no_request_and_a_failed_attempt_counts(clock: FakeClock) -> None:
+    async def test() -> None:
+        sdk = facade()
+        api = FakeAPI(MowerRateLimitedError("too frequent", envelope_code=4001), reply(), reply("u2"))
+        with pytest.raises(MowerRateLimitedError):
+            await sdk.async_refresh_broker_credentials(api)
+        clock.now += 64.9
+        assert await sdk.async_refresh_broker_credentials(api) is False
+        assert api.calls == 1
+        clock.now += 0.1
+        assert await sdk.async_refresh_broker_credentials(api) is True
+        clock.now += 10
+        assert await sdk.async_refresh_broker_credentials(api, cooldown=5) is True
+        assert (api.calls, sdk.mqtt.username) == (3, "u2")
+
+    asyncio.run(test())
+
+
+def test_concurrent_calls_make_one_request() -> None:
+    async def test() -> None:
+        sdk = facade()
+        api = FakeAPI(reply(), reply())
+        results = await asyncio.gather(*(sdk.async_refresh_broker_credentials(api) for _ in range(3)))
+        assert sorted(results) == [False, False, True]
+        assert api.calls == 1
+
+    asyncio.run(test())
+
+
+def test_force_reconnect_rebuilds_even_with_unchanged_values() -> None:
+    async def test() -> None:
+        sdk = facade(username="user", password="secret")
+        first = sdk.mqtt.client
+        first.connected = True
+        assert await sdk.async_refresh_broker_credentials(FakeAPI(reply()), force_reconnect=True) is True
+        assert sdk.mqtt.client is not first
+        assert sdk.mqtt.rebuilds == 1
+        assert sdk.mqtt.client.named("connect_async") == [("broker.example.invalid", 443, 60)]
+
+    asyncio.run(test())
+
+
+def test_a_startup_call_with_unchanged_credentials_starts_no_connection() -> None:
+    async def test() -> None:
+        sdk = facade(username="user", password="secret")
+        assert await sdk.async_refresh_broker_credentials(FakeAPI(reply())) is True
+        assert sdk.mqtt.client.named("connect_async") == []
+        assert len(FakeClient.instances) == 1
+        sdk.connect()
+        assert len(sdk.mqtt.client.named("connect_async")) == 1
+
+    asyncio.run(test())
+
+
+def test_a_startup_call_with_new_credentials_connects_through_the_rebuild() -> None:
+    async def test() -> None:
+        sdk = facade()  # constructed without credentials, not connected
+        assert await sdk.async_refresh_broker_credentials(FakeAPI(reply())) is True
+        assert len(FakeClient.instances) == 2
+        assert sdk.mqtt.client.named("username_pw_set") == [("user", "secret")]
+        assert sdk.mqtt.client.named("connect_async") == [("broker.example.invalid", 443, 60)]
+        sdk.connect()  # already started: nothing more
+        assert len(sdk.mqtt.client.named("connect_async")) == 1
+
+    asyncio.run(test())
+
+
+def test_a_startup_call_binds_the_callers_loop_before_the_executor() -> None:
+    sdk = facade()  # outside any loop: nothing bound
+    assert sdk.loop is None
+    delivered: list[asyncio.AbstractEventLoop] = []
+
+    async def on_disconnected() -> None:
+        delivered.append(asyncio.get_running_loop())
+
+    async def test() -> None:
+        await sdk.async_refresh_broker_credentials(FakeAPI(reply()))  # changed while disconnected: a rebuild
+        assert sdk.loop is asyncio.get_running_loop()
+        sdk.mqtt.on_disconnected = on_disconnected
+        sdk.connect()
+        sdk.mqtt._on_disconnect(sdk.mqtt.client, None, {}, _Success(), None)
+        for _ in range(3):
+            await asyncio.sleep(0)
+        assert delivered == [asyncio.get_running_loop()]
+
+    asyncio.run(test())
+
+
+class _Success:
+    value = 0
+    is_failure = False
+
+
+def test_a_call_from_another_loop_is_refused_before_any_request() -> None:
+    other = asyncio.new_event_loop()
+    try:
+        sdk = facade(loop=other)
+        api = FakeAPI(reply())
+        with pytest.raises(RuntimeError, match="another"):
+            asyncio.run(sdk.async_refresh_broker_credentials(api))
+        assert api.calls == 0
+    finally:
+        other.close()
+
+
+@pytest.mark.parametrize("answer", [None, {}, {"mqttHost": "wss://broker.example.invalid"}], ids=["null", "empty", "host_only"])
+def test_a_reply_without_credentials_is_an_api_error_and_counts_for_the_cooldown(answer: Any) -> None:
+    async def test() -> None:
+        sdk = facade(username="old", password="old")
+        api = FakeAPI(answer, reply())
+        with pytest.raises(MowerAPIError, match="no broker credentials"):
+            await sdk.async_refresh_broker_credentials(api)
+        assert (sdk.mqtt.username, sdk.mqtt.password) == ("old", "old")
+        assert await sdk.async_refresh_broker_credentials(api) is False
+        assert api.calls == 1
+
+    asyncio.run(test())
+
+
+class GatedAPI(FakeAPI):
+    """The first request waits until released."""
+
+    def __init__(self, *replies: Any) -> None:
+        super().__init__(*replies)
+        self.release = asyncio.Event()
+
+    async def async_get_mqtt_user_info(self) -> Any:
+        if self.calls == 0:
+            self.calls += 1
+            await self.release.wait()
+            return self.replies.pop(0)
+        return await super().async_get_mqtt_user_info()
+
+
+def test_a_second_call_waits_for_the_first_to_finish_even_past_the_cooldown(clock: FakeClock) -> None:
+    async def test() -> None:
+        sdk = facade()
+        api = GatedAPI(reply("u1"), reply("u2"))
+        first = asyncio.create_task(sdk.async_refresh_broker_credentials(api))
+        await asyncio.sleep(0)
+        clock.now += 100  # the cooldown has passed, but the first call still holds the lock
+        second = asyncio.create_task(sdk.async_refresh_broker_credentials(api))
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert api.calls == 1
+        api.release.set()
+        assert await first is True
+        assert await second is True
+        assert (api.calls, sdk.mqtt.username) == (2, "u2")
+
+    asyncio.run(test())
+
+
+def test_the_credentials_are_applied_off_the_callers_thread(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test() -> None:
+        sdk = facade()
+        threads: list[int] = []
+        monkeypatch.setattr(sdk, "update_mqtt_credentials", lambda *_a, **_k: threads.append(threading.get_ident()))
+        assert await sdk.async_refresh_broker_credentials(FakeAPI(reply())) is True
+        assert threads and threads[0] != threading.get_ident()
+
+    asyncio.run(test())

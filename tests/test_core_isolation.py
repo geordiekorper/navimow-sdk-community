@@ -24,6 +24,7 @@ CORE_MODULES = [
     "mower_sdk._deprecation",
     "mower_sdk.api",
     "mower_sdk.errors",
+    "mower_sdk.location",
     "mower_sdk.models",
     "mower_sdk.mqtt",
     "mower_sdk.sdk",
@@ -139,8 +140,8 @@ from mower_sdk import (
     NavimowSDK,
 )
 
-# Use the live path by name; nothing is constructed, because paho 2.x warns
-# about the callback API version when a client is built.
+# Use the live path by name; nothing is constructed: this checks what importing
+# loads, not what the classes do.
 assert MowerAPI is mower_sdk.api.MowerAPI and MowerAPI.__module__ == "mower_sdk.api"
 assert NavimowMQTT is mower_sdk.mqtt.NavimowMQTT and NavimowMQTT.__module__ == "mower_sdk.mqtt"
 assert NavimowSDK is mower_sdk.sdk.NavimowSDK and NavimowSDK.__module__ == "mower_sdk.sdk"

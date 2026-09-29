@@ -4,14 +4,32 @@ Provides access to the mower platform's REST API.
 """
 
 import asyncio
+import json
 import uuid
 import warnings
 from typing import Any
 
 import aiohttp
 
-from mower_sdk.errors import MowerAPIError, ERROR_MESSAGES
-from mower_sdk.models import CommandReceipt, CommandVerdict, Device, DeviceStatus, MowerCommand
+from mower_sdk.errors import (
+    MowerAPIError,
+    MowerAuthRequiredError,
+    MowerRateLimitedError,
+    MowerTransportError,
+    ERROR_MESSAGES,
+)
+from mower_sdk.models import CommandReceipt, CommandVerdict, Device, DeviceStatus, MowerCommand, _int
+
+# An HTTP error body is kept in the error message up to this many characters.
+_ERROR_BODY_LIMIT = 500
+
+
+def _error_body(body: bytes) -> str:
+    """An HTTP error body for a message: decoded with bad bytes replaced, cut at the limit."""
+    text = body.decode("utf-8", errors="replace")
+    if len(text) <= _ERROR_BODY_LIMIT:
+        return text
+    return f"{text[:_ERROR_BODY_LIMIT]}… [truncated, {len(text)} characters]"
 
 # The spellings under which a reply might carry its command number.
 _COMMAND_NUMBER_KEYS = (
@@ -113,9 +131,21 @@ class MowerAPI:
     and it emits a DeprecationWarning when called.
 
     Every request is bounded by request_timeout, 20 seconds in total by
-    default, and a request that times out raises MowerAPIError like any other
-    failed request. Pass request_timeout=None to leave the session's own
-    timeout policy in force instead.
+    default. Pass request_timeout=None to leave the session's own timeout
+    policy in force instead.
+
+    A failed request or a refusal is a MowerAPIError; the subclass says which
+    kind. (Kept from upstream: a successful reply whose data is null makes the
+    endpoints that read into it raise AttributeError.)
+    MowerTransportError: no usable reply (a timeout, a connection error, an
+    HTTP 5xx, a status below 200 or a redirect that was not followed, or a 2xx
+    whose body is not a JSON object), so a command's outcome is unknown.
+    MowerAuthRequiredError: HTTP 401 or 403, envelope code 4005, or
+    CODE_OAUTH_INFO_ILLEGAL in the desc. MowerRateLimitedError: envelope code
+    4001, or "too frequent" or "circuit breaker" in the desc. Any other HTTP
+    status of 400 or more, or envelope code other than 1, is a plain
+    MowerAPIError. An HTTP error body is kept in the message, cut at 500
+    characters; the envelope code is kept as envelope_code.
 
     Attributes:
         base_url: API base URL
@@ -181,8 +211,11 @@ class MowerAPI:
             Response JSON data
 
         Raises:
-            MowerAPIError: If the request fails or times out. The aiohttp
-                error or TimeoutError that caused it is its __cause__.
+            MowerTransportError: No usable reply (see the class docstring); the
+                aiohttp error, TimeoutError or decoding error, if any, is its
+                __cause__.
+            MowerAuthRequiredError: HTTP 401 or 403.
+            MowerAPIError: Any other HTTP status of 400 or more.
         """
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
         headers = self._get_auth_headers()
@@ -196,37 +229,71 @@ class MowerAPI:
             async with session.request(
                 method, url, json=data, params=params, headers=headers, **request_options
             ) as response:
-                if response.status >= 400:
-                    error_text = await response.text()
-                    raise MowerAPIError(
-                        f"{ERROR_MESSAGES['API_REQUEST_FAILED']}: {error_text}",
-                        status_code=response.status,
-                    )
-
-                return await response.json()
+                status = response.status
+                body = await response.read()
         except (TimeoutError, aiohttp.ClientError) as e:
             # asyncio.TimeoutError is TimeoutError from Python 3.11, and aiohttp
             # raises it when a ClientTimeout expires. A TimeoutError carries no
             # text, so its class name stands in.
-            raise MowerAPIError(
+            raise MowerTransportError(
                 f"{ERROR_MESSAGES['API_REQUEST_FAILED']}: {str(e) or type(e).__name__}"
             ) from e
+        return self._reply(status, body)
+
+    @staticmethod
+    def _reply(status: int, body: bytes) -> dict[str, Any]:
+        """The reply as a JSON object, or the error the status or the body calls for.
+
+        The status decides first, for every non-2xx reply whatever its body; the
+        body of a 2xx is then read as UTF-8 JSON, whatever its content type.
+        """
+        failed = ERROR_MESSAGES["API_REQUEST_FAILED"]
+        if status in (401, 403):
+            raise MowerAuthRequiredError(f"{failed}: {_error_body(body)}", status_code=status)
+        if status >= 500 or status < 200 or 300 <= status < 400:
+            raise MowerTransportError(f"{failed}: {_error_body(body)}", status_code=status)
+        if status >= 400:
+            raise MowerAPIError(f"{failed}: {_error_body(body)}", status_code=status)
+        try:
+            text = body.decode("utf-8")
+        except UnicodeDecodeError as e:
+            raise MowerTransportError(f"{failed}: reply is not UTF-8", status_code=status) from e
+        if not text.strip():
+            raise MowerTransportError(f"{failed}: empty reply", status_code=status)
+        try:
+            reply = json.loads(text)
+        except json.JSONDecodeError as e:
+            raise MowerTransportError(f"{failed}: reply is not JSON", status_code=status) from e
+        if not isinstance(reply, dict):
+            raise MowerTransportError(f"{failed}: reply is not a JSON object", status_code=status)
+        return reply
 
     @staticmethod
     def _unwrap(response: dict[str, Any]) -> Any:
         """Check the reply envelope and return its data.
 
         Raises:
-            MowerAPIError: If the envelope's code is not 1, with the reply's desc
+            MowerAuthRequiredError: code 4005, or CODE_OAUTH_INFO_ILLEGAL in desc
+            MowerRateLimitedError: code 4001, or "too frequent" or "circuit
+                breaker" in desc
+            MowerAPIError: If the envelope's code is not 1 otherwise, with the
+                reply's desc; the code is kept as envelope_code
 
         Returns:
             response["data"]: {} when the key is missing and None when the reply
             carries an explicit null, exactly as each endpoint read it before
         """
-        if response.get("code") != 1:
-            raise MowerAPIError(
-                f"{ERROR_MESSAGES['API_REQUEST_FAILED']}: {response.get('desc')}"
-            )
+        code = response.get("code")
+        if code != 1:
+            desc = response.get("desc")
+            message = f"{ERROR_MESSAGES['API_REQUEST_FAILED']}: {desc}"
+            envelope_code = _int(code)
+            lowered = str(desc).lower()
+            if envelope_code == 4005 or "code_oauth_info_illegal" in lowered:
+                raise MowerAuthRequiredError(message, envelope_code=envelope_code)
+            if envelope_code == 4001 or "too frequent" in lowered or "circuit breaker" in lowered:
+                raise MowerRateLimitedError(message, envelope_code=envelope_code)
+            raise MowerAPIError(message, envelope_code=envelope_code)
         return response.get("data", {})
 
     async def async_get_devices(self) -> list[Device]:
@@ -279,6 +346,35 @@ class MowerAPI:
         _warn_sync_wrapper("get_mqtt_user_info")
         return asyncio.run(self.async_get_mqtt_user_info())
 
+    async def async_get_vehicle_status_raw(self, device_ids: list[str]) -> list[dict[str, Any]]:
+        """Fetch the status entries of several devices as the cloud sent them.
+
+        One getVehicleStatus request; returns the dict entries of the reply's
+        data.payload.devices unchanged, and an empty list, without a request, for
+        no ids. An X430's entry carried id, capacityRemaining, vehicleState and
+        descriptiveCapacityRemaining; a field the cloud starts sending reaches the
+        caller here first. async_get_device_statuses reads the same entries into
+        DeviceStatus.
+
+        Args:
+            device_ids: List of device IDs
+
+        Returns:
+            The status entries, as dicts
+
+        Raises:
+            MowerAPIError: If the request fails
+        """
+        if not device_ids:
+            return []
+        response = await self._async_request(
+            "POST",
+            "/openapi/smarthome/getVehicleStatus",
+            data={"devices": [{"id": device_id} for device_id in device_ids]},
+        )
+        payload = self._unwrap(response).get("payload", {})
+        return [entry for entry in payload.get("devices", []) if isinstance(entry, dict)]
+
     async def async_get_device_statuses(
         self, device_ids: list[str]
     ) -> dict[str, DeviceStatus]:
@@ -288,22 +384,13 @@ class MowerAPI:
             device_ids: List of device IDs
 
         Returns:
-            Mapping from device ID to status
+            Mapping from device ID to status; an entry without an id is left out
 
         Raises:
             MowerAPIError: If the request fails
         """
-        if not device_ids:
-            return {}
-        response = await self._async_request(
-            "POST",
-            "/openapi/smarthome/getVehicleStatus",
-            data={"devices": [{"id": device_id} for device_id in device_ids]},
-        )
-        payload = self._unwrap(response).get("payload", {})
-        devices_data = payload.get("devices", [])
         result: dict[str, DeviceStatus] = {}
-        for status_data in devices_data:
+        for status_data in await self.async_get_vehicle_status_raw(device_ids):
             status = DeviceStatus.from_dict(status_data)
             if status.device_id:
                 result[status.device_id] = status
@@ -461,10 +548,10 @@ class MowerAPI:
         if any; no captured reply does.
 
         Two cases return no receipt. Any other ERROR result raises MowerAPIError
-        exactly as async_send_command does: the cloud refused the command. A
-        transport failure or timeout raises MowerAPIError with the aiohttp error
-        or TimeoutError as its cause: no reply came back, and the cloud may
-        still have accepted the command.
+        exactly as async_send_command does: the cloud refused the command. No
+        usable reply (a timeout, a connection error, an HTTP 5xx, or a body that
+        is not a JSON object) raises MowerTransportError: the cloud may still
+        have accepted the command.
 
         Args:
             device_id: Device ID

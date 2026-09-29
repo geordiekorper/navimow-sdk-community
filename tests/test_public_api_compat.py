@@ -7,8 +7,8 @@ alias marked ``keep`` still resolves to the same object it aliased, and the
 package still re-exports what it did.
 
 Nothing is constructed here on purpose: the test imports and reads attributes
-only, so it checks the import surface and nothing else (paho 2.x, for one,
-warns about the callback API version whenever a client is built).
+only, so it checks the import surface and nothing else (the legacy MQTT
+client, for one, warns about paho's callback API version when it builds a client).
 """
 
 from __future__ import annotations

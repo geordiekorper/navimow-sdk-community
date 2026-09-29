@@ -7,6 +7,139 @@ throughout.
 
 ## [Unreleased]
 
+The MQTT transport, the location channel, the models and the REST errors.
+Nothing upstream published is removed; the live path behaves differently only
+as listed here. `UPSTREAM.md` maps the pieces taken from the randax and
+AndiHOK91 forks to their origins.
+
+### Compatibility
+
+An integration that does any of these must change with this release:
+
+- overrides or wraps `NavimowMQTT._on_connect` or `_on_disconnect` with paho's
+  callback API version 1 signatures (see "paho-mqtt 2.1 is required");
+- classifies a failed REST call by looking for an `aiohttp.ClientError` or a
+  `TimeoutError` in the exception or its cause: test for
+  `MowerTransportError` instead, which also covers an HTTP 5xx and a 2xx
+  reply that is not a JSON object;
+- maps `MowerStatus` values through a table: `MAPPING`, `UPDATING` and
+  `OFFLINE` are new, and `isMapping`, `inSoftwareUpdate` and `offline` no
+  longer come out as mowing, paused and unknown;
+- matches on the text of an error message (now English);
+- reaches `NavimowSDK._mqtt` or reads `NavimowSDK._loop`: use `sdk.mqtt` and
+  `sdk.loop`.
+
+### Changed
+
+- **paho-mqtt 2.1 is required.** The dependency is `paho-mqtt>=2.1,<3`, and
+  `NavimowMQTT` builds its clients on paho's callback API version 2, so it no
+  longer triggers paho's "Callback API version 1 is deprecated" warning (the
+  0.2.0a2 notes said that warning was unchanged). `_on_connect` and
+  `_on_disconnect` take the version 2 arguments `(client, userdata, flags,
+  reason_code, properties=None)`. The legacy `MowerMQTT` keeps version 1 and
+  paho's warning.
+- **The MQTT keepalive defaults to 60 seconds** (was 2400) in `NavimowMQTT` and
+  `NavimowSDK`. Idle links to the cloud die after about ten minutes without a
+  FIN or DISCONNECT; a ping a minute keeps them alive and finds a dead one
+  within about two minutes. `keepalive_seconds=2400` restores the old value.
+- **REST errors say what kind of failure they are.** Three subclasses of
+  `MowerAPIError`, so `except MowerAPIError` still catches every failed request:
+  `MowerTransportError`, no usable reply (a timeout, a connection error, an
+  HTTP 5xx, a status below 200 or a redirect that was not followed, or a 2xx
+  whose body is not a JSON object), where a command's outcome is unknown
+  rather than refused; `MowerAuthRequiredError`, HTTP 401 or 403, envelope
+  code 4005, or `CODE_OAUTH_INFO_ILLEGAL` in the reply; `MowerRateLimitedError`,
+  envelope code 4001, or "too frequent" or "circuit breaker" in the reply. The
+  status decides for every non-2xx reply; a 2xx body is read as UTF-8 JSON
+  whatever its content type. Three malformed replies that escaped as a raw
+  `JSONDecodeError`, `UnicodeDecodeError` or `AttributeError` are now
+  `MowerTransportError`, and a redirect's body is no longer read as an answer.
+  The envelope's code is kept as `MowerAPIError.envelope_code`, outside
+  `error_code` and `str()`. An HTTP error body is cut at 500 characters in the
+  message. `MowerUnsupportedOperationError` gains a `message` attribute.
+- **The runtime strings are English.** The eleven `ERROR_MESSAGES` values were
+  Chinese; the keys are unchanged ("API request failed", "Command failed",
+  "Device not found", and so on). `COMMAND_ERRORS` stays in the legacy module.
+  The refusal of an MQTT command without a REST alternative no longer uses the
+  blade-height wording for every such command.
+- **`MowerStatus.MAPPING`, `UPDATING` and `OFFLINE`.** The raw states
+  `isMapping`, `inSoftwareUpdate`, `Offline` and `offline` map to them instead
+  of to mowing, paused and unknown.
+- **`DeviceStatus.extra` keeps every unread key and no longer changes the
+  caller's dict.** `DeviceStatus.from_dict` builds `extra` as a new dict: a
+  copy of the payload's `extra`, every key no field reads, and the raw status
+  keys it kept before. Before, it wrote those keys into the caller's own
+  `extra` dict and dropped the rest.
+- **Loop affinity.** A closed `loop=` raises `ValueError` in `NavimowMQTT` and
+  `NavimowSDK`; `connect_async()` or `connect()` called from inside a running
+  loop other than the bound one raises `RuntimeError`; a callback handed to a
+  loop that closes at that moment is dropped (debug line) instead of raising on
+  paho's thread. `NavimowSDK` no longer keeps its own `_loop`; `sdk.loop` reads
+  the client's.
+- **Rebuilds and reconnects.** A credential update while disconnected goes
+  through `rebuild()`. Callbacks from a paho client that has been replaced are
+  ignored. `connect_async()` does nothing while the current client's network
+  thread runs (connected, connecting or retrying after a failure), so a
+  repeated connect no longer resets paho's attempt in progress. `rebuild()`,
+  `disconnect()`, a connect and a credential update run one at a time, so a
+  call made while a rebuild runs on another thread waits for it. An
+  empty-string username or password is now applied as a value.
+- **The connection logs redact the client id, the account id and the
+  WebSocket path.** The client id shows as `web_…_<suffix>`, the path as its
+  first segment (`/mqtt/…`), and the username as `configured` or `not
+  configured`. What is sent to the broker is unchanged.
+- **Malformed payloads are reported.** A state, event or attributes payload
+  that is not a JSON object, dropped silently before, is reported through
+  `on_rejected` (see below).
+
+### Added
+
+- On `NavimowMQTT`: `on_connect_fail` (an async hook given a reason: "refused:
+  ..." for a refused CONNACK, "connection failed before CONNACK" when paho's
+  own connect-failure callback fires, as a bearer token refused at the
+  WebSocket upgrade does); `last_connect_fail_reason`,
+  `last_disconnect_reason` ("requested" or paho's reason text) and
+  `last_connected_at`; the counters `connects`, `disconnects`,
+  `connect_failures` and `rebuilds`, with `last_rebuild_reason`; `client_id`;
+  `last_message_at(device_id, channel=None)` and
+  `last_message_age(device_id, channel=None)`; `rebuild()`;
+  `update_credentials(force_reconnect=True)`; `subscribe_location=`,
+  `extra_topics=` (validated at construction, subscribed on every connect) and
+  `on_raw(topic, payload)`, called for every message with its bytes.
+- On `NavimowSDK`: `mqtt` and `loop`; `subscribe_location=` and
+  `extra_topics=`; `on_raw()`, `on_location()`, `get_cached_location()`,
+  `restore_location()` and `on_rejected()`; `reject_late_state=`, which drops a
+  state message whose timestamp is implausible or older than the device's
+  newest accepted one; `update_mqtt_credentials(force_reconnect=True)`; and
+  `async_refresh_broker_credentials(api, ...)`, which fetches and applies the
+  broker credentials at most once per 65 seconds and one call at a time (call
+  it at startup and after a failed connect, never on a timer or a token
+  refresh).
+- The location channel: `mower_sdk.location` with `LocationDecoder` and
+  `ParsedLocation`; `DeviceLocation`, the merged per-device record (pose, zone,
+  route progress with `progress_percent` and `progress_source`, task, target,
+  delay, and the high-water marks, with `to_dict()` and `from_dict()` for
+  persisting it); `DeviceLocationMessage`, one decoded entry with the record as
+  of that entry; `VEHICLE_STATE_TO_STATUS`; `mower_time_ms()`. The channel is
+  off by default: several models never publish on it, and its payload is a
+  movement trace.
+- `RejectedMessage`, what `on_rejected` receives: channel, topic, device id,
+  reason and reasons (`unparsable`, `implausible_time`, `unknown_type`,
+  `unknown_field`, `stale`, `placeholder`), the bytes received and the
+  receipt time.
+- `raw` and `received_at` on `DeviceStateMessage`, `DeviceEventMessage` and
+  `DeviceAttributesMessage`: `raw` is the payload as decoded, set by
+  `from_dict()`; `received_at` is the UTC receipt time, set by `NavimowSDK`
+  when it delivers the message. Both are None for a message built by hand (and
+  `received_at` for one made by `from_dict()` directly), and both are left out
+  of equality and `to_dict()`.
+- `DeviceStateMessage.from_status()` and `DeviceStatus.from_state_message()`,
+  the conversions between the REST status and the MQTT state message.
+- `STATE_KNOWN_FIELDS` and `REST_STATUS_KNOWN_FIELDS`.
+- `MowerAPI.async_get_vehicle_status_raw()`, the status entries as the cloud
+  sent them.
+- `MowerCommand`'s docstring says what each REST command does.
+
 ## [0.2.0a2] - 2026-09-28
 
 Two things: the legacy quarantine, and the first patches taken from other

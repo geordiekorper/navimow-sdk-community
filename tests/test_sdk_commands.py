@@ -56,6 +56,9 @@ class FakeMQTT:
     def publish_command(self, device_id: str, payload: dict[str, Any]) -> None:
         self.calls.append(("publish_command", (device_id, payload)))
 
+    def update_credentials(self, *args: Any, **kwargs: Any) -> None:
+        self.calls.append(("update_credentials", (args, kwargs)))
+
 
 @pytest.fixture
 def fake_mqtt(monkeypatch: pytest.MonkeyPatch) -> type[FakeMQTT]:
@@ -92,11 +95,14 @@ def test_construction_passes_the_parameters_through_and_wires_on_message(
             "ws_path": "/mqtt",
             "auth_headers": {"Authorization": "Bearer t"},
             "loop": asyncio.get_running_loop(),
-            "keepalive_seconds": 2400,
+            "keepalive_seconds": 60,
             "reconnect_min_delay": 1,
             "reconnect_max_delay": 60,
+            "subscribe_location": False,
+            "extra_topics": None,
         }
         assert mqtt.on_message == sdk._on_mqtt_message
+        assert sdk.mqtt is mqtt
         assert sdk.is_connected is False
         sdk.connect()
         sdk.disconnect()
@@ -299,6 +305,48 @@ def test_a_raising_callback_is_logged_and_the_later_callbacks_still_run(
         cached = {"state": sdk.get_cached_state, "attributes": sdk.get_cached_attributes}.get(channel)
         if cached is not None:
             assert cached(DEVICE_ID) == message
+        assert fake_mqtt.instances == [mqtt]
+
+    run(test)
+
+
+def test_update_mqtt_credentials_passes_everything_through(fake_mqtt: type[FakeMQTT]) -> None:
+    async def test() -> None:
+        sdk, mqtt = make()
+        sdk.update_mqtt_credentials(password="p")
+        sdk.update_mqtt_credentials("u", "p", {"Authorization": "Bearer t"}, force_reconnect=True)
+        assert mqtt.calls == [
+            (
+                "update_credentials",
+                ((), {"username": None, "password": "p", "auth_headers": None, "force_reconnect": False}),
+            ),
+            (
+                "update_credentials",
+                (
+                    (),
+                    {
+                        "username": "u",
+                        "password": "p",
+                        "auth_headers": {"Authorization": "Bearer t"},
+                        "force_reconnect": True,
+                    },
+                ),
+            ),
+        ]
+        assert fake_mqtt.instances == [mqtt]
+
+    run(test)
+
+
+def test_a_command_without_a_known_alternative_gets_a_neutral_refusal(fake_mqtt: type[FakeMQTT]) -> None:
+    async def test() -> None:
+        sdk, mqtt = make()
+        with pytest.raises(MowerUnsupportedOperationError) as info:
+            sdk._send_mqtt_command(DEVICE_ID, "set_cutting_pattern", {})
+        text = str(info.value)
+        assert "No supported alternative is known;" in text
+        assert "blade height" not in text
+        assert mqtt.calls == []
         assert fake_mqtt.instances == [mqtt]
 
     run(test)

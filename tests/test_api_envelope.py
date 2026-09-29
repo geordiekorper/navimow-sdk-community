@@ -16,36 +16,61 @@ endpoints, and that is pinned on purpose rather than corrected here.
 from __future__ import annotations
 
 import asyncio
+import json
+import re
 import uuid
 from typing import Any
 
 import aiohttp
 import pytest
+from multidict import CIMultiDict, CIMultiDictProxy
+from yarl import URL
 
+import mower_sdk
 from mower_sdk.api import MowerAPI
-from mower_sdk.errors import ERROR_MESSAGES, MowerAPIError
+from mower_sdk.errors import (
+    ERROR_MESSAGES,
+    MowerAPIError,
+    MowerAuthRequiredError,
+    MowerRateLimitedError,
+    MowerTransportError,
+)
 from mower_sdk.models import Device, DeviceStatus, MowerCommand, MowerError, MowerStatus
 
 BASE_URL = "https://api.example.invalid/"
 TOKEN = "token-123"
 DEVICE_ID = "dev-1"
+NO_PAYLOAD = object()
+REQUEST_INFO = aiohttp.RequestInfo(
+    url=URL(BASE_URL), method="GET", headers=CIMultiDictProxy(CIMultiDict()), real_url=URL(BASE_URL)
+)
 
 
 class FakeResponse:
-    """What ``session.request(...)`` returns: an async context manager."""
+    """What ``session.request(...)`` returns: an async context manager.
+
+    It holds the body as bytes with a content type and reads it the way
+    aiohttp's ClientResponse does: ``json()`` raises ContentTypeError for a
+    type other than JSON, returns None for an empty body, else decodes (UTF-8,
+    or the charset given) and parses; ``text()`` decodes; ``read()`` returns
+    the bytes. A payload given positionally is sent as a JSON body.
+    """
 
     def __init__(
         self,
-        body: Any = None,
+        payload: Any = NO_PAYLOAD,
         *,
         status: int = 200,
-        text: str = "",
+        body: bytes = b"",
+        content_type: str = "application/json",
         error: Exception | None = None,
+        read_error: Exception | None = None,
     ) -> None:
         self.status = status
-        self._body = body
-        self._text = text
+        self._body = body if payload is NO_PAYLOAD else json.dumps(payload).encode()
+        self.content_type = content_type
         self._error = error
+        self._read_error = read_error
 
     async def __aenter__(self) -> FakeResponse:
         if self._error is not None:
@@ -55,11 +80,31 @@ class FakeResponse:
     async def __aexit__(self, *exc_info: object) -> bool:
         return False
 
-    async def json(self) -> Any:
+    def _encoding(self) -> str:
+        _, _, charset = self.content_type.partition("charset=")
+        return charset.strip() or "utf-8"
+
+    async def read(self) -> bytes:
+        if self._read_error is not None:
+            raise self._read_error
         return self._body
 
     async def text(self) -> str:
-        return self._text
+        return self._body.decode(self._encoding())
+
+    async def json(self) -> Any:
+        mimetype = self.content_type.split(";")[0].strip().lower()
+        if not re.fullmatch(r"application/(?:[\w.+-]+\+)?json", mimetype):
+            raise aiohttp.ContentTypeError(
+                REQUEST_INFO,
+                (),
+                status=self.status,
+                message=f"Attempt to decode JSON with unexpected mimetype: {mimetype}",
+            )
+        stripped = self._body.strip()
+        if not stripped:
+            return None
+        return json.loads(stripped.decode(self._encoding()))
 
 
 # Recorded as a request's ``timeout`` when the keyword was not passed at all, which
@@ -369,7 +414,7 @@ def test_command_error_raises(result: dict[str, Any], error_code: str) -> None:
 
 
 def test_http_error_status_raises_with_the_body_text() -> None:
-    api, _ = api_with(FakeResponse(status=500, text="upstream exploded"))
+    api, _ = api_with(FakeResponse(status=500, body=b"upstream exploded", content_type="text/plain"))
     with pytest.raises(MowerAPIError) as info:
         run(api.async_get_devices())
     assert info.value.message == f"{ERROR_MESSAGES['API_REQUEST_FAILED']}: upstream exploded"
@@ -461,7 +506,7 @@ def assert_device_not_found(error: MowerAPIError) -> None:
 
 
 def test_get_device_status_maps_http_404_to_device_not_found() -> None:
-    api, _ = api_with(FakeResponse(status=404, text="no such vehicle"))
+    api, _ = api_with(FakeResponse(status=404, body=b"no such vehicle", content_type="text/plain"))
     with pytest.raises(MowerAPIError) as info:
         run(api.async_get_device_status(DEVICE_ID))
     assert_device_not_found(info.value)
@@ -482,10 +527,244 @@ def test_get_device_status_missing_from_the_reply_is_device_not_found() -> None:
 
 
 def test_get_device_status_passes_other_errors_through() -> None:
-    api, _ = api_with(FakeResponse(status=500, text="upstream exploded"))
+    api, _ = api_with(FakeResponse(status=500, body=b"upstream exploded", content_type="text/plain"))
     with pytest.raises(MowerAPIError) as info:
         run(api.async_get_device_status(DEVICE_ID))
     assert info.value.status_code == 500
     assert info.value.error_code is None
     assert info.value.message == f"{ERROR_MESSAGES['API_REQUEST_FAILED']}: upstream exploded"
     assert info.value.__cause__ is None
+
+
+# ---- the outcome of each failure kind ----------------------------------------------------------
+#
+# One precedence: a timeout or connection error is a transport error; then the
+# status decides for every non-2xx reply (401 and 403 auth, 5xx, 1xx and 3xx
+# transport, other 4xx a plain MowerAPIError, the body cut at 500 characters);
+# then a 2xx body is read as UTF-8 JSON and anything but an object is a
+# transport error. The envelope's code then decides between auth, rate
+# limiting and a plain MowerAPIError, and is kept as envelope_code.
+
+FAILED = ERROR_MESSAGES["API_REQUEST_FAILED"]
+HTML = b"<html><body><h1>502 Bad Gateway</h1></body></html>"
+
+
+@pytest.mark.parametrize(
+    ("response", "cls", "message", "status_code", "envelope_code"),
+    [
+        pytest.param(FakeResponse(error=TimeoutError()), MowerTransportError, f"{FAILED}: TimeoutError", None, None, id="timeout"),
+        pytest.param(
+            FakeResponse(error=aiohttp.ServerDisconnectedError()),
+            MowerTransportError,
+            f"{FAILED}: Server disconnected",
+            None,
+            None,
+            id="client_error",
+        ),
+        pytest.param(
+            FakeResponse(status=401, body=b'{"code": 401}'), MowerAuthRequiredError, f'{FAILED}: {{"code": 401}}', 401, None, id="http_401"
+        ),
+        pytest.param(
+            FakeResponse(status=403, body=b"forbidden", content_type="text/plain"), MowerAuthRequiredError, f"{FAILED}: forbidden", 403, None, id="http_403"
+        ),
+        pytest.param(
+            FakeResponse(status=404, body=b"not found", content_type="text/plain"), MowerAPIError, f"{FAILED}: not found", 404, None, id="http_404"
+        ),
+        pytest.param(
+            FakeResponse(status=429, body=b"slow down", content_type="text/plain"), MowerAPIError, f"{FAILED}: slow down", 429, None, id="http_429"
+        ),
+        pytest.param(
+            FakeResponse(status=500, body=b"exploded", content_type="text/plain"), MowerTransportError, f"{FAILED}: exploded", 500, None, id="http_500"
+        ),
+        pytest.param(
+            FakeResponse(status=502, body=HTML, content_type="text/html"), MowerTransportError, f"{FAILED}: {HTML.decode()}", 502, None, id="http_502_html"
+        ),
+        pytest.param(
+            FakeResponse(status=401, body=HTML, content_type="text/html"), MowerAuthRequiredError, f"{FAILED}: {HTML.decode()}", 401, None, id="http_401_html"
+        ),
+        pytest.param(
+            FakeResponse(status=404, body=HTML, content_type="text/html"), MowerAPIError, f"{FAILED}: {HTML.decode()}", 404, None, id="http_404_html"
+        ),
+        pytest.param(
+            FakeResponse(ok({}), status=302), MowerTransportError, f"{FAILED}: " + json.dumps(ok({})), 302, None, id="http_302_json"
+        ),
+        pytest.param(FakeResponse(ok({}), status=304), MowerTransportError, f"{FAILED}: " + json.dumps(ok({})), 304, None, id="http_304"),
+        pytest.param(FakeResponse(status=101, body=b""), MowerTransportError, f"{FAILED}: ", 101, None, id="http_101"),
+        pytest.param(
+            FakeResponse(status=404, body=b"\xffbad", content_type="text/plain"), MowerAPIError, f"{FAILED}: \ufffdbad", 404, None, id="undecodable_body"
+        ),
+        pytest.param(
+            FakeResponse({"code": 4001, "desc": "url Circuit Breaker"}), MowerRateLimitedError, f"{FAILED}: url Circuit Breaker", None, 4001, id="code_4001"
+        ),
+        pytest.param(
+            FakeResponse({"code": 500, "desc": "Request too frequent"}), MowerRateLimitedError, f"{FAILED}: Request too frequent", None, 500, id="too_frequent"
+        ),
+        pytest.param(
+            FakeResponse({"code": 7, "desc": "circuit BREAKER open"}), MowerRateLimitedError, f"{FAILED}: circuit BREAKER open", None, 7, id="circuit_breaker"
+        ),
+        pytest.param(
+            FakeResponse({"code": 4005, "desc": "token expired"}), MowerAuthRequiredError, f"{FAILED}: token expired", None, 4005, id="code_4005"
+        ),
+        pytest.param(
+            FakeResponse({"code": "4005", "desc": "token expired"}), MowerAuthRequiredError, f"{FAILED}: token expired", None, 4005, id="code_4005_as_string"
+        ),
+        pytest.param(
+            FakeResponse({"code": 500, "desc": "code_oauth_info_illegal"}),
+            MowerAuthRequiredError,
+            f"{FAILED}: code_oauth_info_illegal",
+            None,
+            500,
+            id="oauth_info_illegal",
+        ),
+        pytest.param(FakeResponse({"code": 2, "desc": "nope"}), MowerAPIError, f"{FAILED}: nope", None, 2, id="other_code"),
+        pytest.param(FakeResponse({"desc": "nope"}), MowerAPIError, f"{FAILED}: nope", None, None, id="no_code"),
+    ],
+)
+def test_each_failure_kind_raises_its_class(
+    response: FakeResponse, cls: type[MowerAPIError], message: str, status_code: int | None, envelope_code: int | None
+) -> None:
+    api, _ = api_with(response)
+    with pytest.raises(MowerAPIError) as info:  # except MowerAPIError still catches every kind
+        run(api.async_get_devices())
+    assert type(info.value) is cls
+    assert info.value.message == message
+    assert info.value.status_code == status_code
+    assert info.value.envelope_code == envelope_code
+    assert info.value.error_code is None
+    assert str(info.value).startswith(message)
+    assert "4005" not in str(info.value).removeprefix(message)
+
+
+@pytest.mark.parametrize(
+    "cause",
+    [TimeoutError(), aiohttp.ClientPayloadError("connection lost mid-body")],
+    ids=["timeout", "payload_error"],
+)
+@pytest.mark.parametrize("status", [200, 404], ids=["ok", "not_found"])
+def test_a_failure_while_reading_the_body_is_a_transport_error_whatever_the_status(
+    cause: Exception, status: int
+) -> None:
+    api, _ = api_with(FakeResponse(ok({}), status=status, read_error=cause))
+    with pytest.raises(MowerTransportError) as info:
+        run(api.async_get_devices())
+    assert info.value.__cause__ is cause
+    assert info.value.status_code is None
+    api, _ = api_with(FakeResponse(ok({}), status=status, read_error=cause))
+    with pytest.raises(MowerTransportError) as info:  # not translated to DEVICE_NOT_FOUND
+        run(api.async_get_device_status(DEVICE_ID))
+    assert info.value.error_code is None
+
+
+def test_an_http_error_body_is_cut_at_500_characters_with_a_marker() -> None:
+    body = "x" * 2000
+    api, _ = api_with(FakeResponse(status=500, body=body.encode(), content_type="text/plain"))
+    with pytest.raises(MowerTransportError) as info:
+        run(api.async_get_devices())
+    assert info.value.message == f"{FAILED}: {'x' * 500}… [truncated, 2000 characters]"
+    api, _ = api_with(FakeResponse(status=400, body=b"y" * 500, content_type="text/plain"))
+    with pytest.raises(MowerAPIError) as info:
+        run(api.async_get_devices())
+    assert info.value.message == f"{FAILED}: {'y' * 500}"
+
+
+@pytest.mark.parametrize(
+    ("body", "content_type", "cause", "message"),
+    [
+        pytest.param(HTML, "text/html", json.JSONDecodeError, "reply is not JSON", id="html"),
+        pytest.param(HTML, "application/json", json.JSONDecodeError, "reply is not JSON", id="not_json"),
+        pytest.param(b"\xff", "application/json", UnicodeDecodeError, "reply is not UTF-8", id="not_utf8"),
+        pytest.param(b"", "application/json", None, "empty reply", id="empty"),
+        pytest.param(b"  ", "application/json", None, "empty reply", id="blank"),
+        pytest.param(b"[]", "application/json", None, "reply is not a JSON object", id="array"),
+        pytest.param(b"null", "application/json", None, "reply is not a JSON object", id="null"),
+    ],
+)
+def test_a_2xx_body_that_is_not_a_json_object_is_a_transport_error(
+    body: bytes, content_type: str, cause: type[Exception] | None, message: str
+) -> None:
+    api, _ = api_with(FakeResponse(body=body, content_type=content_type))
+    with pytest.raises(MowerTransportError) as info:
+        run(api.async_get_devices())
+    assert info.value.message == f"{FAILED}: {message}"
+    assert info.value.status_code == 200
+    if cause is None:
+        assert info.value.__cause__ is None
+    else:
+        assert isinstance(info.value.__cause__, cause)
+
+
+def test_a_2xx_json_object_is_read_whatever_its_content_type() -> None:
+    api, _ = api_with(FakeResponse(body=json.dumps(ok({"devices": [{"id": DEVICE_ID}]})).encode(), content_type="text/html"))
+    assert [device.id for device in run(api.async_get_devices())] == [DEVICE_ID]
+
+
+def test_a_404_still_becomes_device_not_found_and_a_5xx_does_not() -> None:
+    api, _ = api_with(FakeResponse(status=404, body=HTML, content_type="text/html"))
+    with pytest.raises(MowerAPIError) as info:
+        run(api.async_get_device_status(DEVICE_ID))
+    assert info.value.error_code == "DEVICE_NOT_FOUND"
+    api, _ = api_with(FakeResponse(status=503, body=b"down", content_type="text/plain"))
+    with pytest.raises(MowerTransportError):
+        run(api.async_get_device_status(DEVICE_ID))
+
+
+def test_the_error_classes_are_mower_api_errors_and_exported() -> None:
+    for cls in (MowerTransportError, MowerAuthRequiredError, MowerRateLimitedError):
+        assert issubclass(cls, MowerAPIError)
+        assert getattr(mower_sdk, cls.__name__) is cls
+    error = MowerAPIError("m", status_code=400, error_code="E", envelope_code=9)
+    assert (error.envelope_code, str(error)) == (9, "m | HTTP 400 | Error Code: E")
+
+
+# ---- the raw status entries ----------------------------------------------------------------------
+
+X430_ENTRY = {
+    "id": DEVICE_ID,
+    "capacityRemaining": [{"unit": "PERCENTAGE", "rawValue": 88}],
+    "vehicleState": "isDocked",
+    "descriptiveCapacityRemaining": "HIGH",
+    "newField": {"nested": [1, 2]},
+}
+
+
+def test_the_raw_status_entries_come_back_as_the_cloud_sent_them() -> None:
+    api, session = api_with(FakeResponse(ok({"devices": [X430_ENTRY, "not a dict", {"vehicleState": "isRunning"}]})))
+    entries = run(api.async_get_vehicle_status_raw([DEVICE_ID, "dev-2"]))
+    assert entries == [X430_ENTRY, {"vehicleState": "isRunning"}]
+    (request,) = session.requests
+    assert (request["method"], request["url"]) == ("POST", BASE_URL.rstrip("/") + "/openapi/smarthome/getVehicleStatus")
+    assert request["json"] == {"devices": [{"id": DEVICE_ID}, {"id": "dev-2"}]}
+
+
+def test_no_ids_make_no_raw_status_request() -> None:
+    api, session = api_with()
+    assert run(api.async_get_vehicle_status_raw([])) == []
+    assert session.requests == []
+
+
+@pytest.mark.parametrize(
+    "data",
+    [{}, {"payload": {}}],
+    ids=["no_payload", "no_devices"],
+)
+def test_a_reply_without_entries_is_an_empty_list(data: dict[str, Any]) -> None:
+    api, _ = api_with(FakeResponse({"code": 1, "desc": "success", "data": data}))
+    assert run(api.async_get_vehicle_status_raw([DEVICE_ID])) == []
+
+
+def test_the_typed_statuses_are_read_from_the_raw_entries() -> None:
+    api, _ = api_with(FakeResponse(ok({"devices": [X430_ENTRY]})))
+    statuses = run(api.async_get_device_statuses([DEVICE_ID]))
+    assert statuses[DEVICE_ID].battery == 88
+    assert statuses[DEVICE_ID].extra["newField"] == {"nested": [1, 2]}
+
+
+def test_a_refused_raw_status_request_raises_like_the_others() -> None:
+    api, _ = api_with(FakeResponse({"code": 4005, "desc": "token expired"}))
+    with pytest.raises(MowerAuthRequiredError):
+        run(api.async_get_vehicle_status_raw([DEVICE_ID]))
+
+
+def test_the_typed_statuses_skip_an_entry_that_is_not_a_dict() -> None:
+    api, _ = api_with(FakeResponse(ok({"devices": ["not a dict", X430_ENTRY, None]})))
+    assert list(run(api.async_get_device_statuses([DEVICE_ID]))) == [DEVICE_ID]

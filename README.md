@@ -62,10 +62,35 @@ await client.async_start_mowing("device_id")
 
 ## Behaviour notes
 
-**Request timeout.** Every `MowerAPI` request is bounded at 20 seconds in total by default, and a
-request that times out raises `MowerAPIError` (the `TimeoutError` is its `__cause__`). Pass
-`MowerAPI(..., request_timeout=None)` to leave the session's own timeout policy in force instead,
-or another number of seconds to change the bound.
+**paho-mqtt 2.1 or later.** The MQTT client uses paho's callback API version 2, so paho-mqtt 1.x is
+no longer supported.
+
+**Request timeout and errors.** Every `MowerAPI` request is bounded at 20 seconds in total by
+default. Pass `MowerAPI(..., request_timeout=None)` to leave the session's own timeout policy in
+force instead, or another number of seconds to change the bound. A failed request or a refusal
+is a `MowerAPIError` (one exception is kept from upstream: a successful reply whose `data` is
+null makes most calls raise `AttributeError`); `MowerTransportError` means no usable reply (a timeout, a connection error, an
+HTTP 5xx, or a reply that is not JSON), so a command may still have been carried out;
+`MowerAuthRequiredError` means the credentials were refused; `MowerRateLimitedError` means slow
+down.
+
+**Keepalive.** The MQTT keepalive defaults to 60 seconds: idle links to the cloud die after about
+ten minutes, and a ping a minute keeps them alive and finds a dead one quickly. Pass
+`keepalive_seconds=2400` for the previous value.
+
+**Location channel.** Pose, zone, route progress and target zones arrive on a separate MQTT
+channel, off by default (several models never publish on it, and it is a movement trace). Turn it
+on with `NavimowSDK(..., subscribe_location=True)`, then register `sdk.on_location(callback)`;
+`sdk.get_cached_location(device_id)` returns the merged record, which `DeviceLocation.to_dict()`
+and `from_dict()` let you persist and hand back with `sdk.restore_location()` after a restart.
+Messages that could not be applied are reported through `sdk.on_rejected(callback)`.
+
+**Broker credentials.** The MQTT username and password come from the cloud's credential endpoint,
+which allows about one call a minute. `await sdk.async_refresh_broker_credentials(api,
+auth_headers=...)` fetches and applies them, at most once per 65 seconds: call it at startup
+before `connect()`, and again after a failed connect (`sdk.mqtt.on_connect_fail`). Do not call it
+on a timer or on an OAuth token refresh: after a token refresh, pass the new bearer header with
+`sdk.update_mqtt_credentials(auth_headers=...)` alone.
 
 **MQTT commands are off by default.** `NavimowSDK.start_mowing`, `pause`, `return_to_base` and
 `set_blade_height` publish to an MQTT command topic that the broker accepts and no mower has been
@@ -86,9 +111,13 @@ Typical mower states include:
 * `mowing`
 * `paused`
 * `docked`
-* `charging`
 * `returning`
+* `mapping`
+* `updating`
+* `offline`
 * `error`
+
+`charging` comes only from the location channel's pose code.
 
 ## Contributing
 
