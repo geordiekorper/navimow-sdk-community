@@ -91,6 +91,34 @@ def _build_web_client_id(username: str | None) -> str:
     return f"web_{base}_{rand}"
 
 
+_MAX_TOPIC_BYTES = 65_535
+
+
+def _valid_topic(topic: Any) -> str:
+    """An extra topic as given, if MQTT can carry it and it is a valid filter; ValueError otherwise.
+
+    paho would refuse the same topic later, inside the connect callback on its
+    own thread, where the error reaches nobody.
+    """
+    if not isinstance(topic, str) or not topic:
+        raise ValueError(f"extra topic must be a non-empty string: {topic!r}")
+    if "\x00" in topic:
+        raise ValueError(f"extra topic must not contain NUL: {topic!r}")
+    try:
+        encoded = topic.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise ValueError(f"extra topic is not encodable as UTF-8: {topic!r}") from exc
+    if len(encoded) > _MAX_TOPIC_BYTES:
+        raise ValueError(f"extra topic is {len(encoded)} bytes encoded, more than MQTT's {_MAX_TOPIC_BYTES}")
+    levels = topic.split("/")
+    for index, level in enumerate(levels):
+        if "#" in level and (level != "#" or index != len(levels) - 1):
+            raise ValueError(f"extra topic uses # other than as the whole last level: {topic!r}")
+        if "+" in level and level != "+":
+            raise ValueError(f"extra topic uses + other than as a whole level: {topic!r}")
+    return topic
+
+
 def _redact_client_id(client_id: str) -> str:
     """The client id for a log line: web_…_<random suffix>, without the account id in the middle."""
     prefix, _, rest = client_id.partition("_")
@@ -162,6 +190,17 @@ class NavimowMQTT:
     thread runs (connected, connecting or retrying after a failure) a repeated
     call does nothing.
 
+    ``subscribe_location=True`` subscribes each device's location topic as
+    well (off by default: several models never publish on it, and its payload
+    is a movement trace). ``extra_topics`` are subscribed as given on every
+    connect, for trying topics the protocol reference does not list (such as
+    the subTopics names the credential reply advertises); an extra topic that
+    overlaps a built-in one can make the broker deliver a message more than
+    once (MQTT allows a copy per matching subscription), and a device-scoped wildcard was refused by the
+    broker on an X430 in September 2026. ``on_raw(topic, payload)`` is called
+    for every message on any topic with the bytes as received, before
+    anything is decoded or added.
+
     ``keepalive_seconds`` defaults to 60 (at least 30 is used): the cloud's
     idle links die after about ten minutes without a FIN or DISCONNECT, and a
     ping a minute keeps them alive and detects a dead one within about two
@@ -181,6 +220,8 @@ class NavimowMQTT:
         keepalive_seconds: int = 60,
         reconnect_min_delay: int = 1,
         reconnect_max_delay: int = 60,
+        subscribe_location: bool = False,
+        extra_topics: list[str] | None = None,
     ) -> None:
         parsed = urlparse(broker)
         self.broker = parsed.hostname or broker
@@ -198,12 +239,15 @@ class NavimowMQTT:
         self.keepalive_seconds = max(30, int(keepalive_seconds))
         self.reconnect_min_delay = max(0, int(reconnect_min_delay))
         self.reconnect_max_delay = max(self.reconnect_min_delay, int(reconnect_max_delay))
+        self.subscribe_location = subscribe_location
+        self.extra_topics = [_valid_topic(topic) for topic in extra_topics or []]
 
         self.on_connected: Callable[[], Awaitable[None]] | None = None
         self.on_ready: Callable[[], Awaitable[None]] | None = None
         self.on_message: Callable[[str, bytes, str], Awaitable[None]] | None = None
         self.on_disconnected: Callable[[], Awaitable[None]] | None = None
         self.on_connect_fail: Callable[[str], Awaitable[None]] | None = None
+        self.on_raw: Callable[[str, bytes], Awaitable[None]] | None = None
 
         self.last_connect_fail_reason: str | None = None
         self.last_disconnect_reason: str | None = None
@@ -548,55 +592,56 @@ class NavimowMQTT:
                 device_ids.append(device_id)
         return device_ids
 
+    def _topics(self) -> tuple[list[str], bool]:
+        """The topics subscribe_all subscribes, and whether they are the wildcard fallback."""
+        channels = ["state", "event", "attributes"]
+        if self.subscribe_location:
+            channels.append("location")
+        device_ids = self._get_device_ids()
+        wildcard = not device_ids
+        topics = [
+            f"/downlink/vehicle/{device_id}/realtimeDate/{channel}"
+            for device_id in (device_ids or ["+"])
+            for channel in channels
+        ]
+        return topics + self.extra_topics, wildcard
+
     def subscribe_all(self, product_key: str = "", device_name: str = "") -> None:  # noqa: ARG002
         """Subscribe to the state, event and attributes topics of every known device.
 
+        With subscribe_location, the location topic too; then every extra topic,
+        as given. With no device ids known, the device segment is the + wildcard.
+        Called on every connect, so the subscriptions survive a reconnect.
         product_key and device_name are ignored; they are kept, optional, so
         callers and overrides written against the original signature keep
         working.
         """
-        device_ids = self._get_device_ids()
-        if not device_ids:
+        topics, wildcard = self._topics()
+        if wildcard:
             _LOGGER.warning(
                 "NavimowMQTT subscribing cloud topics with wildcard: no device ids available"
             )
-            self.client.subscribe("/downlink/vehicle/+/realtimeDate/state")
-            self.client.subscribe("/downlink/vehicle/+/realtimeDate/event")
-            self.client.subscribe("/downlink/vehicle/+/realtimeDate/attributes")
-            return
-
-        _LOGGER.info(
-            "NavimowMQTT subscribing cloud topics for %d device(s)", len(device_ids)
-        )
-        for device_id in device_ids:
-            self.client.subscribe(f"/downlink/vehicle/{device_id}/realtimeDate/state")
-            self.client.subscribe(f"/downlink/vehicle/{device_id}/realtimeDate/event")
-            self.client.subscribe(
-                f"/downlink/vehicle/{device_id}/realtimeDate/attributes"
+        else:
+            _LOGGER.info(
+                "NavimowMQTT subscribing cloud topics for %d device(s)", len(self._get_device_ids())
             )
+        for topic in topics:
+            self.client.subscribe(topic)
 
     def unsubscribe_all(self, product_key: str = "", device_name: str = "") -> None:  # noqa: ARG002
         """Unsubscribe from the topics subscribe_all subscribed to.
 
         product_key and device_name are ignored, as in subscribe_all.
         """
-        device_ids = self._get_device_ids()
-        if not device_ids:
+        topics, wildcard = self._topics()
+        if wildcard:
             _LOGGER.info("NavimowMQTT unsubscribing cloud topics (wildcard)")
-            self.client.unsubscribe("/downlink/vehicle/+/realtimeDate/state")
-            self.client.unsubscribe("/downlink/vehicle/+/realtimeDate/event")
-            self.client.unsubscribe("/downlink/vehicle/+/realtimeDate/attributes")
-            return
-
-        _LOGGER.info(
-            "NavimowMQTT unsubscribing cloud topics for %d device(s)", len(device_ids)
-        )
-        for device_id in device_ids:
-            self.client.unsubscribe(f"/downlink/vehicle/{device_id}/realtimeDate/state")
-            self.client.unsubscribe(f"/downlink/vehicle/{device_id}/realtimeDate/event")
-            self.client.unsubscribe(
-                f"/downlink/vehicle/{device_id}/realtimeDate/attributes"
+        else:
+            _LOGGER.info(
+                "NavimowMQTT unsubscribing cloud topics for %d device(s)", len(self._get_device_ids())
             )
+        for topic in topics:
+            self.client.unsubscribe(topic)
 
     def _schedule(self, coro: Awaitable[None]) -> None:
         """Run the callback coroutine on the bound loop, else drop it, closed.
@@ -718,6 +763,10 @@ class NavimowMQTT:
             self._last_message.setdefault(device_id, {})[channel] = (datetime.now(UTC), time.monotonic())
 
         payload_bytes = msg.payload
+        if self.on_raw is not None:
+            # Every message, on any topic, as it came off the wire: before decoding and
+            # before device_id is added, so an extra topic or an unknown one is seen too.
+            self._schedule(self.on_raw(topic, payload_bytes))
         _LOGGER.debug(
             "NavimowMQTT payload: topic=%s payload=%s",
             topic,

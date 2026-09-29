@@ -1689,3 +1689,117 @@ def test_the_keepalive_defaults_to_60_seconds_and_2400_can_still_be_passed(fake_
         assert fake_paho.instances == [mqtt.client, upstream.client]
 
     run(test)
+
+
+# ---- subscribe_location, extra_topics and on_raw ------------------------------------------------
+
+LOCATION_TOPICS = [f"/downlink/vehicle/{d}/realtimeDate/{c}" for d in ("dev-1", "dev-2") for c in ("state", "event", "attributes", "location")]
+EXTRA = ["/downlink/vehicle/dev-1/realtimeDate/other", "custom/+/topic"]
+
+
+def test_subscribe_location_adds_the_location_topic_per_device(fake_paho: type[FakeClient]) -> None:
+    async def test() -> None:
+        mqtt = make(TCP_KWARGS, records=[device("dev-1"), device("dev-2")], subscribe_location=True)
+        mqtt.subscribe_all("", "")
+        assert [args for _, args, _ in mqtt.client.named("subscribe")] == [(t,) for t in LOCATION_TOPICS]
+        mqtt.unsubscribe_all("", "")
+        assert [args for _, args, _ in mqtt.client.named("unsubscribe")] == [(t,) for t in LOCATION_TOPICS]
+        assert fake_paho.instances == [mqtt.client]
+
+    run(test)
+
+
+def test_subscribe_location_and_extra_topics_in_the_wildcard_fallback(fake_paho: type[FakeClient]) -> None:
+    async def test() -> None:
+        mqtt = make(TCP_KWARGS, subscribe_location=True, extra_topics=EXTRA)
+        mqtt.subscribe_all("", "")
+        expected = [*WILDCARD_TOPICS, "/downlink/vehicle/+/realtimeDate/location", *EXTRA]
+        assert [args for _, args, _ in mqtt.client.named("subscribe")] == [(t,) for t in expected]
+        mqtt.unsubscribe_all("", "")
+        assert [args for _, args, _ in mqtt.client.named("unsubscribe")] == [(t,) for t in expected]
+        assert fake_paho.instances == [mqtt.client]
+
+    run(test)
+
+
+def test_extra_topics_are_subscribed_verbatim_on_every_connect(fake_paho: type[FakeClient]) -> None:
+    async def test() -> None:
+        mqtt = make(TCP_KWARGS, records=[device("dev-1")], extra_topics=EXTRA)
+        mqtt._on_connect(mqtt.client, None, {}, SUCCESS, None)
+        mqtt._on_connect(mqtt.client, None, {}, SUCCESS, None)
+        subscribed = [args[0] for _, args, _ in mqtt.client.named("subscribe")]
+        assert subscribed == 2 * [*DEVICE_TOPICS[:3], *EXTRA]
+        assert mqtt.extra_topics == EXTRA and mqtt.extra_topics is not EXTRA
+        assert fake_paho.instances == [mqtt.client]
+
+    run(test)
+
+
+@pytest.mark.parametrize(
+    "topic",
+    [
+        "", None, 5, "a\x00b", "bad\udc80surrogate", "t" * 65_536, "é" * 32_768,
+        "/downlink/vehicle/#/realtimeDate/location", "a/b#", "a/+b/c", "a+/b",
+    ],
+    ids=[
+        "empty", "none", "not_a_string", "nul", "lone_surrogate", "too_long", "too_long_encoded",
+        "hash_not_last", "hash_in_level", "plus_in_level", "plus_suffix",
+    ],
+)
+def test_an_extra_topic_mqtt_cannot_carry_is_refused_at_construction(fake_paho: type[FakeClient], topic: Any) -> None:
+    with pytest.raises(ValueError, match="extra topic"):
+        make(TCP_KWARGS, extra_topics=["ok/topic", topic])
+    assert fake_paho.instances == []
+
+
+def test_wildcard_extra_topics_are_accepted_when_well_formed(fake_paho: type[FakeClient]) -> None:
+    topics = ["#", "a/#", "/downlink/vehicle/+/realtimeDate/+", "+/+", "a/b/c"]
+    mqtt = make(TCP_KWARGS, extra_topics=topics)
+    assert mqtt.extra_topics == topics
+    for topic in topics:  # and paho accepts them as subscription filters
+        mqtt_module.mqtt_client.topic_matches_sub(topic, "a/b/c")
+    assert fake_paho.instances == [mqtt.client]
+
+
+def test_the_longest_extra_topic_is_accepted(fake_paho: type[FakeClient]) -> None:
+    mqtt = make(TCP_KWARGS, extra_topics=["t" * 65_535])
+    assert mqtt.extra_topics == ["t" * 65_535]
+    assert fake_paho.instances == [mqtt.client]
+
+
+def test_on_raw_receives_the_wire_bytes_on_every_topic(fake_paho: type[FakeClient]) -> None:
+    async def test() -> None:
+        raw: list[tuple[str, bytes]] = []
+        received, handler = recording_handler()
+
+        async def on_raw(topic: str, payload: bytes) -> None:
+            raw.append((topic, payload))
+
+        mqtt = make(TCP_KWARGS, extra_topics=["custom/topic"])
+        mqtt.on_raw = on_raw
+        mqtt.on_message = handler
+        state = b'{"state":"isDocked"}'
+        mqtt._on_message(mqtt.client, None, FakeMessage(STATE_TOPIC, state))
+        mqtt._on_message(mqtt.client, None, FakeMessage("custom/topic", b"\x01\x02"))
+        mqtt._on_message(mqtt.client, None, FakeMessage("navimow/dev-1/state", b"{}"))
+        await drain()
+        assert raw == [(STATE_TOPIC, state), ("custom/topic", b"\x01\x02"), ("navimow/dev-1/state", b"{}")]
+        assert raw[0][1] is state  # before device_id is added
+        assert received == [(STATE_TOPIC, b'{"state": "isDocked", "device_id": "dev-1"}', "dev-1")]
+        assert fake_paho.instances == [mqtt.client]
+
+    run(test)
+
+
+def test_without_on_raw_nothing_extra_is_scheduled(
+    fake_paho: type[FakeClient], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def test() -> None:
+        mqtt = make(TCP_KWARGS)
+        scheduled: list[Any] = []
+        monkeypatch.setattr(mqtt, "_schedule", scheduled.append)
+        mqtt._on_message(mqtt.client, None, FakeMessage("custom/topic", b"x"))
+        assert scheduled == []
+        assert fake_paho.instances == [mqtt.client]
+
+    run(test)
