@@ -450,3 +450,133 @@ def test_delay_entries_keep_their_message_order_whatever_time_they_carry() -> No
     assert parsed.reasons == []
     assert [(m.entry_type, m.task_delay) for m in parsed.messages] == [(4, True), (1, None), (4, False)]
     assert decoder.get(DEVICE).task_delay is False
+
+
+# ---- pinned cases: each entry type's fields and marks stand on their own ------------------------
+
+
+def test_a_pose_without_a_heading_does_not_keep_the_previous_one() -> None:
+    decoder = LocationDecoder()
+    decode(decoder, [pose(T - 1000, theta="0.25")])
+    decode(decoder, [pose(T, theta=None)])
+    assert decoder.get(DEVICE).theta is None
+
+
+def test_an_unusable_pose_after_a_good_one_leaves_the_record_as_it_was() -> None:
+    decoder = LocationDecoder()
+    decode(decoder, [pose(T - 1000)])
+    before = decoder.get(DEVICE)
+    parsed = decode(decoder, [pose(T, x="n/a", theta="3", state="1")])
+    assert (parsed.messages, parsed.reasons) == ([], ["unparsable"])
+    assert decoder.get(DEVICE) == before
+
+
+def test_a_zero_position_with_a_heading_is_a_real_pose() -> None:
+    decoder = LocationDecoder()
+    parsed = decode(decoder, [pose(T, x="0", y="0", theta="1.2")])
+    assert parsed.reasons == []
+    assert (decoder.get(DEVICE).x, decoder.get(DEVICE).theta) == (0.0, 1.2)
+
+
+def test_a_pose_leaves_the_task_fields_and_a_task_leaves_the_pose_receipt_time() -> None:
+    decoder = LocationDecoder()
+    decode(decoder, [task(T - 2000, mowingPercentage="40", subtotalArea="100.00")])
+    decode(decoder, [pose(T - 1000)])
+    later = RECEIVED + timedelta(seconds=5)
+    decode(decoder, [task(T, mowingPercentage="41")], later)
+    record = decoder.get(DEVICE)
+    assert record.pose_received_at == RECEIVED
+    decode(decoder, [pose(T + 1000)], later)
+    record = decoder.get(DEVICE)
+    assert (record.mowing_percentage, record.task_at) == (41.0, T)
+
+
+def test_each_type_has_its_own_mark() -> None:
+    decoder = LocationDecoder()
+    decode(decoder, [task(T, mowingPercentage="10")])
+    parsed = decode(decoder, [pose(T - 60_000), target(T - 60_000, [2])])
+    assert parsed.reasons == []
+    assert [m.entry_type for m in parsed.messages] == [1, 3]
+
+
+def test_untimed_task_and_target_entries_apply_and_keep_their_marks() -> None:
+    decoder = LocationDecoder()
+    decode(decoder, [task(T - 10_000, mowingPercentage="10"), target(T - 10_000, [2])])
+    untimed = decode(decoder, [task(None, mowingPercentage="20"), {"type": 3, "partitionIds": [3]}])
+    assert untimed.reasons == []
+    record = decoder.get(DEVICE)
+    assert (record.mowing_percentage, record.task_at, record.partition_ids) == (20.0, None, (3,))
+    assert (record.target_at, record.target_last_at) == (None, None)  # a new target, with no time
+    assert record.marks == {2: T - 10_000, 3: T - 10_000}
+    older = decode(decoder, [task(T - 20_000, mowingPercentage="5"), target(T - 20_000, [4])])
+    assert (older.messages, older.reasons) == ([], ["stale"])
+
+
+def test_an_untimed_first_target_report_has_no_times() -> None:
+    decoder = LocationDecoder()
+    (message,) = decode(decoder, [{"type": 3, "partitionIds": [2]}]).messages
+    assert (message.location.target_at, message.location.target_last_at) == (None, None)
+    assert 3 not in message.location.marks
+
+
+def test_a_repeat_of_a_restored_target_keeps_its_first_time() -> None:
+    decoder = LocationDecoder()
+    decoder.restore(DEVICE, DeviceLocation(
+        device_id=DEVICE, partition_ids=(2, 3), target_at=T - 60_000, target_last_at=T - 60_000,
+    ))
+    (repeat,) = decode(decoder, [target(T, [3, 2])]).messages
+    assert (repeat.location.target_at, repeat.location.target_last_at) == (T - 60_000, T)
+
+
+def test_a_late_task_leaves_the_route_reading_and_the_task_as_they_were() -> None:
+    decoder = LocationDecoder()
+    decode(decoder, [task(T, currentMowProgress="4000", mowingPercentage="40")])
+    parsed = decode(decoder, [task(T - 1000, currentMowProgress="3000", mowingPercentage="30")])
+    assert parsed.reasons == ["stale"]
+    record = decoder.get(DEVICE)
+    assert (record.route_progress, record.mowing_percentage) == (4000, 40.0)
+
+
+def test_the_reconnect_delay_shape_leaves_the_last_delay_alone() -> None:
+    decoder = LocationDecoder()
+    decode(decoder, [{"type": 4, "taskDelay": True}])
+    parsed = decode(
+        decoder, [{"type": 4, "time": str(T), "vehicleState": "1"}, pose(T)], RECEIVED + timedelta(seconds=5)
+    )
+    assert [m.entry_type for m in parsed.messages] == [1]
+    record = decoder.get(DEVICE)
+    assert (record.task_delay, record.delay_received_at) == (True, RECEIVED)
+
+
+def test_the_reconnect_delay_shape_alone_leaves_no_record() -> None:
+    decoder = LocationDecoder()
+    decode(decoder, [{"type": 4, "time": str(T), "vehicleState": "1"}])
+    assert decoder.get(DEVICE) is None
+
+
+def test_the_reconnect_delay_shape_with_an_unknown_field_is_reported() -> None:
+    decoder = LocationDecoder()
+    parsed = decode(decoder, [{"type": 4, "time": str(T), "vehicleState": "1", "new": 1}])
+    assert (parsed.messages, parsed.reasons) == ([], ["unknown_field"])
+
+
+def test_the_lower_edge_of_the_plausibility_window_is_believed() -> None:
+    decoder = LocationDecoder()
+    assert decode(decoder, [pose(PLAUSIBLE_MIN_MS)]).reasons == []
+
+
+def test_an_entry_without_a_type_is_an_unknown_type() -> None:
+    decoder = LocationDecoder()
+    parsed = decode(decoder, [{"postureX": "1", "postureY": "2", "time": str(T)}])
+    assert (parsed.messages, parsed.reasons) == ([], ["unknown_type"])
+
+
+def test_task_numbers_sent_as_strings_zero_and_negative_are_kept() -> None:
+    decoder = LocationDecoder()
+    (message,) = decode(decoder, [task(
+        T, subtotalArea="100.00", mowingWeekArea="0.00", mowingPercentage=0,
+        action=-1, subAction=-1, mapWorkPosition=7,
+    )]).messages
+    record = message.location
+    assert (record.area_m2, record.week_area_m2, record.mowing_percentage) == (100.0, 0.0, 0.0)
+    assert (record.action, record.sub_action, record.map_work_position) == (-1, -1, "7")
