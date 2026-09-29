@@ -270,6 +270,11 @@ def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
        \\-- quoted-edit  (a commit whose message looks like a patch)
        \\-- fork: client.py moved to legacy/client.py with a shim, as this repository did
     """
+    # A git hook or alias exports GIT_DIR, GIT_INDEX_FILE and the like; left in
+    # place they would point every command below at the caller's repository.
+    for name in os.environ:
+        if name.startswith("GIT_") and name != "GIT_EXEC_PATH":
+            monkeypatch.delenv(name)
     for name, value in GIT_ENV.items():
         monkeypatch.setenv(name, value)
 
@@ -356,6 +361,34 @@ def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
     monkeypatch.setattr(port_upstream, "REPO_ROOT", tmp_path)
     return tmp_path
+
+
+@pytest.fixture
+def decoy(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> tuple[Path, bytes]:
+    """Another repository, exported through GIT_* the way a git hook exports its own.
+
+    Returns the repository and its configuration as it was before any other
+    fixture ran.
+    """
+    decoy = tmp_path_factory.mktemp("decoy")
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")} | GIT_ENV
+    subprocess.run(["git", "-C", str(decoy), "init", "-q"], check=True, env=env)
+    monkeypatch.setenv("GIT_DIR", str(decoy / ".git"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(decoy))
+    monkeypatch.setenv("GIT_INDEX_FILE", str(decoy / ".git" / "index"))
+    return decoy, (decoy / ".git" / "config").read_bytes()
+
+
+def test_the_fixture_ignores_git_variables_exported_by_a_caller(
+    decoy: tuple[Path, bytes], repo: Path
+) -> None:
+    decoy_git = decoy[0] / ".git"
+    assert git_out(repo, "log", "-1", "--format=%s", "fork-move").strip() == "fork: move client.py to legacy/"
+    assert (decoy_git / "config").read_bytes() == decoy[1]
+    assert not (decoy_git / "index").exists()
+    assert not list((decoy_git / "refs" / "heads").iterdir())
 
 
 def git_out(repo: Path, *args: str) -> str:
