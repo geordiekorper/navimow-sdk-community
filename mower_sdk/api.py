@@ -344,6 +344,35 @@ class MowerAPI:
         _warn_sync_wrapper("get_mqtt_user_info")
         return asyncio.run(self.async_get_mqtt_user_info())
 
+    async def async_get_vehicle_status_raw(self, device_ids: list[str]) -> list[dict[str, Any]]:
+        """Fetch the status entries of several devices as the cloud sent them.
+
+        One getVehicleStatus request; returns the dict entries of the reply's
+        data.payload.devices unchanged, and an empty list, without a request, for
+        no ids. An X430's entry carried id, capacityRemaining, vehicleState and
+        descriptiveCapacityRemaining; a field the cloud starts sending reaches the
+        caller here first. async_get_device_statuses reads the same entries into
+        DeviceStatus.
+
+        Args:
+            device_ids: List of device IDs
+
+        Returns:
+            The status entries, as dicts
+
+        Raises:
+            MowerAPIError: If the request fails
+        """
+        if not device_ids:
+            return []
+        response = await self._async_request(
+            "POST",
+            "/openapi/smarthome/getVehicleStatus",
+            data={"devices": [{"id": device_id} for device_id in device_ids]},
+        )
+        payload = self._unwrap(response).get("payload", {})
+        return [entry for entry in payload.get("devices", []) if isinstance(entry, dict)]
+
     async def async_get_device_statuses(
         self, device_ids: list[str]
     ) -> dict[str, DeviceStatus]:
@@ -353,22 +382,13 @@ class MowerAPI:
             device_ids: List of device IDs
 
         Returns:
-            Mapping from device ID to status
+            Mapping from device ID to status; an entry without an id is left out
 
         Raises:
             MowerAPIError: If the request fails
         """
-        if not device_ids:
-            return {}
-        response = await self._async_request(
-            "POST",
-            "/openapi/smarthome/getVehicleStatus",
-            data={"devices": [{"id": device_id} for device_id in device_ids]},
-        )
-        payload = self._unwrap(response).get("payload", {})
-        devices_data = payload.get("devices", [])
         result: dict[str, DeviceStatus] = {}
-        for status_data in devices_data:
+        for status_data in await self.async_get_vehicle_status_raw(device_ids):
             status = DeviceStatus.from_dict(status_data)
             if status.device_id:
                 result[status.device_id] = status

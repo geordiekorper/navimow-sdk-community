@@ -714,3 +714,57 @@ def test_the_error_classes_are_mower_api_errors_and_exported() -> None:
         assert getattr(mower_sdk, cls.__name__) is cls
     error = MowerAPIError("m", status_code=400, error_code="E", envelope_code=9)
     assert (error.envelope_code, str(error)) == (9, "m | HTTP 400 | Error Code: E")
+
+
+# ---- the raw status entries ----------------------------------------------------------------------
+
+X430_ENTRY = {
+    "id": DEVICE_ID,
+    "capacityRemaining": [{"unit": "PERCENTAGE", "rawValue": 88}],
+    "vehicleState": "isDocked",
+    "descriptiveCapacityRemaining": "HIGH",
+    "newField": {"nested": [1, 2]},
+}
+
+
+def test_the_raw_status_entries_come_back_as_the_cloud_sent_them() -> None:
+    api, session = api_with(FakeResponse(ok({"devices": [X430_ENTRY, "not a dict", {"vehicleState": "isRunning"}]})))
+    entries = run(api.async_get_vehicle_status_raw([DEVICE_ID, "dev-2"]))
+    assert entries == [X430_ENTRY, {"vehicleState": "isRunning"}]
+    (request,) = session.requests
+    assert (request["method"], request["url"]) == ("POST", BASE_URL.rstrip("/") + "/openapi/smarthome/getVehicleStatus")
+    assert request["json"] == {"devices": [{"id": DEVICE_ID}, {"id": "dev-2"}]}
+
+
+def test_no_ids_make_no_raw_status_request() -> None:
+    api, session = api_with()
+    assert run(api.async_get_vehicle_status_raw([])) == []
+    assert session.requests == []
+
+
+@pytest.mark.parametrize(
+    "data",
+    [{}, {"payload": {}}],
+    ids=["no_payload", "no_devices"],
+)
+def test_a_reply_without_entries_is_an_empty_list(data: dict[str, Any]) -> None:
+    api, _ = api_with(FakeResponse({"code": 1, "desc": "success", "data": data}))
+    assert run(api.async_get_vehicle_status_raw([DEVICE_ID])) == []
+
+
+def test_the_typed_statuses_are_read_from_the_raw_entries() -> None:
+    api, _ = api_with(FakeResponse(ok({"devices": [X430_ENTRY]})))
+    statuses = run(api.async_get_device_statuses([DEVICE_ID]))
+    assert statuses[DEVICE_ID].battery == 88
+    assert statuses[DEVICE_ID].extra["newField"] == {"nested": [1, 2]}
+
+
+def test_a_refused_raw_status_request_raises_like_the_others() -> None:
+    api, _ = api_with(FakeResponse({"code": 4005, "desc": "token expired"}))
+    with pytest.raises(MowerAuthRequiredError):
+        run(api.async_get_vehicle_status_raw([DEVICE_ID]))
+
+
+def test_the_typed_statuses_skip_an_entry_that_is_not_a_dict() -> None:
+    api, _ = api_with(FakeResponse(ok({"devices": ["not a dict", X430_ENTRY, None]})))
+    assert list(run(api.async_get_device_statuses([DEVICE_ID]))) == [DEVICE_ID]
