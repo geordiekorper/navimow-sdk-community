@@ -148,6 +148,12 @@ An integration that does any of these must change with this release:
   package's files are the ones loaded; when `navimow-sdk` was installed last,
   its files replaced these and nothing warns.
 
+### Fixed
+
+- A state message whose fields cannot be read (`metrics` sent as a number, a
+  string or a list) raised in the message task and reached no callback; it is
+  now reported to `on_rejected` as `unparsable` and neither applied nor cached.
+
 ## [0.2.0a2] - 2026-09-28
 
 Two things: the legacy quarantine, and the first patches taken from other

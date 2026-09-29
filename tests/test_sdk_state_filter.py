@@ -187,6 +187,21 @@ def test_a_malformed_payload_on_each_channel_is_reported_with_the_filter_off(cha
     assert [(r.channel, r.topic, r.reason, r.payload) for r in seen.rejected] == [(channel, topic(channel), "unparsable", payload)]
 
 
+@pytest.mark.parametrize("metrics", [1, "fast", [1, 2]], ids=["number", "string", "list"])
+def test_a_state_whose_fields_cannot_be_read_is_reported_as_unparsable(metrics: Any) -> None:
+    sdk, seen = make(reject_late_state=True)
+    deliver(sdk, "state", state(T - 10_000))  # the mark
+    data = deliver(sdk, "state", state(T, metrics=metrics))
+    assert [m.timestamp for m in seen.states] == [T - 10_000]
+    assert sdk.get_cached_state(DEVICE_ID).timestamp == T - 10_000
+    assert [(r.channel, r.device_id, r.reason, r.reasons, r.payload) for r in seen.rejected] == [
+        ("state", DEVICE_ID, "unparsable", ("unparsable", "unknown_field"), data)
+    ]
+    assert sdk._state_marks == {DEVICE_ID: T - 10_000}  # not advanced to T
+    deliver(sdk, "state", state(T - 5000))  # older than the unparsable one: still applies
+    assert [m.timestamp for m in seen.states] == [T - 10_000, T - 5000]
+
+
 def test_a_rejected_state_leaves_the_cache_and_its_times_untouched(clock: FakeClock) -> None:
     sdk, seen = make(reject_late_state=True)
     deliver(sdk, "state", state(T))

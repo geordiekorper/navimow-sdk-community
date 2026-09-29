@@ -381,13 +381,20 @@ class NavimowSDK:
         reject_late_state, a timestamp outside the plausibility window earns
         implausible_time and one older than the device's newest accepted timestamp
         earns stale; both block, and a blocked message names the blocking reason as
-        its reason. A message without a timestamp is applied.
+        its reason. A message without a timestamp is applied. A payload whose fields
+        cannot be read into a DeviceStateMessage (metrics sent as a number, say) is
+        unparsable: reported, and neither applied nor cached.
         """
-        msg = DeviceStateMessage.from_dict(payload_dict)
-        msg.received_at = received_at
         reasons = []
         if not payload_dict.keys() <= STATE_KNOWN_FIELDS:
             reasons.append("unknown_field")
+        try:
+            msg = DeviceStateMessage.from_dict(payload_dict)
+        except (TypeError, ValueError):
+            ordered = [reason for reason in REASON_PRIORITY if reason in ("unparsable", *reasons)]
+            self._reject("state", topic, payload_dict["device_id"], "unparsable", ordered, payload, received_at)
+            return
+        msg.received_at = received_at
         # The one reason, if any, that keeps the message from being applied.
         blocked = None
         stamp = mower_time_ms(msg.timestamp) if self._reject_late_state else None
