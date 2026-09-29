@@ -33,7 +33,7 @@ ROOT = Path(__file__).resolve().parent
 PYTHONS = ["3.11", "3.12", "3.13", "3.14"]
 # The dependency bounds pyproject.toml allows; "newest" takes the latest release.
 BOUNDS = {
-    "oldest": ("3.11", ["aiohttp==3.9.0", "paho-mqtt==1.6.1"]),
+    "oldest": ("3.11", ["aiohttp==3.9.0", "paho-mqtt==2.1.0"]),
     "newest": ("3.14", ["aiohttp", "paho-mqtt"]),
 }
 RUFF = "ruff==0.16.9"  # the version the ruff hook in .pre-commit-config.yaml uses

@@ -156,7 +156,11 @@ class NavimowMQTT:
         # self.client is assigned before it is configured: the callback lookups
         # in _configure_client may read it, and a subclass can rely on that.
         transport = "websockets" if self.ws_path else "tcp"
-        self.client = mqtt_client.Client(client_id=self._client_id, transport=transport)
+        self.client = mqtt_client.Client(
+            callback_api_version=mqtt_client.CallbackAPIVersion.VERSION2,
+            client_id=self._client_id,
+            transport=transport,
+        )
         self._configure_client(self.client)
         _LOGGER.info(
             "NavimowMQTT init: broker=%s port=%s ws_path=%s tls=%s client_id=%s",
@@ -193,7 +197,11 @@ class NavimowMQTT:
         override here takes effect on the next rebuild, not at construction.
         """
         transport = "websockets" if self.ws_path else "tcp"
-        client = mqtt_client.Client(client_id=self._client_id, transport=transport)
+        client = mqtt_client.Client(
+            callback_api_version=mqtt_client.CallbackAPIVersion.VERSION2,
+            client_id=self._client_id,
+            transport=transport,
+        )
         self._configure_client(client)
         return client
 
@@ -382,9 +390,10 @@ class NavimowMQTT:
         if close is not None:
             close()
 
-    def _on_connect(self, _client, _userdata, _flags, rc) -> None:
-        if rc != 0:
-            _LOGGER.error("MQTT connection failed: rc=%s", rc)
+    def _on_connect(self, _client, _userdata, _flags, reason_code, _properties=None) -> None:
+        """paho's on_connect, callback API version 2: reason_code is a paho ReasonCode."""
+        if reason_code.is_failure:
+            _LOGGER.error("MQTT connection failed: %s (%s)", reason_code, reason_code.value)
             return
         _LOGGER.info(
             "NavimowMQTT connected: broker=%s port=%s",
@@ -400,12 +409,13 @@ class NavimowMQTT:
         if self.on_ready is not None:
             self._schedule(self.on_ready())
 
-    def _on_disconnect(self, _client, _userdata, _rc) -> None:
+    def _on_disconnect(self, _client, _userdata, _flags, reason_code, _properties=None) -> None:
+        """paho's on_disconnect, callback API version 2."""
         _LOGGER.debug(
             "NavimowMQTT disconnected: broker=%s port=%s rc=%s",
             self.broker,
             self.port,
-            _rc,
+            reason_code,
         )
         if self.on_disconnected is not None:
             self._schedule(self.on_disconnected())

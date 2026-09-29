@@ -27,12 +27,15 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 import pytest
+from paho.mqtt.packettypes import PacketTypes
+from paho.mqtt.reasoncodes import ReasonCode
 
 from mower_sdk import mqtt as mqtt_module
 from mower_sdk.models import Device
 from mower_sdk.mqtt import NavimowMQTT
 
 Call = tuple[str, tuple[Any, ...], dict[str, Any]]
+VERSION2 = mqtt_module.mqtt_client.CallbackAPIVersion.VERSION2
 
 
 class FakeClient:
@@ -94,6 +97,23 @@ class FakeClient:
     @property
     def callbacks(self) -> tuple[Any, Any, Any]:
         return (self.on_connect, self.on_disconnect, self.on_message)
+
+
+class FakeReasonCode:
+    """The parts of paho's ReasonCode the client reads."""
+
+    def __init__(self, value: int, name: str) -> None:
+        self.value = value
+        self.is_failure = value >= 0x80
+        self._name = name
+
+    def __str__(self) -> str:
+        return self._name
+
+
+SUCCESS = FakeReasonCode(0, "Success")
+NOT_AUTHORIZED = FakeReasonCode(135, "Not authorized")
+UNSPECIFIED = FakeReasonCode(128, "Unspecified error")
 
 
 class FakeMessage:
@@ -161,7 +181,7 @@ def test_init_setup_calls_for_websockets(fake_paho: type[FakeClient]) -> None:
         assert mqtt._client_id.startswith("web_user_")
         assert fake_paho.instances == [mqtt.client]
         assert mqtt.client.calls == [
-            ("__init__", (), {"client_id": mqtt._client_id, "transport": "websockets"}),
+            ("__init__", (), {"callback_api_version": VERSION2, "client_id": mqtt._client_id, "transport": "websockets"}),
             ("username_pw_set", ("user", "secret"), {}),
             ("ws_set_options", (), {"path": "/mqtt", "headers": {"Authorization": "Bearer tok"}}),
             ("tls_set", (), {}),
@@ -181,7 +201,7 @@ def test_init_setup_calls_for_plain_tcp(fake_paho: type[FakeClient]) -> None:
         assert mqtt._client_id.startswith("web_unknown_")
         assert fake_paho.instances == [mqtt.client]
         assert mqtt.client.calls == [
-            ("__init__", (), {"client_id": mqtt._client_id, "transport": "tcp"}),
+            ("__init__", (), {"callback_api_version": VERSION2, "client_id": mqtt._client_id, "transport": "tcp"}),
             ("reconnect_delay_set", (), {"min_delay": 1, "max_delay": 60}),
         ]
         assert mqtt.client.callbacks == (mqtt._on_connect, mqtt._on_disconnect, mqtt._on_message)
@@ -197,7 +217,11 @@ def test_init_setup_calls_for_wss_scheme_without_ws_path(fake_paho: type[FakeCli
         assert mqtt.port == 443
         assert mqtt._use_tls is True
         assert [name for name, _, _ in mqtt.client.calls] == ["__init__", "tls_set", "reconnect_delay_set"]
-        assert mqtt.client.calls[0][2]["transport"] == "tcp"
+        assert mqtt.client.calls[0][2] == {
+            "callback_api_version": VERSION2,
+            "client_id": mqtt._client_id,
+            "transport": "tcp",
+        }
         assert fake_paho.instances == [mqtt.client]
 
     run(test)
@@ -291,12 +315,12 @@ def test_on_connect_calls_subscribe_all_with_two_arguments(fake_paho: type[FakeC
         mqtt.on_connected = on_connected
         mqtt.on_ready = on_ready
 
-        mqtt._on_connect(mqtt.client, None, {}, 1)
+        mqtt._on_connect(mqtt.client, None, {}, UNSPECIFIED, None)
         await drain()
         assert mqtt.subscribe_calls == []
         assert connected == []
 
-        mqtt._on_connect(mqtt.client, None, {}, 0)
+        mqtt._on_connect(mqtt.client, None, {}, SUCCESS, None)
         await drain()
         assert mqtt.subscribe_calls == [("", "")]
         assert connected == ["connected", "ready"]
@@ -313,11 +337,11 @@ def test_on_disconnect_schedules_the_callback(fake_paho: type[FakeClient]) -> No
             seen.append("disconnected")
 
         mqtt = make(TCP_KWARGS)
-        mqtt._on_disconnect(mqtt.client, None, 0)
+        mqtt._on_disconnect(mqtt.client, None, {}, SUCCESS, None)
         await drain()
         assert seen == []
         mqtt.on_disconnected = on_disconnected
-        mqtt._on_disconnect(mqtt.client, None, 7)
+        mqtt._on_disconnect(mqtt.client, None, {}, UNSPECIFIED, None)
         await drain()
         assert seen == ["disconnected"]
         assert fake_paho.instances == [mqtt.client]
@@ -527,10 +551,10 @@ def test_a_refused_connect_logs_an_error_and_there_is_no_connect_failure_hook(
         mqtt.on_connected = on_connected
         assert not hasattr(mqtt.client, "on_connect_fail")
         with caplog.at_level(logging.INFO, logger="mower_sdk.mqtt"):
-            mqtt._on_connect(mqtt.client, None, {}, 5)
+            mqtt._on_connect(mqtt.client, None, {}, NOT_AUTHORIZED, None)
         await drain()
         assert [(r.levelno, r.getMessage()) for r in caplog.records] == [
-            (logging.ERROR, "MQTT connection failed: rc=5")
+            (logging.ERROR, "MQTT connection failed: Not authorized (135)")
         ]
         assert seen == []
         assert mqtt.client.named("subscribe") == []
@@ -800,7 +824,7 @@ def test_a_client_constructed_outside_a_loop_binds_the_loop_it_connects_from(
     async def test() -> None:
         mqtt.connect_async()
         assert mqtt.loop is asyncio.get_running_loop()
-        mqtt._on_disconnect(mqtt.client, None, 0)
+        mqtt._on_disconnect(mqtt.client, None, {}, SUCCESS, None)
         await drain()
         assert seen == ["disconnected"]
 
@@ -828,7 +852,7 @@ def test_a_client_constructed_and_connected_outside_any_loop_drops_the_callback_
         caplog.at_level(logging.WARNING, logger="mower_sdk.mqtt"),
     ):
         warnings.simplefilter("always")
-        mqtt._on_disconnect(mqtt.client, None, 0)
+        mqtt._on_disconnect(mqtt.client, None, {}, SUCCESS, None)
         gc.collect()
     assert [w.message for w in caught if issubclass(w.category, RuntimeWarning)] == []
     assert [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING] == [
@@ -868,7 +892,7 @@ def test_a_bound_loop_that_has_closed_drops_the_callback_closed_with_a_debug_lin
         caplog.at_level(logging.DEBUG, logger="mower_sdk.mqtt"),
     ):
         warnings.simplefilter("always")
-        mqtt._on_disconnect(mqtt.client, None, 0)
+        mqtt._on_disconnect(mqtt.client, None, {}, SUCCESS, None)
         gc.collect()
     assert [w.message for w in caught if issubclass(w.category, RuntimeWarning)] == []
     assert [r.levelno for r in caplog.records if "callback" in r.getMessage()] == [logging.DEBUG]
@@ -896,7 +920,7 @@ def test_a_loop_set_as_current_but_not_running_is_bound_and_receives_the_callbac
         mqtt.on_disconnected = on_disconnected
         mqtt.connect_async()
         assert mqtt.loop is current
-        current.call_soon(mqtt._on_disconnect, mqtt.client, None, 0)
+        current.call_soon(mqtt._on_disconnect, mqtt.client, None, {}, SUCCESS, None)
         current.run_until_complete(drain())
     finally:
         asyncio.set_event_loop(None)
@@ -922,3 +946,19 @@ def test_a_client_constructed_outside_any_loop_binds_the_loop_set_as_current_at_
         asyncio.set_event_loop(None)
         current.close()
     assert fake_paho.instances == [mqtt.client]
+
+
+def test_a_refusal_from_paho_is_logged_with_its_reason_text_and_value(
+    fake_paho: type[FakeClient], caplog: pytest.LogCaptureFixture
+) -> None:
+    """paho's own ReasonCode, as a CONNACK refusal carries it."""
+
+    async def test() -> None:
+        mqtt = make(TCP_KWARGS)
+        with caplog.at_level(logging.ERROR, logger="mower_sdk.mqtt"):
+            mqtt._on_connect(mqtt.client, None, {}, ReasonCode(PacketTypes.CONNACK, identifier=135), None)
+        assert [r.getMessage() for r in caplog.records] == ["MQTT connection failed: Not authorized (135)"]
+        assert mqtt.client.named("subscribe") == []
+        assert fake_paho.instances == [mqtt.client]
+
+    run(test)

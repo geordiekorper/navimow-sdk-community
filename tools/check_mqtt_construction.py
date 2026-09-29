@@ -1,6 +1,11 @@
 """Construct the MQTT classes outside and inside a running event loop, and
 update credentials in both connection states.
 
+The core classes use paho's callback API version 2, so building their clients
+must not raise paho's "Callback API version 1 is deprecated" warning; it is
+turned into an error around them. The legacy MowerMQTT stays on version 1 and
+keeps that warning, so its construction is left outside the filter.
+
 Run by the bounds sessions of noxfile.py, on the oldest and the newest
 allowed aiohttp and paho-mqtt: paho's constructors and setters, and where
 they keep their values, are what could differ between versions.
@@ -19,9 +24,18 @@ from mower_sdk import NavimowMQTT, NavimowSDK
 from mower_sdk.legacy.mqtt_v1 import MowerMQTT
 
 
+CORE_ON_VERSION_2 = "Callback API version"
+
+
 async def main() -> None:
     # MowerMQTT builds its paho client lazily; NavimowMQTT builds it in __init__.
     MowerMQTT("broker.invalid")._build_client()
+    with warnings.catch_warnings():
+        warnings.filterwarnings("error", message=CORE_ON_VERSION_2)
+        await core()
+
+
+async def core() -> None:
     NavimowMQTT("broker.invalid", 8883, None, None, records=[])._build_new_client()
     NavimowSDK("broker.invalid", 8883)
 
@@ -64,6 +78,7 @@ async def main() -> None:
 # not yet running is bound, on each version's real policy.
 with warnings.catch_warnings():
     warnings.filterwarnings("error", message="There is no current event loop")
+    warnings.filterwarnings("error", message=CORE_ON_VERSION_2)
     outside = NavimowMQTT("broker.invalid", 8883, None, None, records=[])
     assert outside.loop is None, "constructed outside a loop: no loop bound"
     assert NavimowSDK("broker.invalid", 8883)._mqtt.loop is None, "facade outside a loop: no loop bound"
