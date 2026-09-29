@@ -34,6 +34,12 @@ pip install navimow-sdk-community
 > overwrites the other's files. Uninstall the upstream distribution first, or use a fresh
 > environment, and change any requirement on `navimow-sdk` to `navimow-sdk-community`.
 >
+> While both distributions are listed, importing `mower_sdk` emits a `UserWarning` that names both
+> versions. It can only fire when this package's own files are the ones loaded: if `navimow-sdk` was
+> installed last, its files are what runs and nothing here can say so, so a consumer that requires
+> this distribution should compare `importlib.metadata.version("navimow-sdk-community")` with
+> `mower_sdk.__version__`.
+>
 > ```bash
 > pip uninstall navimow-sdk
 > pip install navimow-sdk-community
