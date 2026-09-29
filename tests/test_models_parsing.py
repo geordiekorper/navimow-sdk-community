@@ -251,6 +251,19 @@ def test_device_status_extra_merges_the_raw_status_keys() -> None:
     assert DeviceStatus.from_dict({"extra": None, "vehicleState": "x"}).extra == {"vehicleState": "x"}
 
 
+def test_device_status_writes_the_raw_status_keys_into_the_callers_extra_dict() -> None:
+    extra = {"k": 1}
+    status = DeviceStatus.from_dict({"extra": extra, "vehicleState": "isDocked"})
+    assert status.extra is extra
+    assert extra == {"k": 1, "vehicleState": "isDocked"}
+
+
+def test_device_status_drops_a_rest_key_the_model_does_not_read() -> None:
+    status = DeviceStatus.from_dict({"id": "d", "vehicleState": "isDocked", "mowingZone": "front"})
+    assert status.extra == {"vehicleState": "isDocked"}
+    assert "mowingZone" not in status.to_dict()
+
+
 @pytest.mark.parametrize(
     ("payload", "error"),
     [
