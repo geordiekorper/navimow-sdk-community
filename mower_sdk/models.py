@@ -180,13 +180,21 @@ class MowerStatus(Enum):
 
 
 class MowerCommand(Enum):
-    """Mower control commands."""
+    """Mower control commands, sent over REST by MowerAPI.async_send_command.
 
-    START = "start"  # Start mowing
+    What the cloud does with each, as observed: START resumes the task the app
+    created and cannot choose a zone; PAUSE and RESUME work and settle within
+    about 30 seconds; STOP pauses the task rather than ending it; DOCK sends
+    the mower home, which can take minutes. A SUCCESS result means the cloud
+    accepted the command, not that the mower acted: poll the status for the
+    state you want.
+    """
+
+    START = "start"  # Start (resume) the task the app created
     PAUSE = "pause"  # Pause mowing
     DOCK = "dock"  # Return to the charging station
     RESUME = "resume"  # Resume mowing
-    STOP = "stop"  # Stop
+    STOP = "stop"  # Pauses the task; does not end it
 
 
 class MowerError(Enum):

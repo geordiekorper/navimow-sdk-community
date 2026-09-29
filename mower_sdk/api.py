@@ -134,7 +134,9 @@ class MowerAPI:
     default. Pass request_timeout=None to leave the session's own timeout
     policy in force instead.
 
-    Every failure is a MowerAPIError; the subclass says which kind.
+    A failed request or a refusal is a MowerAPIError; the subclass says which
+    kind. (Kept from upstream: a successful reply whose data is null makes the
+    endpoints that read into it raise AttributeError.)
     MowerTransportError: no usable reply (a timeout, a connection error, an
     HTTP 5xx, a status below 200 or a redirect that was not followed, or a 2xx
     whose body is not a JSON object), so a command's outcome is unknown.
