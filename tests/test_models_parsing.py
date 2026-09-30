@@ -363,9 +363,13 @@ def test_device_status_to_dict_omits_unset_fields() -> None:
 
 def test_state_message_metrics_handling() -> None:
     metrics = {"speed": 1}
-    message = DeviceStateMessage.from_dict({"metrics": metrics, "state": "isDocked"})
-    assert message.metrics is metrics  # the caller's dict is used, and extended, in place
-    assert metrics == {"speed": 1, "raw_state": "isDocked"}
+    payload = {"metrics": metrics, "state": "isDocked"}
+    message = DeviceStateMessage.from_dict(payload)
+    assert message.metrics == {"speed": 1, "raw_state": "isDocked"}
+    assert message.metrics is not metrics
+    assert metrics == {"speed": 1}  # the caller's dict is left as it was
+    assert payload == {"metrics": {"speed": 1}, "state": "isDocked"}
+    assert message.raw == {"metrics": {"speed": 1}, "state": "isDocked"}
     assert DeviceStateMessage.from_dict({"metrics": [("a", 1)], "state": "docked"}).metrics == {"a": 1}
     assert DeviceStateMessage.from_dict({"metrics": None, "state": "docked"}).metrics is None
 

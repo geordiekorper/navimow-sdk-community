@@ -159,6 +159,8 @@ An integration that does any of these must change with this release:
   `async_get_device_statuses()`, which reads through it, returns an empty dict
   for such a reply, and `async_get_device_status()` raises its
   `DEVICE_NOT_FOUND` `MowerAPIError`, as for a reply without the device.
+- `DeviceStateMessage.from_dict()` added `raw_state` to the caller's `metrics`
+  dict; it now works on a copy and leaves the payload it was given unchanged.
 
 ## [0.2.0a2] - 2026-09-28
 

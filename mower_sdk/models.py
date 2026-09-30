@@ -580,14 +580,12 @@ class DeviceStateMessage:
     def from_dict(cls, payload: dict[str, Any]) -> "DeviceStateMessage":
         raw_state = _raw_state(payload, ("state", "status", "vehicleState"))
         normalized_state = _normalize_state_value(raw_state)
-        # Taken before metrics is extended below (in place, for a dict), so raw is the
-        # payload as decoded.
+        # raw is the payload as decoded, with its own copy of a metrics dict.
         raw = dict(payload)
         if isinstance(payload.get("metrics"), dict):
             raw["metrics"] = dict(payload["metrics"])
-        metrics = payload.get("metrics")
-        if not isinstance(metrics, dict):
-            metrics = dict(metrics or {})
+        # A copy, so the raw_state added below never reaches the caller's dict.
+        metrics = dict(payload.get("metrics") or {})
         if raw_state is not None and normalized_state != raw_state:
             metrics["raw_state"] = raw_state
 
