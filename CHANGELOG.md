@@ -7,7 +7,7 @@ throughout.
 
 ## [Unreleased]
 
-## [0.2.0a3] - 2026-09-29
+## [0.2.0a3] - 2026-09-30
 
 The MQTT transport, the location channel, the models and the REST errors.
 Nothing upstream published is removed; the live path behaves differently only
