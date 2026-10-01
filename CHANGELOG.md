@@ -23,6 +23,14 @@ throughout.
   `DeviceStateMessage.state` holds), `mower_status_from_raw(raw)` (what
   `DeviceStatus.status` holds) and `battery_from_payload(data)` (what both
   models' `battery` holds; None for anything but a dict).
+- The payload bytes exactly as the mower sent them, beside the re-encoded
+  form with `device_id` added: `NavimowMQTT.on_message` receives a re-encoded
+  object payload as `mower_sdk.mqtt.ReceivedPayload`, a `bytes` subclass equal
+  to what it received before, whose `original` holds the wire bytes; and
+  `DeviceStateMessage`, `DeviceEventMessage`, `DeviceAttributesMessage` and
+  `RejectedMessage` gain `original` (not compared, not in `to_dict()`). A
+  consumer that stores messages as sent no longer has to pair `on_raw` with
+  the typed callbacks, whose order is not promised.
 - `SkippedLocationEntry`, one location entry that was not applied: its type,
   its time as read, the reason (`stale`, `implausible_time`, `placeholder`,
   `unparsable` or `unknown_type`) and the fields it carried, read as an applied

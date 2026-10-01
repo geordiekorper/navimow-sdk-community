@@ -38,10 +38,39 @@ __all__ = [
     "DeviceStatus",
     "ERROR_MESSAGES",
     "MowerMQTTError",
+    "ReceivedPayload",
     "parse_json",
 ]
 
 _LOGGER = logging.getLogger(__name__)
+
+
+class ReceivedPayload(bytes):
+    """The bytes on_message receives when NavimowMQTT re-encoded a payload, with the original kept.
+
+    A JSON object payload gets device_id added and is re-encoded, so the bytes
+    are no longer the mower's; ``original`` holds the bytes exactly as they came
+    off the wire. It is still bytes, equal to the re-encoded form, so a consumer
+    that treats it as bytes sees no change. A payload that was not re-encoded (an
+    array, or anything that is not a JSON object) is passed as plain bytes, and
+    those are the original.
+    """
+
+    original: bytes
+
+    def __new__(cls, payload: bytes, original: bytes) -> "ReceivedPayload":
+        instance = super().__new__(cls, payload)
+        instance.original = original
+        return instance
+
+    def __reduce_ex__(self, protocol: object) -> tuple[type["ReceivedPayload"], tuple[bytes, bytes]]:
+        """Rebuild from both byte forms, so copy, deepcopy and pickle keep original."""
+        return type(self), (bytes(self), self.original)
+
+
+def _original_payload(payload: bytes) -> bytes:
+    """The bytes as received: payload.original for a ReceivedPayload, else payload itself."""
+    return payload.original if isinstance(payload, ReceivedPayload) else payload
 
 
 def _current_event_loop() -> asyncio.AbstractEventLoop | None:
@@ -832,9 +861,10 @@ class NavimowMQTT:
         if isinstance(payload, dict):
             # Re-encoded on purpose: on_message(topic, bytes, device_id) is a public
             # contract, consumers decode the bytes themselves, and integrations wrap
-            # this slot expecting the device_id to be present in the payload.
+            # this slot expecting the device_id to be present in the payload. The
+            # bytes the mower sent ride along as .original.
             payload.setdefault("device_id", device_id)
-            payload_bytes = json.dumps(payload).encode("utf-8")
+            payload_bytes = ReceivedPayload(json.dumps(payload).encode("utf-8"), payload_bytes)
 
         self._schedule(self.on_message(topic, payload_bytes, device_id))
 

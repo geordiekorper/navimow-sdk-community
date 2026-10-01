@@ -20,8 +20,12 @@ both, and a callback with no loop to run on dropped, closed, with a warning.
 from __future__ import annotations
 
 import asyncio
+import copy
+import dataclasses
 import gc
+import json
 import logging
+import pickle
 import threading
 import time
 import warnings
@@ -33,8 +37,9 @@ import pytest
 from paho.mqtt.packettypes import PacketTypes
 from paho.mqtt.reasoncodes import ReasonCode
 
+import mower_sdk
 from mower_sdk import mqtt as mqtt_module
-from mower_sdk.models import Device
+from mower_sdk.models import Device, RejectedMessage
 from mower_sdk.mqtt import NavimowMQTT
 from mower_sdk.sdk import NavimowSDK
 
@@ -384,6 +389,8 @@ def test_on_message_injects_device_id_and_reencodes_the_payload(fake_paho: type[
         assert received == [
             (STATE_TOPIC, b'{"state": "isDocked", "battery": 50, "device_id": "dev-1"}', "dev-1")
         ]
+        assert isinstance(received[0][1], mqtt_module.ReceivedPayload)
+        assert received[0][1].original == b'{"state":"isDocked","battery":50}'
         assert fake_paho.instances == [mqtt.client]
 
     run(test)
@@ -414,6 +421,7 @@ def test_on_message_passes_non_object_payloads_through_unchanged(
         await drain()
         assert received == [(STATE_TOPIC, payload, "dev-1")]
         assert received[0][1] is payload
+        assert not isinstance(received[0][1], mqtt_module.ReceivedPayload)
         assert fake_paho.instances == [mqtt.client]
 
     run(test)
@@ -1973,5 +1981,61 @@ def test_an_acknowledgement_racing_the_subscribe_call_is_not_lost() -> None:
         assert mqtt._pending_subscribes == {}
         # The acknowledging threads take the lock in whatever order they get it.
         assert sorted(seen) == sorted((t, True, (0,)) for t in DEVICE_TOPICS[:3])
+
+    run(test)
+
+
+# ---- the original bytes of a re-encoded payload ------------------------------------------------------
+
+
+def test_a_received_payload_is_bytes_equal_to_the_re_encoded_form() -> None:
+    payload = mqtt_module.ReceivedPayload(b'{"a": 1, "device_id": "d"}', b'{ "a" : 1 }')
+    assert isinstance(payload, bytes)
+    assert payload == b'{"a": 1, "device_id": "d"}'
+    assert payload.decode() == '{"a": 1, "device_id": "d"}'
+    assert payload.original == b'{ "a" : 1 }'
+    assert mqtt_module._original_payload(payload) == b'{ "a" : 1 }'
+    assert mqtt_module._original_payload(b"[1]") == b"[1]"
+    assert "ReceivedPayload" in mqtt_module.__all__
+    assert mower_sdk.ReceivedPayload is mqtt_module.ReceivedPayload
+    assert "ReceivedPayload" in mower_sdk.__all__
+
+
+@pytest.mark.parametrize(
+    "clone",
+    [copy.copy, copy.deepcopy, *(lambda value, p=p: pickle.loads(pickle.dumps(value, protocol=p)) for p in range(6))],
+    ids=["copy", "deepcopy", *(f"pickle_{p}" for p in range(6))],
+)
+def test_a_received_payload_copies_and_pickles_with_both_forms(clone: Callable[[Any], Any]) -> None:
+    payload = mqtt_module.ReceivedPayload(b'{"a": 1, "device_id": "d"}', b'{ "a" : 1 }')
+    cloned = clone(payload)
+    assert type(cloned) is mqtt_module.ReceivedPayload
+    assert (bytes(cloned), cloned.original) == (bytes(payload), payload.original)
+
+
+def test_a_rejection_holding_a_received_payload_converts_and_pickles() -> None:
+    payload = mqtt_module.ReceivedPayload(b'{"a": 1, "device_id": "d"}', b'{ "a" : 1 }')
+    rejected = RejectedMessage("state", "t", "d", "unknown_field", ("unknown_field",), payload, datetime.now(UTC),
+                               original=payload.original)
+    assert dataclasses.asdict(rejected)["payload"] == payload
+    assert dataclasses.asdict(rejected)["payload"].original == b'{ "a" : 1 }'
+    assert pickle.loads(pickle.dumps(rejected)).payload.original == b'{ "a" : 1 }'
+
+
+@pytest.mark.usefixtures("fake_paho")
+def test_the_mowers_bytes_survive_the_re_encoding_exactly() -> None:
+    """Spacing, key order, number spelling and escapes are the mower's, not json.dumps's."""
+    wire = b'{ "battery":50.0,\n "state" : "isDocked", "name": "L\\u00e9a" }'
+
+    async def test() -> None:
+        received, handler = recording_handler()
+        mqtt = make(TCP_KWARGS)
+        mqtt.on_message = handler
+        mqtt._on_message(mqtt.client, None, FakeMessage(STATE_TOPIC, wire))
+        await drain()
+        ((_, payload, _),) = received
+        assert payload.original is wire
+        assert payload != wire
+        assert json.loads(payload) == {**json.loads(wire), "device_id": "dev-1"}
 
     run(test)

@@ -139,6 +139,12 @@ also logged as a warning, and `sdk.mqtt.on_subscribe` can be set to an async
 `(topic, granted, codes)` callback. A refused subscription otherwise looks the same as a mower that
 does not publish on that topic.
 
+**Payload bytes.** A JSON object payload is re-encoded with `device_id` added before it reaches
+`NavimowMQTT.on_message`, so those bytes are not the mower's. They arrive as a
+`mower_sdk.mqtt.ReceivedPayload`, still `bytes` and equal to the re-encoded form, whose `original`
+holds the bytes exactly as received; the typed messages and `RejectedMessage` carry the same bytes
+as `original`.
+
 **Broker credentials.** The MQTT username and password come from the cloud's credential endpoint,
 which allows about one call a minute. `await sdk.async_refresh_broker_credentials(api,
 auth_headers=...)` fetches and applies them, at most once per 65 seconds: call it at startup

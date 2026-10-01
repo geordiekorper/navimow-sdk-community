@@ -25,7 +25,7 @@ from mower_sdk.models import (
     SkippedLocationEntry,
     mower_time_ms,
 )
-from mower_sdk.mqtt import NavimowMQTT, _decode_json, _parse_topic, _resolve_event_loop
+from mower_sdk.mqtt import NavimowMQTT, _decode_json, _original_payload, _parse_topic, _resolve_event_loop
 
 if TYPE_CHECKING:
     from mower_sdk.api import MowerAPI
@@ -366,10 +366,12 @@ class NavimowSDK:
         if channel == "event":
             msg = DeviceEventMessage.from_dict(payload_dict)
             msg.received_at = received_at
+            msg.original = _original_payload(payload)
             self._dispatch(self._event_callbacks, msg, channel)
             return
         msg = DeviceAttributesMessage.from_dict(payload_dict)
         msg.received_at = received_at
+        msg.original = _original_payload(payload)
         self._attributes_cache[msg.device_id] = msg
         self._attributes_cache_updated_at[msg.device_id] = time.monotonic()
         self._dispatch(self._attributes_callbacks, msg, channel)
@@ -397,6 +399,7 @@ class NavimowSDK:
             self._reject("state", topic, payload_dict["device_id"], "unparsable", ordered, payload, received_at)
             return
         msg.received_at = received_at
+        msg.original = _original_payload(payload)
         # The one reason, if any, that keeps the message from being applied.
         blocked = None
         stamp = mower_time_ms(msg.timestamp) if self._reject_late_state else None
@@ -457,6 +460,7 @@ class NavimowSDK:
             payload=payload,
             received_at=received_at,
             skipped=skipped,
+            original=_original_payload(payload),
         )
         self._dispatch(self._rejected_callbacks, rejected, "rejected")
 

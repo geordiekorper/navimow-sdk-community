@@ -611,6 +611,10 @@ class DeviceStateMessage:
     # When NavimowSDK received the message (UTC); None for one built by hand. Not
     # compared and not in to_dict().
     received_at: datetime | None = field(default=None, compare=False)
+    # The payload's bytes exactly as the mower sent them (raw is decoded, with
+    # device_id added), set by NavimowSDK; None for a message built by hand or by
+    # from_dict directly. Not compared and not in to_dict().
+    original: bytes | None = field(default=None, compare=False, repr=False)
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "DeviceStateMessage":
@@ -690,6 +694,10 @@ class DeviceEventMessage:
     # When NavimowSDK received the message (UTC); None for one built by hand. Not
     # compared and not in to_dict().
     received_at: datetime | None = field(default=None, compare=False)
+    # The payload's bytes exactly as the mower sent them (raw is decoded, with
+    # device_id added), set by NavimowSDK; None for a message built by hand or by
+    # from_dict directly. Not compared and not in to_dict().
+    original: bytes | None = field(default=None, compare=False, repr=False)
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "DeviceEventMessage":
@@ -727,6 +735,10 @@ class DeviceAttributesMessage:
     # When NavimowSDK received the message (UTC); None for one built by hand. Not
     # compared and not in to_dict().
     received_at: datetime | None = field(default=None, compare=False)
+    # The payload's bytes exactly as the mower sent them (raw is decoded, with
+    # device_id added), set by NavimowSDK; None for a message built by hand or by
+    # from_dict directly. Not compared and not in to_dict().
+    original: bytes | None = field(default=None, compare=False, repr=False)
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "DeviceAttributesMessage":
@@ -1073,9 +1085,12 @@ class RejectedMessage:
     unknown_type, unknown_field, stale, placeholder). ``payload`` is the bytes the
     facade received: the wire bytes for an array, and for an object the MQTT
     client's re-encoded form with device_id added. Recording it is the
-    consumer's. ``skipped`` lists, for a location message, each entry that was
-    not applied, in the order the decoder met them (empty for the other
-    channels, and for a location message that was unparsable as a whole).
+    consumer's. ``original`` is the bytes exactly as the mower sent them: the
+    same as ``payload`` except for an object the MQTT client re-encoded; it is
+    left out of equality. ``skipped`` lists, for a location message, each
+    entry that was not applied, in the order the decoder met them (empty for
+    the other channels, and for a location message that was unparsable as a
+    whole).
     """
 
     channel: str
@@ -1086,6 +1101,7 @@ class RejectedMessage:
     payload: bytes
     received_at: datetime
     skipped: tuple[SkippedLocationEntry, ...] = ()
+    original: bytes | None = field(default=None, compare=False, repr=False)
 
 
 # Names that moved to mower_sdk.legacy: attribute here -> (legacy module, attribute there).
