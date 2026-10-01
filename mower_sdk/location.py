@@ -15,7 +15,8 @@ array of entries (occasionally a lone entry object), each with an integer
 - type 4, delay: ``taskDelay``, with no time.
 
 LocationDecoder merges each message into the device's DeviceLocation entry by
-entry and says what it did in a ParsedLocation. Messages arrive late and out
+entry and says what it did in a ParsedLocation, and learns the dock's position
+from the poses the mower sends while docked. Messages arrive late and out
 of order, and a reconnect replays recent ones newest first, so the timed
 entries are applied in time order and an entry at or below the newest applied
 time of its type is stale.
@@ -23,6 +24,7 @@ time of its type is stale.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field, fields, replace
 from datetime import datetime
 from typing import Any
@@ -36,6 +38,10 @@ from mower_sdk.models import (
 )
 
 __all__ = [
+    "DOCK_MAX_SAMPLES",
+    "DOCK_MOVE_DISTANCE_M",
+    "DOCK_MOVE_SAMPLES",
+    "DOCK_VEHICLE_STATES",
     "LOCATION_ENTRY_TYPES",
     "LOCATION_KNOWN_FIELDS",
     "LocationDecoder",
@@ -67,6 +73,18 @@ REASON_PRIORITY = (
     "unparsable", "implausible_time", "unknown_type", "unknown_field",
     "stale", "placeholder",
 )
+
+# The pose codes that mean the mower is on its dock: 1 docked, 2 charging.
+DOCK_VEHICLE_STATES = frozenset({1, 2})
+# The dock estimate's cap: once it holds this many poses each new one weighs one
+# over the cap.
+DOCK_MAX_SAMPLES = 200
+# A docked pose this far (metres) from the estimate is not RTK jitter: it may be
+# a moved dock.
+DOCK_MOVE_DISTANCE_M = 1.0
+# This many consecutive far docked poses that agree with each other mean the dock
+# moved.
+DOCK_MOVE_SAMPLES = 3
 
 # The entry types whose time is guarded, with the record field holding the
 # latest observation time of that type.
@@ -180,10 +198,50 @@ class LocationDecoder:
     a record persisted earlier, before the first message after a restart, so late
     entries older than what was already applied are still rejected. Holding
     messages back until the restore is done is the caller's.
+
+    The dock: every applied pose entry whose code is in DOCK_VEHICLE_STATES is a
+    sample of the dock's position, folded into the record's dock fields (see
+    DeviceLocation) with a capped mean of dock_max_samples, unless it lies more
+    than dock_move_distance_m from the estimate. Such far poses gather in a
+    candidate, each within that distance of the candidate's running mean (one
+    that is not starts a new candidate), and a candidate of dock_move_samples
+    poses in a row replaces the estimate.
+    A restored record keeps its estimate and adds no samples; only applied
+    entries do, so restore the whole record, marks included, before connecting,
+    or a replayed pose trains the estimate again.
+
+    Raises:
+        ValueError: dock_max_samples or dock_move_samples is not a whole number
+            of at least 1, or dock_move_distance_m is not a finite number above 0.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        dock_max_samples: int = DOCK_MAX_SAMPLES,
+        dock_move_distance_m: float = DOCK_MOVE_DISTANCE_M,
+        dock_move_samples: int = DOCK_MOVE_SAMPLES,
+    ) -> None:
+        for name, count in (("dock_max_samples", dock_max_samples), ("dock_move_samples", dock_move_samples)):
+            if isinstance(count, bool) or not isinstance(count, int) or count < 1:
+                raise ValueError(f"LocationDecoder: {name} must be a whole number of at least 1, got {count!r}")
+        if (
+            isinstance(dock_move_distance_m, bool)
+            or not isinstance(dock_move_distance_m, int | float)
+            or not math.isfinite(dock_move_distance_m)
+            or dock_move_distance_m <= 0
+        ):
+            raise ValueError(
+                f"LocationDecoder: dock_move_distance_m must be a finite number above 0, got {dock_move_distance_m!r}"
+            )
+        self.dock_max_samples = dock_max_samples
+        self.dock_move_distance_m = float(dock_move_distance_m)
+        self.dock_move_samples = dock_move_samples
         self._records: dict[str, DeviceLocation] = {}
+        # device id -> (x, y, poses, latest heading) of the far docked poses that may
+        # mean the dock moved: working state only, never on the record and never
+        # persisted.
+        self._dock_candidates: dict[str, tuple[float, float, int, float | None]] = {}
 
     def get(self, device_id: str) -> DeviceLocation | None:
         """The device's merged record, or None before anything was applied or restored."""
@@ -202,6 +260,7 @@ class LocationDecoder:
                 if observed is not None:
                     marks[entry_type] = observed
         self._records[device_id] = replace(location, device_id=device_id, marks=marks)
+        self._dock_candidates.pop(device_id, None)
 
     def decode(
         self,
@@ -295,6 +354,14 @@ class LocationDecoder:
                     skip("placeholder", entry_type, entry_time, own)
                     continue
                 record.update(own, pose_at=entry_time, pose_received_at=received_at)
+                # Decision: the pose's own code says docked (1) or charging (2), not
+                # the state channel or REST, which lag the mower and never report
+                # charging; a pose without a code (a lifted mower sends none) is not a
+                # sample, and neither is any other entry type, so the same pose is
+                # never counted twice. An untimed docked pose is a sample too: the
+                # position is real, only its time is unknown, so dock_at becomes None.
+                if own["vehicle_state"] in DOCK_VEHICLE_STATES:
+                    self._dock_sample(device_id, record, own["x"], own["y"], own["theta"], entry_time)
             elif entry_type == 2:
                 if "current_zone" in own:
                     record.update(current_zone=own["current_zone"], zone_at=entry_time)
@@ -327,6 +394,69 @@ class LocationDecoder:
         if result.messages:
             self._records[device_id] = result.messages[-1].location
         return result
+
+    def _dock_sample(
+        self, device_id: str, record: dict[str, Any], x: float, y: float, theta: float | None, entry_time: int | None
+    ) -> None:
+        """Fold one docked pose into the working record's dock fields."""
+        latest = {
+            "dock_theta": theta if theta is not None else record["dock_theta"],
+            "dock_at": entry_time,
+        }
+        dock_x, dock_y, samples = record["dock_x"], record["dock_y"], record["dock_samples"]
+        if dock_x is None or dock_y is None or samples < 1:
+            record.update(latest, dock_x=x, dock_y=y, dock_samples=1)
+            self._dock_candidates.pop(device_id, None)
+            return
+        if math.hypot(x - dock_x, y - dock_y) <= self.dock_move_distance_m:
+            # Decision: a capped incremental mean. Below the cap it is the plain mean of
+            # the poses; at the cap each pose weighs one over the cap, so RTK jitter of
+            # centimetres is smoothed away. The price: a dock moved by less than
+            # dock_move_distance_m is followed only exponentially, about 63 % of the way
+            # after dock_max_samples further poses (200 by default, roughly seventeen
+            # hours docked at one pose per five minutes). The move detector below
+            # covers larger moves only.
+            weight = min(samples + 1, self.dock_max_samples)
+            record.update(
+                latest,
+                dock_x=dock_x + (x - dock_x) / weight,
+                dock_y=dock_y + (y - dock_y) / weight,
+                dock_samples=weight,
+            )
+            self._dock_candidates.pop(device_id, None)
+            return
+        # Decision: a far pose never enters the mean, so one outlier never moves the
+        # estimate. Far poses gather in a candidate, a plain running mean: a pose
+        # within dock_move_distance_m of that mean joins it, one farther starts a new
+        # candidate. A candidate of dock_move_samples poses in a row replaces the
+        # estimate, with dock_samples restarting at that count (never above
+        # dock_max_samples), so the new estimate carries more jitter until poses
+        # accrue; its heading is the candidate's latest, never the old dock's. The
+        # candidate is kept here only, not on the record, so it is not persisted: a
+        # restart in the middle of a move starts the count again, and the move shows
+        # at most one count later.
+        candidate = self._dock_candidates.get(device_id)
+        if candidate is not None and math.hypot(x - candidate[0], y - candidate[1]) <= self.dock_move_distance_m:
+            count = candidate[2] + 1
+            candidate = (
+                candidate[0] + (x - candidate[0]) / count,
+                candidate[1] + (y - candidate[1]) / count,
+                count,
+                theta if theta is not None else candidate[3],
+            )
+        else:
+            candidate = (x, y, 1, theta)
+        if candidate[2] >= self.dock_move_samples:
+            record.update(
+                dock_x=candidate[0],
+                dock_y=candidate[1],
+                dock_theta=candidate[3],
+                dock_at=entry_time,
+                dock_samples=min(candidate[2], self.dock_max_samples),
+            )
+            self._dock_candidates.pop(device_id, None)
+        else:
+            self._dock_candidates[device_id] = candidate
 
     @staticmethod
     def _newest(record: dict[str, Any], entry_type: int) -> int | None:

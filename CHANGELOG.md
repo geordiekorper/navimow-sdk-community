@@ -98,6 +98,19 @@ throughout.
   before the first connect; `acknowledge(request)` starts a 300 s debounce
   covering both rules. No timer, no I/O: the consumer schedules the checks
   and rebuilds. The thresholds are keyword arguments and module constants.
+- The dock's position on the location record. `LocationDecoder` treats every
+  applied pose whose code is docked (1) or charging (2) as a sample of the
+  dock, and `DeviceLocation` gains `dock_x`, `dock_y`, `dock_theta`, `dock_at`
+  (the mower time of the estimate's latest pose, None for an untimed one) and
+  `dock_samples` (0 without an estimate), after the existing fields and before
+  `marks`, carried by `to_dict()` and `from_dict()`. The estimate is a capped
+  mean (`dock_max_samples`, 200): at the cap a dock moved by less than
+  `dock_move_distance_m` (1 m) is followed slowly, about 63 % of the way after
+  200 more docked poses. A pose farther than that never enters the mean;
+  `dock_move_samples` (3) such poses in a row, each within that distance of
+  their running mean, replace the estimate.
+  The three are keyword-only arguments of `LocationDecoder` and, with
+  `DOCK_VEHICLE_STATES`, constants of `mower_sdk.location`.
 
 - README: "Threaded applications", a tested recipe for applications that are
   not asyncio (WSGI apps, scripts, CLI tools): the SDK's loop on a thread of

@@ -962,9 +962,11 @@ def _from_iso(value: Any) -> datetime | None:
 
 _LOCATION_WHOLE_FIELDS = (
     "vehicle_state", "pose_at", "current_zone", "zone_at", "route_progress", "progress_at",
-    "action", "sub_action", "mow_start_type", "task_at", "target_at", "target_last_at",
+    "action", "sub_action", "mow_start_type", "task_at", "target_at", "target_last_at", "dock_at",
 )
-_LOCATION_NUMBER_FIELDS = ("x", "y", "theta", "mowing_percentage", "area_m2", "week_area_m2")
+_LOCATION_NUMBER_FIELDS = (
+    "x", "y", "theta", "mowing_percentage", "area_m2", "week_area_m2", "dock_x", "dock_y", "dock_theta",
+)
 
 
 @dataclass(frozen=True)
@@ -1000,6 +1002,22 @@ class DeviceLocation:
     Delay (type 4 entries): ``task_delay`` (a rain or schedule delay) and
     ``delay_received_at``; the entry carries no time of its own.
 
+    Dock (learned from pose entries whose code says docked or charging, see
+    LocationDecoder): ``dock_x`` and ``dock_y``, the estimated dock position on
+    the same grid as the pose, None until the first such pose; ``dock_theta``,
+    the heading of the latest pose in the estimate (the previous one's when a
+    pose omits it; after a detected move, the latest heading among the poses
+    that showed it, never the old dock's); ``dock_at``, that pose's mower time, None when it was sent
+    without one; ``dock_samples``, how many poses the estimate holds, capped
+    (200 by default), 0 without an estimate. The estimate is a capped mean: once
+    the cap is reached each docked pose moves it by one over the cap of the way,
+    so a dock moved by less than the move distance (1 m by default) is followed
+    only slowly, about 63 % of the way after 200 further docked poses, roughly
+    seventeen hours docked at one pose per five minutes. A dock moved farther
+    than that is picked up after a few docked poses in a row that agree, each
+    within the move distance of their running mean (three by default), and
+    dock_samples then starts again from that count.
+
     ``marks`` maps the entry types 1, 2 and 3 to the mower time of the newest
     entry of that type applied, the high-water mark below which a later entry is
     stale. It is kept apart from the observation times because an entry without
@@ -1032,6 +1050,11 @@ class DeviceLocation:
     target_last_at: int | None = None
     task_delay: bool | None = None
     delay_received_at: datetime | None = None
+    dock_x: float | None = None
+    dock_y: float | None = None
+    dock_theta: float | None = None
+    dock_at: int | None = None
+    dock_samples: int = 0
     marks: dict[int, int] = field(default_factory=dict, hash=False)
 
     @property
@@ -1071,7 +1094,10 @@ class DeviceLocation:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "DeviceLocation":
-        """The record from to_dict()'s output; absent or unreadable values are None, absent marks empty."""
+        """The record from to_dict()'s output; absent or unreadable values are None, absent marks empty.
+
+        dock_samples is 0 when absent, unreadable or negative.
+        """
         values: dict[str, Any] = {}
         for name in _LOCATION_WHOLE_FIELDS:
             values[name] = _whole(data.get(name))
@@ -1097,6 +1123,8 @@ class DeviceLocation:
             )
             if entry_type is not None and mark is not None
         }
+        samples = _whole(data.get("dock_samples"))
+        values["dock_samples"] = samples if samples is not None and samples > 0 else 0
         values["device_id"] = str(data.get("device_id") or "")
         return cls(**values)
 

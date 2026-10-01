@@ -9,7 +9,7 @@ picked up, and the names the community edition has added to that module, which
 ``COMMUNITY_ADDITIONS`` records. The imported helpers that a bare star import
 used to leak (``json``, ``asyncio``, ``dataclass`` and the like) no longer
 arrive; plain attribute access to them is unchanged. A module the community
-edition added (``mower_sdk.watchdog``) has no inventory entry: its ``__all__``
+edition added (``mower_sdk.location``, ``mower_sdk.watchdog``) has no inventory entry: its ``__all__``
 is exactly what ``COMMUNITY_ADDITIONS`` records for it.
 """
 
@@ -25,7 +25,7 @@ import pytest
 INVENTORY = json.loads(
     Path(__file__).with_name("upstream_exports.json").read_text(encoding="utf-8")
 )
-MODULES = ["mower_sdk.mqtt", "mower_sdk.models", "mower_sdk.errors", "mower_sdk.watchdog"]
+MODULES = ["mower_sdk.mqtt", "mower_sdk.models", "mower_sdk.errors", "mower_sdk.location", "mower_sdk.watchdog"]
 
 # Public names the community edition adds to a module's ``__all__`` beyond the
 # inventory: module name -> the names added. Each addition is listed here in the
@@ -54,6 +54,19 @@ COMMUNITY_ADDITIONS: dict[str, set[str]] = {
         "canonical_state",
         "mower_status_from_raw",
         "mower_time_ms",
+    },
+    "mower_sdk.location": {
+        "DOCK_MAX_SAMPLES",
+        "DOCK_MOVE_DISTANCE_M",
+        "DOCK_MOVE_SAMPLES",
+        "DOCK_VEHICLE_STATES",
+        "LOCATION_ENTRY_TYPES",
+        "LOCATION_KNOWN_FIELDS",
+        "LocationDecoder",
+        "PLAUSIBLE_MIN_MS",
+        "ParsedLocation",
+        "REASON_PRIORITY",
+        "TIME_AHEAD_MAX_MS",
     },
     "mower_sdk.watchdog": {
         "IGNORED_REST_STATES",
