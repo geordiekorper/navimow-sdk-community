@@ -496,6 +496,31 @@ def test_parse_topic_accepts_a_missing_leading_slash(fake_paho: type[FakeClient]
     run(test)
 
 
+@pytest.mark.parametrize(
+    ("topic", "parsed"),
+    [
+        ("/downlink/vehicle/dev-1/realtimeDate/state", ("dev-1", "state")),
+        ("downlink/vehicle/dev-1/realtimeDate/location", ("dev-1", "location")),
+        ("/downlink/vehicle/dev-1/realtimeDate/newChannel", ("dev-1", "newChannel")),
+        ("/downlink/vehicle//realtimeDate/state", ("", "state")),
+        ("/downlink/vehicle/dev-1/realtimeDate/", ("dev-1", "")),
+        ("navimow/dev-1/state", (None, None)),
+        ("/downlink/vehicle/dev-1/other/state", (None, None)),
+        ("/downlink/vehicle/dev-1/realtimeDate/state/extra", (None, None)),
+        ("/uplink/vehicle/dev-1/realtimeDate/state", (None, None)),
+        ("", (None, None)),
+    ],
+)
+def test_parse_topic_is_public_and_the_old_names_are_the_same_function(
+    topic: str, parsed: tuple[str | None, str | None]
+) -> None:
+    assert mqtt_module.parse_topic(topic) == parsed
+    assert mqtt_module._parse_topic is mqtt_module.parse_topic
+    assert NavimowMQTT._parse_topic is mqtt_module.parse_topic
+    assert mower_sdk.parse_topic is mqtt_module.parse_topic
+    assert "parse_topic" in mower_sdk.__all__
+
+
 def test_connect_async_disconnect_and_publish(fake_paho: type[FakeClient]) -> None:
     async def test() -> None:
         mqtt = make(WS_KWARGS, keepalive_seconds=600)
@@ -587,7 +612,16 @@ def test_redact_client_id(value: str, redacted: str) -> None:
 
 @pytest.mark.parametrize(
     ("path", "redacted"),
-    [("/mqtt/12345678", "/mqtt/…"), ("/mqtt/1/2", "/mqtt/…"), ("/mqtt", "/mqtt"), ("", ""), (None, None)],
+    [
+        ("/mqtt/12345678", "/mqtt/…"),
+        ("/mqtt/1/2", "/mqtt/…"),
+        ("/mqtt", "/mqtt"),
+        ("/mqtt?token=secret", "/mqtt?…"),
+        ("/mqtt/1?token=secret", "/mqtt/…"),
+        ("/?token=secret", "/?…"),
+        ("", ""),
+        (None, None),
+    ],
 )
 def test_redact_ws_path(path: str | None, redacted: str | None) -> None:
     assert mqtt_module._redact_ws_path(path) == redacted
@@ -1109,25 +1143,42 @@ def test_the_counters_and_reasons_are_kept_with_no_hook_registered(
             None,
             None,
         )
+        assert (mqtt.last_connect_failed_at, mqtt.last_disconnected_at, mqtt.last_connected_monotonic) == (
+            None,
+            None,
+            None,
+        )
 
         mqtt._on_connect(mqtt.client, None, {}, NOT_AUTHORIZED, None)
         assert (mqtt.connects, mqtt.connect_failures) == (0, 1)
         assert mqtt.last_connect_fail_reason == "refused: Not authorized (135)"
+        assert mqtt.last_connect_failed_at == T0
+        assert (mqtt.last_connected_at, mqtt.last_connected_monotonic) == (None, None)  # a refusal is no connect
 
+        clock.advance(2)
         mqtt._on_connect_fail(mqtt.client, None)
         assert mqtt.connect_failures == 2
         assert mqtt.last_connect_fail_reason == "connection failed before CONNACK"
+        assert mqtt.last_connect_failed_at == T0 + timedelta(seconds=2)
 
-        clock.advance(5)
+        clock.advance(3)
         mqtt._on_connect(mqtt.client, None, {}, SUCCESS, None)
         assert mqtt.connects == 1
         assert mqtt.last_connected_at == T0 + timedelta(seconds=5)
+        assert mqtt.last_connected_monotonic == 105.0
         assert mqtt.last_connect_fail_reason == "connection failed before CONNACK"  # the latest failure stays
+        assert mqtt.last_connect_failed_at == T0 + timedelta(seconds=2)  # and its time
+        assert mqtt.last_disconnected_at is None
 
+        clock.advance(10)
         mqtt._on_disconnect(mqtt.client, None, {}, UNSPECIFIED, None)
         assert (mqtt.disconnects, mqtt.last_disconnect_reason) == (1, "Unspecified error")
+        assert mqtt.last_disconnected_at == T0 + timedelta(seconds=15)
+        assert mqtt.last_connected_monotonic == 105.0  # the connect's, kept after the disconnect
+        clock.advance(1)
         mqtt._on_disconnect(mqtt.client, None, {}, SUCCESS, None)
         assert (mqtt.disconnects, mqtt.last_disconnect_reason) == (2, "requested")
+        assert mqtt.last_disconnected_at == T0 + timedelta(seconds=16)
         await drain()
         assert fake_paho.instances == [mqtt.client]
 
@@ -1339,6 +1390,8 @@ def test_callbacks_from_a_retired_client_are_ignored(
         assert received == []
         assert (mqtt.connects, mqtt.disconnects, mqtt.connect_failures) == (0, 0, 0)
         assert (mqtt.last_disconnect_reason, mqtt.last_connect_fail_reason) == (None, None)
+        assert (mqtt.last_disconnected_at, mqtt.last_connect_failed_at) == (None, None)
+        assert (mqtt.last_connected_at, mqtt.last_connected_monotonic) == (None, None)
         assert mqtt.last_message_at("dev-1") is None
         assert old.named("subscribe") == []
 
@@ -1394,6 +1447,143 @@ def test_force_reconnect_rebuilds_a_healthy_connection(fake_paho: type[FakeClien
         assert mqtt.client.named("username_pw_set") == [("username_pw_set", ("user", "rotated"), {})]
         assert mqtt.rebuilds == 2
         assert fake_paho.instances == [first, second, mqtt.client]
+
+    run(test)
+
+
+def test_a_new_broker_address_rebuilds_a_live_connection_on_it(
+    fake_paho: type[FakeClient], caplog: pytest.LogCaptureFixture
+) -> None:
+    async def test() -> None:
+        mqtt = make(WS_KWARGS)
+        first = mqtt.client
+        first.connected = True
+        with caplog.at_level(logging.INFO, logger="mower_sdk.mqtt"):
+            mqtt.update_credentials(password="new", broker="moved.example.invalid", ws_path="/mqtt/12345?t=secret")
+        second = mqtt.client
+        assert second is not first
+        assert first.named("disconnect") == [("disconnect", (), {})]
+        assert (mqtt.broker, mqtt.port, mqtt.ws_path, mqtt._use_tls) == (
+            "moved.example.invalid",
+            8884,  # not named: kept
+            "/mqtt/12345?t=secret",
+            True,
+        )
+        assert second.named("connect_async") == [("connect_async", ("moved.example.invalid", 8884, 60), {})]
+        assert second.named("ws_set_options")[0][2]["path"] == "/mqtt/12345?t=secret"
+        assert second.named("username_pw_set") == [("username_pw_set", ("user", "new"), {})]
+        assert (mqtt.rebuilds, mqtt.last_rebuild_reason) == (1, "broker changed")
+        lines = [record.getMessage() for record in caplog.records]
+        assert (
+            "NavimowMQTT broker changed: from broker=broker.example.invalid port=8884 ws_path=/mqtt "
+            "to broker=moved.example.invalid port=8884 ws_path=/mqtt/… tls=True"
+        ) in lines
+        assert not any("secret" in line or "12345" in line for line in lines)
+        assert fake_paho.instances == [first, second]
+
+    run(test)
+
+
+@pytest.mark.parametrize(
+    ("change", "address"),
+    [
+        ({"port": 9443}, ("broker.example.invalid", 9443, "/mqtt")),
+        ({"broker": "wss://moved.example.invalid:9443"}, ("moved.example.invalid", 9443, "/mqtt")),
+        ({"broker": "wss://moved.example.invalid:9443", "port": 1}, ("moved.example.invalid", 9443, "/mqtt")),
+        ({"broker": "moved.example.invalid"}, ("moved.example.invalid", 8884, "/mqtt")),
+        ({"ws_path": "/other"}, ("broker.example.invalid", 8884, "/other")),
+    ],
+    ids=["port", "url_with_port", "url_port_wins", "host", "path"],
+)
+def test_each_part_of_the_address_is_merged_and_rebuilds(
+    fake_paho: type[FakeClient], change: dict[str, Any], address: tuple[str, int, str]
+) -> None:
+    async def test() -> None:
+        mqtt = make(WS_KWARGS)
+        mqtt.update_credentials(**change)
+        assert (mqtt.broker, mqtt.port, mqtt.ws_path) == address
+        assert mqtt.client.named("connect_async") == [("connect_async", (address[0], address[1], 60), {})]
+        assert mqtt.last_rebuild_reason == "broker changed"
+        assert len(fake_paho.instances) == 2
+
+    run(test)
+
+
+@pytest.mark.parametrize(
+    "same",
+    [
+        {"broker": "BROKER.example.invalid"},
+        {"broker": "wss://broker.example.invalid:8884", "port": 8884, "ws_path": "/mqtt"},
+        {"port": 8884},
+        {"broker": None, "port": None, "ws_path": None},
+    ],
+    ids=["case", "all_equal", "port_equal", "none"],
+)
+def test_the_same_address_does_not_rebuild_a_live_client(fake_paho: type[FakeClient], same: dict[str, Any]) -> None:
+    async def test() -> None:
+        mqtt = make(WS_KWARGS)
+        mqtt.client.connected = True
+        mqtt.update_credentials(password="rotated", **same)
+        assert mqtt.rebuilds == 0
+        assert mqtt.client.named("username_pw_set")[-1] == ("username_pw_set", ("user", "rotated"), {})
+        assert fake_paho.instances == [mqtt.client]
+
+    run(test)
+
+
+def test_a_tcp_client_moved_to_another_host_stays_on_tcp(fake_paho: type[FakeClient]) -> None:
+    async def test() -> None:
+        mqtt = make(TCP_KWARGS)
+        mqtt.rebuild(broker="moved.example.invalid", reason="test")
+        assert (mqtt.broker, mqtt.port, mqtt.ws_path, mqtt._use_tls) == ("moved.example.invalid", 1883, None, False)
+        assert mqtt.client.calls[0][2]["transport"] == "tcp"
+        assert mqtt.client.named("tls_set") == []
+        assert len(fake_paho.instances) == 2
+
+    run(test)
+
+
+def test_a_wss_broker_keeps_tls_when_moved_to_a_host_without_a_scheme(fake_paho: type[FakeClient]) -> None:
+    async def test() -> None:
+        mqtt = make(WSS_NO_PATH_KWARGS)
+        assert mqtt._use_tls is True
+        mqtt.rebuild(broker="moved.example.invalid", reason="test")
+        assert mqtt._use_tls is True
+        assert mqtt.client.named("tls_set") == [("tls_set", (), {})]
+        assert len(fake_paho.instances) == 2
+
+    run(test)
+
+
+@pytest.mark.parametrize(
+    ("start", "change", "transport", "tls"),
+    [
+        # A scheme names TLS: wss:// turns it on, another scheme off, on the same host and port.
+        (TCP_KWARGS, {"broker": "wss://broker.example.invalid:1883"}, "tcp", True),
+        (WSS_NO_PATH_KWARGS, {"broker": "tcp://broker.example.invalid:443"}, "tcp", False),
+        # A WebSocket path turns on the WebSocket transport and TLS; an empty one turns both off.
+        (TCP_KWARGS, {"ws_path": "/mqtt"}, "websockets", True),
+        ({**TCP_KWARGS, "ws_path": "/mqtt"}, {"ws_path": ""}, "tcp", False),
+        # An empty path with a wss:// broker keeps TLS on TCP.
+        (WS_KWARGS, {"ws_path": ""}, "tcp", True),
+    ],
+    ids=["scheme_on", "scheme_off", "path_added", "path_cleared", "path_cleared_wss"],
+)
+def test_the_transport_and_tls_follow_a_new_scheme_or_path(
+    fake_paho: type[FakeClient], start: dict[str, Any], change: dict[str, Any], transport: str, tls: bool
+) -> None:
+    async def test() -> None:
+        mqtt = make(start)
+        old = mqtt.client
+        mqtt.update_credentials(**change)
+        new = mqtt.client
+        assert new is not old
+        assert (mqtt.rebuilds, mqtt.last_rebuild_reason) == (1, "broker changed")
+        assert new.calls[0][2]["transport"] == transport
+        assert mqtt._use_tls is tls
+        assert new.named("tls_set") == ([("tls_set", (), {})] if tls else [])
+        assert bool(new.named("ws_set_options")) is (transport == "websockets")
+        assert fake_paho.instances == [old, new]
 
     run(test)
 
@@ -1803,6 +1993,58 @@ def test_on_raw_receives_the_wire_bytes_on_every_topic(fake_paho: type[FakeClien
     run(test)
 
 
+def test_on_message_seen_gets_the_device_channel_and_the_recorded_time(
+    fake_paho: type[FakeClient], clock: FakeClock
+) -> None:
+    async def test() -> None:
+        seen: list[tuple[str, str, datetime]] = []
+
+        async def on_message_seen(device_id: str, channel: str, received_at: datetime) -> None:
+            seen.append((device_id, channel, received_at))
+
+        mqtt = make(TCP_KWARGS, extra_topics=["custom/topic"])
+        mqtt.on_message_seen = on_message_seen
+        mqtt._on_message(mqtt.client, None, FakeMessage(STATE_TOPIC, b"not json"))
+        clock.advance(2)
+        mqtt._on_message(mqtt.client, None, FakeMessage(LOCATION_TOPIC, b"[]"))
+        # Neither of these names a device and a channel: nothing seen, nothing recorded.
+        mqtt._on_message(mqtt.client, None, FakeMessage("custom/topic", b"{}"))
+        mqtt._on_message(mqtt.client, None, FakeMessage("/downlink/vehicle//realtimeDate/state", b"{}"))
+        mqtt._on_message(mqtt.client, None, FakeMessage("/downlink/vehicle/dev-1/realtimeDate/", b"{}"))
+        await drain()
+        assert seen == [("dev-1", "state", T0), ("dev-1", "location", T0 + timedelta(seconds=2))]
+        assert seen[0][2] is mqtt.last_message_at("dev-1", "state")  # the stamp stored, not a second reading
+        assert mqtt._last_message.keys() == {"dev-1"}
+        assert fake_paho.instances == [mqtt.client]
+
+    run(test)
+
+
+def test_on_message_seen_is_not_called_for_a_retired_client(
+    fake_paho: type[FakeClient], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(mqtt_module.mqtt_client, "Client", FiringClient)
+
+    async def test() -> None:
+        seen: list[tuple[str, str]] = []
+
+        async def on_message_seen(device_id: str, channel: str, _received_at: datetime) -> None:
+            seen.append((device_id, channel))
+
+        mqtt = make(TCP_KWARGS)
+        mqtt.on_message_seen = on_message_seen
+        old = mqtt.client
+        mqtt.rebuild(reason="test")
+        old.on_message(old, None, FakeMessage(STATE_TOPIC, b"{}"))
+        new = mqtt.client
+        new.on_message(new, None, FakeMessage(STATE_TOPIC, b"{}"))
+        await drain()
+        assert seen == [("dev-1", "state")]
+        assert fake_paho.instances == [old, new]
+
+    run(test)
+
+
 def test_without_on_raw_nothing_extra_is_scheduled(
     fake_paho: type[FakeClient], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2075,6 +2317,10 @@ def test_each_connection_change_is_an_event_with_its_client_id_and_reason() -> N
             ("disconnected", client_id, "requested", 0),
         ]
         assert all(before <= e.at <= datetime.now(UTC) and e.at.tzinfo is UTC for e in events)
+        # Each event carries the stamp its attribute keeps, not a second reading of the clock.
+        assert events[1].at is mqtt.last_connect_failed_at
+        assert events[2].at is mqtt.last_connected_at
+        assert events[4].at is mqtt.last_disconnected_at
         with pytest.raises(dataclasses.FrozenInstanceError):
             events[0].reason = "changed"  # type: ignore[misc]
         assert mower_sdk.ConnectionEvent is mqtt_module.ConnectionEvent

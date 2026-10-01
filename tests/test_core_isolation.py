@@ -28,6 +28,7 @@ CORE_MODULES = [
     "mower_sdk.models",
     "mower_sdk.mqtt",
     "mower_sdk.sdk",
+    "mower_sdk.watchdog",
 ]
 
 # The 12 legacy names the package serves lazily: name -> legacy module holding it.

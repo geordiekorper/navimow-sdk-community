@@ -36,6 +36,7 @@ class FakeMQTT:
         self.kwargs = kwargs
         self.on_message: Any = None
         self.on_raw: Any = None
+        self.on_message_seen: Any = None
 
 
 @pytest.fixture
@@ -207,6 +208,27 @@ def test_raw_callbacks_are_installed_on_the_client_only_once_registered(
     assert seen == [("custom/topic", b"\x01")]
     assert "Navimow raw callback" in caplog.records[0].getMessage()
     assert "custom/topic" in caplog.records[0].getMessage()
+
+
+def test_message_seen_callbacks_are_installed_on_the_client_only_once_registered(
+    sdk: NavimowSDK, caplog: pytest.LogCaptureFixture
+) -> None:
+    assert sdk.mqtt.on_message_seen is None
+    seen: list[tuple[str, str, datetime]] = []
+
+    def broken(_device_id: str, _channel: str, _received_at: datetime) -> None:
+        raise RuntimeError("consumer bug")
+
+    sdk.on_message_seen(broken)
+    sdk.on_message_seen(lambda device_id, channel, received_at: seen.append((device_id, channel, received_at)))
+    assert sdk.mqtt.on_message_seen == sdk._on_mqtt_message_seen
+    at = datetime(2026, 9, 30, 12, 0, tzinfo=UTC)
+    with caplog.at_level(logging.ERROR, logger="mower_sdk.sdk"):
+        asyncio.run(sdk.mqtt.on_message_seen(DEVICE_ID, "location", at))
+    assert seen == [(DEVICE_ID, "location", at)]
+    message = caplog.records[0].getMessage()
+    assert "Navimow message-seen callback" in message
+    assert DEVICE_ID in message and "location" in message
 
 
 def test_the_facade_forwards_subscribe_location_and_extra_topics(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -315,10 +315,12 @@ def test_update_mqtt_credentials_passes_everything_through(fake_mqtt: type[FakeM
         sdk, mqtt = make()
         sdk.update_mqtt_credentials(password="p")
         sdk.update_mqtt_credentials("u", "p", {"Authorization": "Bearer t"}, force_reconnect=True)
+        sdk.update_mqtt_credentials(broker="moved.example.invalid", port=8443, ws_path="/mqtt/1")
+        keep = {"broker": None, "port": None, "ws_path": None}
         assert mqtt.calls == [
             (
                 "update_credentials",
-                ((), {"username": None, "password": "p", "auth_headers": None, "force_reconnect": False}),
+                ((), {"username": None, "password": "p", "auth_headers": None, **keep, "force_reconnect": False}),
             ),
             (
                 "update_credentials",
@@ -328,7 +330,23 @@ def test_update_mqtt_credentials_passes_everything_through(fake_mqtt: type[FakeM
                         "username": "u",
                         "password": "p",
                         "auth_headers": {"Authorization": "Bearer t"},
+                        **keep,
                         "force_reconnect": True,
+                    },
+                ),
+            ),
+            (
+                "update_credentials",
+                (
+                    (),
+                    {
+                        "username": None,
+                        "password": None,
+                        "auth_headers": None,
+                        "broker": "moved.example.invalid",
+                        "port": 8443,
+                        "ws_path": "/mqtt/1",
+                        "force_reconnect": False,
                     },
                 ),
             ),

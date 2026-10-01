@@ -10,8 +10,10 @@ from datetime import datetime
 from enum import Enum, StrEnum
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
 from mower_sdk._deprecation import warn_legacy
+from mower_sdk.errors import ERROR_MESSAGES, MowerAPIError
 
 if TYPE_CHECKING:
     from mower_sdk.legacy.thing_models import (
@@ -25,8 +27,9 @@ if TYPE_CHECKING:
 # additions CommandReceipt and CommandVerdict and the location channel's
 # DeviceLocation, DeviceLocationMessage, VEHICLE_STATE_TO_STATUS and
 # mower_time_ms, RejectedMessage, SkippedLocationEntry, STATE_KNOWN_FIELDS and
-# REST_STATUS_KNOWN_FIELDS, and the payload readers RAW_STATE_TO_CANONICAL,
-# canonical_state, mower_status_from_raw and battery_from_payload. The four Thing* classes now live
+# REST_STATUS_KNOWN_FIELDS, the payload readers RAW_STATE_TO_CANONICAL,
+# canonical_state, mower_status_from_raw and battery_from_payload, and
+# MqttConnectionInfo. The four Thing* classes now live
 # in mower_sdk.legacy.thing_models and are served by __getattr__.
 __all__ = [
     "CommandReceipt",
@@ -42,6 +45,7 @@ __all__ = [
     "MowerCommand",
     "MowerError",
     "MowerStatus",
+    "MqttConnectionInfo",
     "REST_STATUS_KNOWN_FIELDS",
     "RejectedMessage",
     "RAW_STATE_TO_CANONICAL",
@@ -300,6 +304,112 @@ class CommandReceipt:
     @property
     def already_in_state(self) -> bool:
         return self.verdict is CommandVerdict.ALREADY_IN_STATE
+
+
+def _credential(value: Any) -> str | None:
+    """A broker credential from the credential reply: its text when present, None when absent.
+
+    An empty string is a value, and a number (a user name sent as one) is read
+    as its text.
+    """
+    return None if value is None else str(value)
+
+
+def _endpoint(value: Any, key: str) -> tuple[str | None, int | None, str | None] | None:
+    """The host, port and path mqttHost or mqttUrl names, or None when the reply does not name one.
+
+    A value with a scheme is split as a URL; its path and query form the path,
+    "/" standing in for an empty path before a query. Without a scheme, mqttHost
+    is a host with an optional port, and mqttUrl is a path taken as given, with
+    a leading slash added. A scheme other than wss, a value that cannot be split
+    as a URL, or a port that is not a number from 0 to 65535 is a MowerAPIError
+    naming the key but not the value, which may carry an account id or a token.
+    """
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    if "://" not in text and key == "mqttUrl":
+        return None, None, text if text.startswith("/") else f"/{text}"
+    failed = f"{ERROR_MESSAGES['API_REQUEST_FAILED']}: the credential reply's {key}"
+    try:
+        parsed = urlsplit(text if "://" in text else f"//{text}")
+        hostname, port = parsed.hostname, parsed.port
+    except ValueError:
+        # An unreadable port, or a bracketed host that is not an IP address; the
+        # exception's own text would repeat the value.
+        raise MowerAPIError(f"{failed} cannot be read as a host and port") from None
+    if parsed.scheme.lower() not in ("", "wss"):
+        raise MowerAPIError(f"{failed} uses the scheme {parsed.scheme!r}; only wss is supported")
+    path = None
+    if "://" in text and (parsed.path or parsed.query):
+        path = (parsed.path or "/") + (f"?{parsed.query}" if parsed.query else "")
+    return hostname, port, path
+
+
+def _broker_endpoint(data: dict[str, Any]) -> tuple[str | None, int | None, str | None]:
+    """The broker host, port and WebSocket path a credential reply names, each None when it names none.
+
+    The host is mqttHost's, else a full mqttUrl's. The port is a full
+    mqttUrl's, else mqttHost's: mqttUrl is the address the connection is made
+    to, so its port wins. The path is mqttUrl's (see _endpoint); a path in
+    mqttHost is ignored.
+    """
+    host_host, host_port, _ = _endpoint(data.get("mqttHost"), "mqttHost") or (None, None, None)
+    url_host, url_port, url_path = _endpoint(data.get("mqttUrl"), "mqttUrl") or (None, None, None)
+    return host_host or url_host, url_port if url_port is not None else host_port, url_path
+
+
+@dataclass(frozen=True)
+class MqttConnectionInfo:
+    """What the cloud's MQTT credential reply says about the broker, read once for every consumer.
+
+    MowerAPI.async_get_mqtt_connection_info returns one, and
+    NavimowSDK.from_connection_info builds the facade from it. The reply of
+    /openapi/mqtt/userInfo/get/v2 has been seen with mqttHost as a wss:// URL
+    and mqttUrl as a path (/mqtt/{userId}); from_dict also reads mqttHost
+    without a scheme or with a port, and mqttUrl as a full wss:// URL.
+
+    Attributes:
+        broker: The broker's host name, never a URL
+        port: The port: a full mqttUrl's, else mqttHost's, else 443
+        ws_path: The WebSocket path, with the query a full mqttUrl carried; ""
+            when the reply names none
+        username: userName, as text, or None when the reply has none
+        password: pwdInfo, as text, or None when the reply has none; left out
+            of repr
+        raw: The reply as received (a copy), left out of repr and equality
+    """
+
+    broker: str
+    port: int
+    ws_path: str
+    username: str | None
+    password: str | None = field(default=None, repr=False)
+    raw: dict[str, Any] = field(default_factory=dict, compare=False, repr=False)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "MqttConnectionInfo":
+        """Read a credential reply.
+
+        Raises:
+            MowerAPIError: The reply is not an object or names no broker (neither
+                mqttHost nor a full mqttUrl), or names one that cannot be read: a
+                scheme other than wss, a host and port that cannot be split, or a
+                port that is not a number.
+        """
+        if not isinstance(data, dict):
+            raise MowerAPIError(f"{ERROR_MESSAGES['API_REQUEST_FAILED']}: the credential reply is not an object")
+        host, port, ws_path = _broker_endpoint(data)
+        if host is None:
+            raise MowerAPIError(f"{ERROR_MESSAGES['API_REQUEST_FAILED']}: no broker (mqttHost) in the credential reply")
+        return cls(
+            broker=host,
+            port=443 if port is None else port,
+            ws_path=ws_path or "",
+            username=_credential(data.get("userName")),
+            password=_credential(data.get("pwdInfo")),
+            raw=dict(data),
+        )
 
 
 @dataclass
@@ -852,9 +962,11 @@ def _from_iso(value: Any) -> datetime | None:
 
 _LOCATION_WHOLE_FIELDS = (
     "vehicle_state", "pose_at", "current_zone", "zone_at", "route_progress", "progress_at",
-    "action", "sub_action", "mow_start_type", "task_at", "target_at", "target_last_at",
+    "action", "sub_action", "mow_start_type", "task_at", "target_at", "target_last_at", "dock_at",
 )
-_LOCATION_NUMBER_FIELDS = ("x", "y", "theta", "mowing_percentage", "area_m2", "week_area_m2")
+_LOCATION_NUMBER_FIELDS = (
+    "x", "y", "theta", "mowing_percentage", "area_m2", "week_area_m2", "dock_x", "dock_y", "dock_theta",
+)
 
 
 @dataclass(frozen=True)
@@ -884,11 +996,28 @@ class DeviceLocation:
 
     Target (type 3 entries): ``partition_ids``, None until a target report has
     arrived and empty for a report with no active target (a mow-all task sends
-    the same empty report as an idle mower); ``target_at``, when this set was
+    the same empty report as an idle mower; mower_sdk.location.target_zone reads
+    it with the mower's state); ``target_at``, when this set was
     first reported, and ``target_last_at``, its latest repeat.
 
     Delay (type 4 entries): ``task_delay`` (a rain or schedule delay) and
     ``delay_received_at``; the entry carries no time of its own.
+
+    Dock (learned from pose entries whose code says docked or charging, see
+    LocationDecoder): ``dock_x`` and ``dock_y``, the estimated dock position on
+    the same grid as the pose, None until the first such pose; ``dock_theta``,
+    the heading of the latest pose in the estimate (the previous one's when a
+    pose omits it; after a detected move, the latest heading among the poses
+    that showed it, never the old dock's); ``dock_at``, that pose's mower time, None when it was sent
+    without one; ``dock_samples``, how many poses the estimate holds, capped
+    (200 by default), 0 without an estimate. The estimate is a capped mean: once
+    the cap is reached each docked pose moves it by one over the cap of the way,
+    so a dock moved by less than the move distance (1 m by default) is followed
+    only slowly, about 63 % of the way after 200 further docked poses, roughly
+    seventeen hours docked at one pose per five minutes. A dock moved farther
+    than that is picked up after a few docked poses in a row that agree, each
+    within the move distance of their running mean (three by default), and
+    dock_samples then starts again from that count.
 
     ``marks`` maps the entry types 1, 2 and 3 to the mower time of the newest
     entry of that type applied, the high-water mark below which a later entry is
@@ -922,6 +1051,11 @@ class DeviceLocation:
     target_last_at: int | None = None
     task_delay: bool | None = None
     delay_received_at: datetime | None = None
+    dock_x: float | None = None
+    dock_y: float | None = None
+    dock_theta: float | None = None
+    dock_at: int | None = None
+    dock_samples: int = 0
     marks: dict[int, int] = field(default_factory=dict, hash=False)
 
     @property
@@ -961,7 +1095,10 @@ class DeviceLocation:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "DeviceLocation":
-        """The record from to_dict()'s output; absent or unreadable values are None, absent marks empty."""
+        """The record from to_dict()'s output; absent or unreadable values are None, absent marks empty.
+
+        dock_samples is 0 when absent, unreadable or negative.
+        """
         values: dict[str, Any] = {}
         for name in _LOCATION_WHOLE_FIELDS:
             values[name] = _whole(data.get(name))
@@ -987,6 +1124,8 @@ class DeviceLocation:
             )
             if entry_type is not None and mark is not None
         }
+        samples = _whole(data.get("dock_samples"))
+        values["dock_samples"] = samples if samples is not None and samples > 0 else 0
         values["device_id"] = str(data.get("device_id") or "")
         return cls(**values)
 

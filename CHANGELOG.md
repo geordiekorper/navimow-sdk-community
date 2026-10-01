@@ -7,6 +7,20 @@ throughout.
 
 ## [Unreleased]
 
+### Changed
+
+- **`async_refresh_broker_credentials` follows a broker that moved.** When the
+  credential reply names a broker host, port or WebSocket path (read as
+  `MqttConnectionInfo` reads them) that differs from the client's, the client
+  is rebuilt on the new address, connected or not, dropping a live connection
+  (`last_rebuild_reason` is "broker changed"). A value the reply does not name
+  is kept; a broker it names but that cannot be read is logged and kept, and
+  the credentials are applied as before. `NavimowMQTT.rebuild()`,
+  `NavimowMQTT.update_credentials()` and `NavimowSDK.update_mqtt_credentials()`
+  take keyword-only `broker`, `port` and `ws_path` (None keeps the current
+  value; a change always rebuilds). A WebSocket path's query is no longer shown
+  in log lines.
+
 ### Added
 
 - `MowerAPI.async_get_devices_raw()`, the device-list entries as the cloud
@@ -44,6 +58,65 @@ throughout.
   them, so a consumer can tell which entry of a mixed message was skipped and
   keep a late reading marked as late. The applied entries and the record are
   unchanged.
+- On `NavimowMQTT`: `last_disconnected_at` and `last_connect_failed_at`, the
+  UTC time of the disconnect and the connect failure whose reasons
+  `last_disconnect_reason` and `last_connect_fail_reason` hold, and
+  `last_connected_monotonic`, the time of the last accepted connect on
+  `time.monotonic()`, the clock `last_message_age()` uses. All three are set in
+  paho's thread with the reasons and counters, whether or not a hook is set,
+  and are None until the first such event.
+- `parse_topic(topic)` in `mower_sdk.mqtt` and the package, the device id and channel of a cloud
+  topic (`(None, None)` for any other topic); `_parse_topic` and
+  `NavimowMQTT._parse_topic` remain as the same function.
+- `on_message_seen(device_id, channel, received_at)`: an async hook on
+  `NavimowMQTT` and a callback registration on `NavimowSDK`, called for every
+  message whose topic names a device and a channel, whatever its payload, with
+  the UTC time `last_message_at()` records for it. For a consumer that only
+  needs to know that a message arrived and parsed the topic again in `on_raw`.
+- `MqttConnectionInfo` in `mower_sdk.models` and the package, the MQTT
+  credential reply read once: `broker` (a host name, from `mqttHost` or a full
+  `mqttUrl`), `port` (a full `mqttUrl`'s, else `mqttHost`'s, else 443),
+  `ws_path` (`mqttUrl`'s path and query, `""` without one), `username` and
+  `password` (text when present). `from_dict` raises `MowerAPIError` for a
+  reply that names no broker, a scheme other than `wss` or a port that is not
+  a number. `MowerAPI.async_get_mqtt_connection_info()` returns one, and
+  `NavimowSDK.from_connection_info(info, *, access_token, records,
+  auth_headers=None, **options)` builds the facade from it: TLS over
+  WebSocket, with `Authorization: Bearer <access_token>` merged into
+  `auth_headers`. It refuses a reply without a WebSocket path and options that
+  name what the info supplies. The README's quick example uses it.
+- `mower_sdk.watchdog`, with `MqttWatchdog`, `WatchInput` and `RebuildRequest`
+  also exported from the package: finds an MQTT connection that is up but no
+  longer delivering, from the facade's caches and the client's message times.
+  `after_poll(inputs)` asks for a rebuild when a current REST reading (taken at
+  least 120 s after the last accepted MQTT state report arrived) disagrees
+  with that report in a state the state channel reports, once per report;
+  `check_silence(inputs)` asks when a mower with a timestamped pose that is
+  shown or reported mowing or returning (never while shown mapping) has sent
+  no location message for 180 s on a connected client that subscribes the
+  location channel (`subscribe_location=True`). Nothing is asked
+  before the first connect; `acknowledge(request)` starts a 300 s debounce
+  covering both rules. No timer, no I/O: the consumer schedules the checks
+  and rebuilds. The thresholds are keyword arguments and module constants.
+- The dock's position on the location record. `LocationDecoder` treats every
+  applied pose whose code is docked (1) or charging (2) as a sample of the
+  dock, and `DeviceLocation` gains `dock_x`, `dock_y`, `dock_theta`, `dock_at`
+  (the mower time of the estimate's latest pose, None for an untimed one) and
+  `dock_samples` (0 without an estimate), after the existing fields and before
+  `marks`, carried by `to_dict()` and `from_dict()`. The estimate is a capped
+  mean (`dock_max_samples`, 200): at the cap a dock moved by less than
+  `dock_move_distance_m` (1 m) is followed slowly, about 63 % of the way after
+  200 more docked poses. A pose farther than that never enters the mean;
+  `dock_move_samples` (3) such poses in a row, each within that distance of
+  their running mean, replace the estimate.
+  The three are keyword-only arguments of `LocationDecoder` and, with
+  `DOCK_VEHICLE_STATES`, constants of `mower_sdk.location`.
+- `target_zone(location, status)` in `mower_sdk.location` and the package: the
+  first partition id of the target report, else `TargetZone.ALL` for an empty
+  report while the shown status is mowing or paused (`MOW_ALL_STATES`) and
+  `TargetZone.NONE` otherwise, None before any target report. An inference:
+  the mower sends the same empty report for a mow-all task as when idle, and a
+  charging break during a mow-all task reads `NONE`.
 
 - README: "Threaded applications", a tested recipe for applications that are
   not asyncio (WSGI apps, scripts, CLI tools): the SDK's loop on a thread of

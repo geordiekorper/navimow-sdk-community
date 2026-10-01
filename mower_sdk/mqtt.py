@@ -37,6 +37,7 @@ __all__ = [
     "ConnectionEvent",
     "MowerMQTT",
     "NavimowMQTT",
+    "parse_topic",
     "Device",
     "DeviceStatus",
     "ERROR_MESSAGES",
@@ -151,8 +152,16 @@ def _build_web_client_id(username: str | None) -> str:
 _MAX_TOPIC_BYTES = 65_535
 
 
-def _parse_topic(topic: str) -> tuple[str | None, str | None]:
-    """(device id, channel) of a /downlink/vehicle/{id}/realtimeDate/{channel} topic, else (None, None)."""
+def parse_topic(topic: str) -> tuple[str | None, str | None]:
+    """The device id and channel of a cloud topic, else (None, None).
+
+    A cloud topic is /downlink/vehicle/{device id}/realtimeDate/{channel}, the
+    leading slash optional; the channel is "state", "event", "attributes",
+    "location" or whatever else the cloud publishes there. Any other topic
+    (an extra topic, say) gives (None, None). Either part may come back empty
+    for a topic with an empty level; NavimowMQTT keeps message times only when
+    both are non-empty.
+    """
     parts = topic.split("/")
     if parts and parts[0] == "":
         parts = parts[1:]
@@ -163,6 +172,10 @@ def _parse_topic(topic: str) -> tuple[str | None, str | None]:
     if parts[3] != "realtimeDate":
         return None, None
     return parts[2], parts[4]
+
+
+# The name the SDK used before parse_topic was public; kept for code that imported it.
+_parse_topic = parse_topic
 
 
 def _decode_json(payload: bytes) -> Any:
@@ -206,11 +219,18 @@ def _redact_client_id(client_id: str) -> str:
 
 
 def _redact_ws_path(path: str | None) -> str | None:
-    """The WebSocket path for a log line: its first segment only (/mqtt/{userId} logs as /mqtt/…)."""
+    """The WebSocket path for a log line: its first segment only (/mqtt/{userId} logs as /mqtt/…).
+
+    A query is never shown (/mqtt?token=… logs as /mqtt?…): a path read from a
+    full URL in the credential reply may carry one.
+    """
     if not path:
         return path
-    first, sep, _ = path.lstrip("/").partition("/")
-    return f"/{first}/…" if sep else path
+    path_only, query, _ = path.partition("?")
+    first, sep, _ = path_only.lstrip("/").partition("/")
+    if sep:
+        return f"/{first}/…"
+    return f"{path_only}?…" if query else path
 
 
 def _configured(value: str | None) -> str:
@@ -259,7 +279,12 @@ class NavimowMQTT:
     zero-argument ``on_connected`` and ``on_disconnected`` carry neither, and the
     attributes they would read may have changed by a rebuild before they run); ``last_connect_fail_reason``,
     ``last_disconnect_reason`` and ``last_connected_at`` keep the latest of
-    each; ``connects``, ``disconnects`` and ``connect_failures`` count them
+    each, and ``last_connect_failed_at`` and ``last_disconnected_at`` the UTC
+    time of the failure and the disconnect the reasons belong to;
+    ``last_connected_monotonic`` is ``last_connected_at`` on
+    ``time.monotonic()``, the clock ``last_message_age()`` uses, for measuring
+    how long the client has been connected without a wall-clock jump in
+    between; ``connects``, ``disconnects`` and ``connect_failures`` count them
     since construction; ``client_id`` is the id the wire client was built
     with; and ``last_message_at()`` and ``last_message_age()`` say when a
     message last arrived for a device, per channel or across channels. The
@@ -291,7 +316,12 @@ class NavimowMQTT:
     values. Without this a refused subscription is invisible: its data simply
     never arrives. ``on_raw(topic, payload)`` is called
     for every message on any topic with the bytes as received, before
-    anything is decoded or added.
+    anything is decoded or added. ``on_message_seen(device_id, channel,
+    received_at)`` is called for every message whose topic names both a device
+    and a channel (see ``parse_topic``), with the UTC time
+    ``last_message_at()`` records for it, for a consumer that only needs to
+    know that a message arrived and would otherwise parse the topic in
+    ``on_raw`` again.
 
     ``keepalive_seconds`` defaults to 60 (at least 30 is used): the cloud's
     idle links die after about ten minutes without a FIN or DISCONNECT, and a
@@ -326,7 +356,10 @@ class NavimowMQTT:
         self.loop = _resolve_event_loop(loop)
         self.ws_path = ws_path
         self.auth_headers = auth_headers
-        self._use_tls = bool(ws_path) or parsed.scheme == "wss"
+        # A wss:// broker asks for TLS even without a WebSocket path; kept so a later
+        # change of path or of a scheme-less host does not lose it.
+        self._wss_scheme = parsed.scheme == "wss"
+        self._use_tls = bool(ws_path) or self._wss_scheme
         self._client_id = _build_web_client_id(self.username)
         self.keepalive_seconds = max(30, int(keepalive_seconds))
         self.reconnect_min_delay = max(0, int(reconnect_min_delay))
@@ -342,10 +375,14 @@ class NavimowMQTT:
         self.on_raw: Callable[[str, bytes], Awaitable[None]] | None = None
         self.on_subscribe: Callable[[str, bool, tuple[int, ...]], Awaitable[None]] | None = None
         self.on_connection_event: Callable[[ConnectionEvent], Awaitable[None]] | None = None
+        self.on_message_seen: Callable[[str, str, datetime], Awaitable[None]] | None = None
 
         self.last_connect_fail_reason: str | None = None
         self.last_disconnect_reason: str | None = None
         self.last_connected_at: datetime | None = None
+        self.last_connected_monotonic: float | None = None
+        self.last_connect_failed_at: datetime | None = None
+        self.last_disconnected_at: datetime | None = None
         self.connects = 0
         self.disconnects = 0
         self.connect_failures = 0
@@ -470,12 +507,50 @@ class NavimowMQTT:
         self._configure_client(client)
         return client
 
+    def _endpoint_after(
+        self, broker: str | None, port: int | None, ws_path: str | None
+    ) -> tuple[str, int, str | None, bool]:
+        """(broker, port, ws_path, wss scheme) once the given values are merged; None means keep.
+
+        broker is read as the constructor reads it: a URL's host and, when it has
+        one, its port, which wins over port.
+        """
+        new_broker, new_port, new_path, wss = self.broker, self.port, self.ws_path, self._wss_scheme
+        if broker is not None:
+            parsed = urlparse(broker)
+            new_broker = parsed.hostname or broker
+            if parsed.scheme:
+                wss = parsed.scheme == "wss"
+            if parsed.port:
+                port = parsed.port
+        if port is not None:
+            new_port = int(port)
+        if ws_path is not None:
+            new_path = ws_path
+        return new_broker, new_port, new_path, wss
+
+    def _endpoint_differs(self, broker: str | None, port: int | None, ws_path: str | None) -> bool:
+        """Whether merging the given broker, port and ws_path changes where the client connects.
+
+        Host names are compared without regard to case.
+        """
+        new_broker, new_port, new_path, wss = self._endpoint_after(broker, port, ws_path)
+        return (new_broker.lower(), new_port, new_path, wss) != (
+            self.broker.lower(),
+            self.port,
+            self.ws_path,
+            self._wss_scheme,
+        )
+
     def update_credentials(
         self,
         username: str | None = None,
         password: str | None = None,
         auth_headers: dict[str, str] | None = None,
         *,
+        broker: str | None = None,
+        port: int | None = None,
+        ws_path: str | None = None,
         force_reconnect: bool = False,
     ) -> None:
         """Update the MQTT credentials.
@@ -496,11 +571,26 @@ class NavimowMQTT:
         not anything changed and whether or not the client is connected, dropping a
         healthy connection on purpose.
 
+        broker, port and ws_path (None means keep) move the client to another
+        address. A live client cannot change address, so when any of them differs
+        from the current value the update goes through rebuild() whether or not
+        the client is connected, dropping a live connection.
+
         The rebuilding paths block (see rebuild()) and must be called off the event
         loop. The connected, non-forced path does no blocking work of its own, but
         like connect_async() it waits while a rebuild runs on another thread.
         """
         with self._lifecycle_lock:
+            if self._endpoint_differs(broker, port, ws_path):
+                # Decision: a new address always rebuilds, connected or not. paho keeps
+                # the host, port and path of the client it connected with, so setting
+                # them on a live client would change nothing until a rebuild, and a
+                # client left on a host the cloud no longer names can never reconnect.
+                # A live connection to the old address is dropped.
+                self.rebuild(
+                    username, password, auth_headers, broker=broker, port=port, ws_path=ws_path, reason="broker changed"
+                )
+                return
             changed = False
             if username is not None and username != self.username:
                 self.username = username
@@ -547,12 +637,18 @@ class NavimowMQTT:
         password: str | None = None,
         auth_headers: dict[str, str] | None = None,
         *,
+        broker: str | None = None,
+        port: int | None = None,
+        ws_path: str | None = None,
         reason: str | None = None,
     ) -> None:
         """Replace the paho client with a new one and connect it.
 
         The given values are merged into the stored ones (None means keep, as in
-        update_credentials). The new client is built through _build_new_client with
+        update_credentials). broker is read as the constructor reads it (a URL's
+        host, and its port when it has one); a change of broker, port or ws_path
+        is logged with the old and the new address, the path redacted, and TLS
+        follows the new values as at construction. The new client is built through _build_new_client with
         a fresh random suffix in its client id and installed as self.client before
         the old one is torn down, so the SDK's own callbacks (on_connect,
         on_disconnect, on_connect_fail, on_message, on_subscribe) from the old
@@ -583,6 +679,18 @@ class NavimowMQTT:
                 self.password = password
             if auth_headers is not None:
                 self.auth_headers = auth_headers
+            if self._endpoint_differs(broker, port, ws_path):
+                old_address = (self.broker, self.port, _redact_ws_path(self.ws_path))
+                self.broker, self.port, self.ws_path, self._wss_scheme = self._endpoint_after(broker, port, ws_path)
+                self._use_tls = bool(self.ws_path) or self._wss_scheme
+                _LOGGER.info(
+                    "NavimowMQTT broker changed: from broker=%s port=%s ws_path=%s to broker=%s port=%s ws_path=%s tls=%s",
+                    *old_address,
+                    self.broker,
+                    self.port,
+                    _redact_ws_path(self.ws_path),
+                    self._use_tls,
+                )
 
             old = self.client
             self._client_id = _build_web_client_id(self.username)
@@ -768,25 +876,28 @@ class NavimowMQTT:
         if close is not None:
             close()
 
-    def _connection_event(self, client: Any, kind: str, reason: str | None) -> None:
+    def _connection_event(self, client: Any, kind: str, reason: str | None, at: datetime) -> None:
         """Schedule on_connection_event, if set, with the context of the client the event came from.
 
-        A client this object did not install (a consumer replaced self.client) is
-        described by the current client id and rebuild count.
+        at is the stamp the matching attribute holds (last_connected_at,
+        last_disconnected_at or last_connect_failed_at), so the event and the
+        attribute agree. A client this object did not install (a consumer replaced
+        self.client) is described by the current client id and rebuild count.
         """
         if self.on_connection_event is not None:
             client_id, rebuilds = self._client_context.get(client, (self._client_id, self.rebuilds))
             event = ConnectionEvent(
-                kind=kind, client_id=client_id, reason=reason, at=datetime.now(UTC), rebuilds=rebuilds
+                kind=kind, client_id=client_id, reason=reason, at=at, rebuilds=rebuilds
             )
             self._schedule(self.on_connection_event(event))
 
     def _connect_failed(self, client: Any, reason: str) -> None:
         self.connect_failures += 1
         self.last_connect_fail_reason = reason
+        self.last_connect_failed_at = datetime.now(UTC)
         if self.on_connect_fail is not None:
             self._schedule(self.on_connect_fail(reason))
-        self._connection_event(client, "connect_failed", reason)
+        self._connection_event(client, "connect_failed", reason, self.last_connect_failed_at)
 
     def _on_connect(self, client, _userdata, _flags, reason_code, _properties=None) -> None:
         """paho's on_connect, callback API version 2: reason_code is a paho ReasonCode."""
@@ -798,6 +909,7 @@ class NavimowMQTT:
             return
         self.connects += 1
         self.last_connected_at = datetime.now(UTC)
+        self.last_connected_monotonic = time.monotonic()
         with self._subscribe_lock:
             # A new session: the broker keeps no subscription of the last one (clean
             # session), and acknowledgements still owed for it will not come.
@@ -817,7 +929,7 @@ class NavimowMQTT:
             self._schedule(self.on_connected())
         if self.on_ready is not None:
             self._schedule(self.on_ready())
-        self._connection_event(client, "connected", None)
+        self._connection_event(client, "connected", None, self.last_connected_at)
 
     def _on_connect_fail(self, client, _userdata) -> None:
         """paho's on_connect_fail: no CONNACK at all.
@@ -840,6 +952,7 @@ class NavimowMQTT:
             return
         self.disconnects += 1
         self.last_disconnect_reason = "requested" if not reason_code.is_failure else str(reason_code)
+        self.last_disconnected_at = datetime.now(UTC)
         _LOGGER.debug(
             "NavimowMQTT disconnected: broker=%s port=%s client_id=%s rc=%s",
             self.broker,
@@ -849,7 +962,7 @@ class NavimowMQTT:
         )
         if self.on_disconnected is not None:
             self._schedule(self.on_disconnected())
-        self._connection_event(client, "disconnected", self.last_disconnect_reason)
+        self._connection_event(client, "disconnected", self.last_disconnect_reason, self.last_disconnected_at)
 
     def _on_subscribe(self, client, _userdata, mid, reason_code_list, _properties=None) -> None:
         """paho's on_subscribe, callback API version 2: one reason code per topic sent.
@@ -878,7 +991,8 @@ class NavimowMQTT:
         if self.on_subscribe is not None:
             self._schedule(self.on_subscribe(topic, granted, codes))
 
-    _parse_topic = staticmethod(_parse_topic)
+    # Kept for subclasses and callers that used the method before parse_topic was public.
+    _parse_topic = staticmethod(parse_topic)
 
     def _on_message(self, client, _userdata, msg) -> None:
         """paho's on_message.
@@ -892,7 +1006,15 @@ class NavimowMQTT:
         topic = msg.topic
         device_id, channel = self._parse_topic(topic)
         if device_id and channel:
-            self._last_message.setdefault(device_id, {})[channel] = (datetime.now(UTC), time.monotonic())
+            received_at = datetime.now(UTC)
+            self._last_message.setdefault(device_id, {})[channel] = (received_at, time.monotonic())
+            if self.on_message_seen is not None:
+                # The same condition as the message times, both parts non-empty, so a
+                # consumer's own record of "a message arrived" agrees with
+                # last_message_at(); and the stamp stored there, not a second reading
+                # of the clock. Scheduled like on_raw, with no order promised between
+                # the two or with on_message.
+                self._schedule(self.on_message_seen(device_id, channel, received_at))
 
         payload_bytes = msg.payload
         if self.on_raw is not None:

@@ -20,12 +20,15 @@ from mower_sdk.models import (
     DeviceLocation,
     DeviceLocationMessage,
     DeviceStateMessage,
+    MqttConnectionInfo,
     RejectedMessage,
     STATE_KNOWN_FIELDS,
     SkippedLocationEntry,
+    _broker_endpoint,
+    _credential,
     mower_time_ms,
 )
-from mower_sdk.mqtt import NavimowMQTT, _decode_json, _original_payload, _parse_topic, _resolve_event_loop
+from mower_sdk.mqtt import NavimowMQTT, _decode_json, _original_payload, _resolve_event_loop, parse_topic
 
 if TYPE_CHECKING:
     from mower_sdk.api import MowerAPI
@@ -44,6 +47,8 @@ _NO_ALTERNATIVE: dict[str, str] = {
     "set_blade_height": "No supported call sets the blade height (the REST API has no such command);",
 }
 _NO_ALTERNATIVE_KNOWN = "No supported alternative is known;"
+# The constructor arguments NavimowSDK.from_connection_info takes from the connection info.
+_CONNECTION_INFO_ARGUMENTS = ("broker", "port", "ws_path", "username", "password")
 
 
 class NavimowSDK:
@@ -139,6 +144,7 @@ class NavimowSDK:
         self._location_callbacks: list[Callable[[DeviceLocationMessage], None]] = []
         self._rejected_callbacks: list[Callable[[RejectedMessage], None]] = []
         self._raw_callbacks: list[Callable[[str, bytes], None]] = []
+        self._seen_callbacks: list[Callable[[str, str, datetime], None]] = []
         self._location = LocationDecoder()
         self._credentials_lock = asyncio.Lock()
         self._credentials_attempted_at: float | None = None
@@ -151,6 +157,68 @@ class NavimowSDK:
         self._state_cache_updated_at: dict[str, float] = {}
         self._attributes_cache_updated_at: dict[str, float] = {}
         self._state_cache_received_at: dict[str, datetime] = {}
+
+    @classmethod
+    def from_connection_info(
+        cls,
+        info: MqttConnectionInfo,
+        *,
+        access_token: str | None,
+        records: list[Any],
+        auth_headers: dict[str, str] | None = None,
+        **options: Any,
+    ) -> NavimowSDK:
+        """A facade for the broker the credential reply names, connected the way the cloud expects.
+
+        info is MowerAPI.async_get_mqtt_connection_info()'s result, records the
+        account's devices. The broker, port, WebSocket path, username and password
+        come from info; passing any of them in options is a TypeError. The other
+        options (loop, keepalive_seconds, subscribe_location, reject_late_state,
+        ...) go to the constructor unchanged. With an access_token the bearer
+        header Authorization: Bearer <access_token> is merged into auth_headers,
+        replacing an Authorization header given there in any spelling; with
+        access_token=None no Authorization header is added and auth_headers is
+        passed as given. After an OAuth token refresh, pass the new header with
+        update_mqtt_credentials(auth_headers=...) as usual.
+
+        Raises:
+            TypeError: options names an argument info supplies.
+            ValueError: info has no WebSocket path (ws_path is "").
+        """
+        owned = [name for name in _CONNECTION_INFO_ARGUMENTS if name in options]
+        if owned:
+            raise TypeError(
+                f"NavimowSDK.from_connection_info() takes {', '.join(owned)} from the connection info; "
+                "use the constructor to choose them"
+            )
+        # Decision: the factory builds the one connection the cloud has been seen to
+        # serve, TLS over WebSocket on the reply's port (443 unless named) with the
+        # bearer at the upgrade, so a reply without a WebSocket path cannot be built
+        # here and is refused rather than guessed at (with "/mqtt", say). A consumer
+        # that wants plain TCP or another scheme uses the constructor, whose rules for
+        # broker, port, ws_path and TLS are unchanged.
+        if not info.ws_path:
+            raise ValueError(
+                "NavimowSDK.from_connection_info(): the connection info names no WebSocket path (mqttUrl); "
+                "use the constructor to choose one"
+            )
+        headers = {
+            key: value
+            for key, value in (auth_headers or {}).items()
+            if access_token is None or key.lower() != "authorization"
+        }
+        if access_token is not None:
+            headers["Authorization"] = f"Bearer {access_token}"
+        return cls(
+            broker=info.broker,
+            port=info.port,
+            username=info.username,
+            password=info.password,
+            ws_path=info.ws_path,
+            auth_headers=headers,
+            records=records,
+            **options,
+        )
 
     @property
     def loop(self) -> asyncio.AbstractEventLoop | None:
@@ -176,9 +244,12 @@ class NavimowSDK:
         password: str | None = None,
         auth_headers: dict[str, str] | None = None,
         *,
+        broker: str | None = None,
+        port: int | None = None,
+        ws_path: str | None = None,
         force_reconnect: bool = False,
     ) -> None:
-        """Update the MQTT credentials.
+        """Update the MQTT credentials, and the broker's address when it moved.
 
         Unchanged values are ignored and None means "keep", so a password-only or
         headers-only update is merged with the stored values. While connected, the
@@ -187,6 +258,8 @@ class NavimowSDK:
         them at its next connect, automatic reconnects included. While disconnected,
         changed values rebuild the paho client and start an asynchronous reconnect.
         force_reconnect=True rebuilds and reconnects in any case (NavimowMQTT.rebuild).
+        broker, port and ws_path (None means keep) that differ from the client's
+        rebuild it on the new address, connected or not (NavimowMQTT.update_credentials).
         The rebuilding paths block and must be called off the event loop; every
         path, like connect(), disconnect() and the command methods, waits while a
         rebuild runs on another thread.
@@ -198,6 +271,9 @@ class NavimowSDK:
             username=username,
             password=password,
             auth_headers=auth_headers,
+            broker=broker,
+            port=port,
+            ws_path=ws_path,
             force_reconnect=force_reconnect,
         )
 
@@ -212,7 +288,7 @@ class NavimowSDK:
         """Fetch the broker username and password from the cloud and apply them.
 
         When to call it: at startup, then connect() (or construct the facade
-        from the reply instead); and after on_connect_fail, where paho's thread
+        with from_connection_info instead); and after on_connect_fail, where paho's thread
         is still retrying and uses the applied values at its next attempt, or
         at once with force_reconnect=True. Never on a timer, and never on an
         OAuth token refresh, which is update_mqtt_credentials(auth_headers=...)
@@ -225,7 +301,12 @@ class NavimowSDK:
         at a time. Otherwise userName and pwdInfo from the reply are applied,
         as strings, through update_mqtt_credentials(..., force_reconnect=...),
         run in the default executor because its rebuilding paths block, and
-        True is returned. It does not start a connection of its own: unchanged
+        True is returned. When the reply names a broker host, port or WebSocket
+        path (read as MqttConnectionInfo reads them) that differs from the
+        client's, they are applied too, and the client is rebuilt on the new
+        address whether or not it is connected; a value the reply does not name
+        is kept, and a broker the reply names but that cannot be read is logged
+        and kept while the credentials are still applied. It does not start a connection of its own: unchanged
         values without force_reconnect leave the client alone. Changed values
         on a client that is not connected go through a rebuild, which connects,
         as update_mqtt_credentials always has; a connect() after it is then a
@@ -255,17 +336,36 @@ class NavimowSDK:
                 return False
             self._credentials_attempted_at = now
             info = await api.async_get_mqtt_user_info()
-            username = info.get("userName") if isinstance(info, dict) else None
-            password = info.get("pwdInfo") if isinstance(info, dict) else None
+            # Read like MqttConnectionInfo reads them (text when present), but without
+            # its broker requirement: a reply that names no broker still carries
+            # credentials for the one the client has.
+            username = _credential(info.get("userName")) if isinstance(info, dict) else None
+            password = _credential(info.get("pwdInfo")) if isinstance(info, dict) else None
             if username is None and password is None:
                 raise MowerAPIError(f"{ERROR_MESSAGES['API_REQUEST_FAILED']}: no broker credentials in the reply")
+            broker = port = ws_path = None
+            try:
+                broker, port, ws_path = _broker_endpoint(info)
+            except MowerAPIError as exc:
+                _LOGGER.warning("Navimow credential reply: broker address kept, the reply's cannot be read: %s", exc)
+            # Decision: the reply is authoritative for the broker. A host, port or path
+            # it names that differs from the client's rebuilds the client on the new
+            # address, dropping a live connection; this helper runs after a failed
+            # connect, so the client is normally retrying against the old address
+            # already, and on a host the cloud no longer names it never succeeds. What
+            # the reply does not name (the port, when mqttHost has none) is kept rather
+            # than defaulted, so a client built for another port or transport is not
+            # moved by a reply that says nothing about it.
             await running.run_in_executor(
                 None,
                 functools.partial(
                     self.update_mqtt_credentials,
-                    None if username is None else str(username),
-                    None if password is None else str(password),
+                    username,
+                    password,
                     auth_headers,
+                    broker=broker,
+                    port=port,
+                    ws_path=ws_path,
                     force_reconnect=force_reconnect,
                 ),
             )
@@ -300,6 +400,17 @@ class NavimowSDK:
         """
         self._raw_callbacks.append(callback)
         self._mqtt.on_raw = self._on_mqtt_raw
+
+    def on_message_seen(self, callback: Callable[[str, str, datetime], None]) -> None:
+        """Call callback(device_id, channel, received_at) for every message on a device's topic.
+
+        Every message whose topic names a device and a channel counts, whatever
+        its payload and whether or not it is applied, with the UTC receipt time
+        mqtt.last_message_at() records for it. Nothing extra runs per message
+        until the first such callback is registered.
+        """
+        self._seen_callbacks.append(callback)
+        self._mqtt.on_message_seen = self._on_mqtt_message_seen
 
     def get_cached_location(self, device_id: str) -> DeviceLocation | None:
         """The merged location record for device_id, or None before any location entry or restore."""
@@ -341,10 +452,20 @@ class NavimowSDK:
             except Exception:
                 _LOGGER.exception("Navimow raw callback %r failed for topic %s", callback, topic)
 
+    async def _on_mqtt_message_seen(self, device_id: str, channel: str, received_at: datetime) -> None:
+        """Call each message-seen callback; one that raises is logged and the rest still run."""
+        for callback in list(self._seen_callbacks):
+            try:
+                callback(device_id, channel, received_at)
+            except Exception:
+                _LOGGER.exception(
+                    "Navimow message-seen callback %r failed for device %s channel %s", callback, device_id, channel
+                )
+
     async def _on_mqtt_message(
         self, topic: str, payload: bytes, device_id: str
     ) -> None:
-        _, channel = _parse_topic(topic)
+        _, channel = parse_topic(topic)
         if channel == "location":
             self._on_location_message(topic, payload, device_id)
             return

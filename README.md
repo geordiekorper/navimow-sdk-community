@@ -80,17 +80,10 @@ async def main() -> None:
             print(device.id, device.name, status.status.value, status.battery)
 
         # The broker, its WebSocket path and the MQTT credentials come from the
-        # cloud; the endpoint allows about one call a minute.
-        info = await api.async_get_mqtt_user_info()
-        sdk = NavimowSDK(
-            broker=info["mqttHost"],  # wss://..., so TLS over WebSocket
-            port=443,
-            ws_path=info["mqttUrl"],
-            username=info["userName"],
-            password=info["pwdInfo"],
-            auth_headers={"Authorization": f"Bearer {TOKEN}"},
-            records=devices,
-        )
+        # cloud; the endpoint allows about one call a minute. The facade connects
+        # with TLS over WebSocket and the token as the bearer header.
+        info = await api.async_get_mqtt_connection_info()
+        sdk = NavimowSDK.from_connection_info(info, access_token=TOKEN, records=devices)
         sdk.on_state(print_state)
         sdk.connect()
         try:
@@ -190,13 +183,11 @@ sdk = None
 try:
     api = MowerAPI(session, TOKEN, BASE_URL)
     devices = mowers.run(api.async_get_devices())  # every REST call goes through run()
-    info = mowers.run(api.async_get_mqtt_user_info())
+    info = mowers.run(api.async_get_mqtt_connection_info())
 
-    sdk = NavimowSDK(
-        broker=info["mqttHost"], port=443, ws_path=info["mqttUrl"],
-        username=info["userName"], password=info["pwdInfo"],
-        auth_headers={"Authorization": f"Bearer {TOKEN}"},
-        records=devices, loop=mowers.loop,  # callbacks go to the helper's loop
+    sdk = NavimowSDK.from_connection_info(
+        info, access_token=TOKEN, records=devices,
+        loop=mowers.loop,  # callbacks go to the helper's loop
     )
     states = queue.Queue()
     sdk.on_state(states.put)  # callbacks run on the loop's thread: hand them over, don't block there
@@ -267,18 +258,35 @@ values after a `rebuild()`.
 holds the bytes exactly as received; the typed messages and `RejectedMessage` carry the same bytes
 as `original`.
 
+**Broker address.** `api.async_get_mqtt_connection_info()` reads the credential reply into an
+`MqttConnectionInfo` (host, port, WebSocket path, username, password), and
+`NavimowSDK.from_connection_info(info, access_token=..., records=...)` builds the facade from it,
+as in the quick example. The constructor stays available for another transport.
+
 **Broker credentials.** The MQTT username and password come from the cloud's credential endpoint,
 which allows about one call a minute. `await sdk.async_refresh_broker_credentials(api,
 auth_headers=...)` fetches and applies them, at most once per 65 seconds: call it at startup
-before `connect()`, and again after a failed connect (`sdk.mqtt.on_connect_fail`). Do not call it
+before `connect()`, and again after a failed connect (`sdk.mqtt.on_connect_fail`). When the reply
+names another broker host, port or path, the client is rebuilt on it. Do not call it
 on a timer or on an OAuth token refresh: after a token refresh, pass the new bearer header with
 `sdk.update_mqtt_credentials(auth_headers=...)` alone.
+
+**A broker that stops delivering.** The keepalive finds a dead link, not a broker that has stopped
+delivering to a live one, which the cloud's broker has been seen to do. `MqttWatchdog(sdk)` finds
+that from the data: call `after_poll(inputs)` after each REST status poll and `check_silence(inputs)`
+every half minute or so (it needs `subscribe_location=True`), with a `WatchInput` per mower (the state you show, REST's latest state and
+when it was read). When either returns a `RebuildRequest`, rebuild the client off the event loop
+(`sdk.mqtt.rebuild(reason=request.reason)`) and pass the request to `acknowledge()`. It has no
+timer and makes no request of its own.
 
 **Location channel.** Pose, zone, route progress and target zones arrive on a separate MQTT
 channel, off by default (several models never publish on it, and it is a movement trace). Turn it
 on with `NavimowSDK(..., subscribe_location=True)`, then register `sdk.on_location(callback)`;
 `sdk.get_cached_location(device_id)` returns the merged record, which `DeviceLocation.to_dict()`
 and `from_dict()` let you persist and hand back with `sdk.restore_location()` after a restart.
+The record also carries the dock's estimated position (`dock_x`, `dock_y`), learned from the poses
+the mower sends while docked, and `target_zone(location, status)` reads its target report: a zone
+id, or `TargetZone.ALL` or `NONE` for a report that names none, inferred from the state you show.
 Messages that could not be applied are reported through `sdk.on_rejected(callback)`; for a
 location message, `RejectedMessage.skipped` lists each entry that was not applied, with its reason
 and its fields read as far as they go, so a late task reading can still be kept, marked as late.
