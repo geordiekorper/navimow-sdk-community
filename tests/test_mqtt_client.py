@@ -74,8 +74,12 @@ class FakeClient:
     def reconnect_delay_set(self, *args: Any, **kwargs: Any) -> None:
         self._record("reconnect_delay_set", *args, **kwargs)
 
-    def subscribe(self, *args: Any, **kwargs: Any) -> None:
+    def subscribe(self, *args: Any, **kwargs: Any) -> tuple[int, int | None]:
+        """paho's (result, message id): success with the next id, unless subscribe_result says otherwise."""
         self._record("subscribe", *args, **kwargs)
+        self.next_mid = getattr(self, "next_mid", 0) + 1
+        result = getattr(self, "subscribe_result", 0)
+        return result, (self.next_mid if result == 0 else None)
 
     def unsubscribe(self, *args: Any, **kwargs: Any) -> None:
         self._record("unsubscribe", *args, **kwargs)
@@ -1801,5 +1805,173 @@ def test_without_on_raw_nothing_extra_is_scheduled(
         mqtt._on_message(mqtt.client, None, FakeMessage("custom/topic", b"x"))
         assert scheduled == []
         assert fake_paho.instances == [mqtt.client]
+
+    run(test)
+
+
+# ---- subscription acknowledgements -----------------------------------------------------------------
+
+
+def acknowledge(mqtt: NavimowMQTT, topic: str, *codes: FakeReasonCode, client: Any = None) -> None:
+    """Deliver the broker's acknowledgement for topic's latest SUBSCRIBE, as paho's thread would."""
+    client = client or mqtt.client
+    mids = [mid for mid, pending in mqtt._pending_subscribes.items() if pending == topic]
+    mqtt._on_subscribe(client, None, mids[-1] if mids else 999, list(codes), None)
+
+
+@pytest.mark.usefixtures("fake_paho")
+def test_each_topic_is_pending_then_granted_or_refused(caplog: pytest.LogCaptureFixture) -> None:
+    async def test() -> None:
+        mqtt = make(TCP_KWARGS, records=[device("dev-1")], extra_topics=["custom/+/topic"])
+        seen: list[tuple[str, bool, tuple[int, ...]]] = []
+
+        async def on_subscribe(topic: str, granted: bool, codes: tuple[int, ...]) -> None:
+            seen.append((topic, granted, codes))
+
+        mqtt.on_subscribe = on_subscribe
+        assert mqtt.client.on_subscribe == mqtt._on_subscribe
+        assert mqtt.subscription_results == {}
+        mqtt._on_connect(mqtt.client, None, {}, SUCCESS, None)
+        topics = [*DEVICE_TOPICS[:3], "custom/+/topic"]
+        assert mqtt.subscription_results == dict.fromkeys(topics, "pending")
+        with caplog.at_level(logging.WARNING, logger="mower_sdk.mqtt"):
+            for topic in topics[:3]:
+                acknowledge(mqtt, topic, SUCCESS)
+            acknowledge(mqtt, "custom/+/topic", UNSPECIFIED)
+        await drain()
+        assert mqtt.subscription_results == {
+            **dict.fromkeys(topics[:3], "granted"),
+            "custom/+/topic": "refused: Unspecified error (128)",
+        }
+        assert seen == [*[(t, True, (0,)) for t in topics[:3]], ("custom/+/topic", False, (128,))]
+        assert [r.getMessage() for r in caplog.records] == [
+            "NavimowMQTT subscription refused by the broker: topic=custom/+/topic reason=Unspecified error (128)"
+        ]
+        assert mqtt._pending_subscribes == {}
+
+    run(test)
+
+
+@pytest.mark.usefixtures("fake_paho")
+def test_a_granted_quality_of_service_below_0x80_is_granted() -> None:
+    async def test() -> None:
+        mqtt = make(TCP_KWARGS, records=[device("dev-1")])
+        mqtt._on_connect(mqtt.client, None, {}, SUCCESS, None)
+        acknowledge(mqtt, DEVICE_TOPICS[0], FakeReasonCode(1, "Granted QoS 1"))
+        acknowledge(mqtt, DEVICE_TOPICS[1])  # no reason code at all
+        assert mqtt.subscription_results[DEVICE_TOPICS[0]] == "granted"
+        assert mqtt.subscription_results[DEVICE_TOPICS[1]] == "refused: no reason code"
+
+    run(test)
+
+
+@pytest.mark.usefixtures("fake_paho")
+def test_a_reconnect_starts_the_results_afresh_and_a_late_acknowledgement_is_ignored() -> None:
+    async def test() -> None:
+        mqtt = make(TCP_KWARGS, records=[device("dev-1")])
+        mqtt._on_connect(mqtt.client, None, {}, SUCCESS, None)
+        old_mids = dict(mqtt._pending_subscribes)
+        acknowledge(mqtt, DEVICE_TOPICS[0], UNSPECIFIED)
+        mqtt._on_connect(mqtt.client, None, {}, SUCCESS, None)
+        assert mqtt.subscription_results == dict.fromkeys(DEVICE_TOPICS[:3], "pending")
+        for mid in old_mids:
+            if mid not in mqtt._pending_subscribes:
+                mqtt._on_subscribe(mqtt.client, None, mid, [UNSPECIFIED], None)
+        assert set(mqtt.subscription_results.values()) == {"pending"}
+
+    run(test)
+
+
+@pytest.mark.usefixtures("fake_paho")
+def test_an_acknowledgement_from_a_replaced_client_is_ignored_and_the_new_client_reports() -> None:
+    async def test() -> None:
+        mqtt = make(TCP_KWARGS, records=[device("dev-1")])
+        mqtt.connect_async()
+        old = mqtt.client
+        mqtt._on_connect(old, None, {}, SUCCESS, None)
+        mqtt.rebuild(reason="test")
+        new = mqtt.client
+        assert new is not old and new.on_subscribe == mqtt._on_subscribe
+        acknowledge(mqtt, DEVICE_TOPICS[0], UNSPECIFIED, client=old)
+        assert mqtt.subscription_results[DEVICE_TOPICS[0]] == "pending"
+        mqtt._on_connect(new, None, {}, SUCCESS, None)
+        acknowledge(mqtt, DEVICE_TOPICS[0], SUCCESS)
+        assert mqtt.subscription_results[DEVICE_TOPICS[0]] == "granted"
+
+    run(test)
+
+
+@pytest.mark.usefixtures("fake_paho")
+def test_a_subscribe_paho_could_not_send_is_recorded_as_not_sent() -> None:
+    async def test() -> None:
+        mqtt = make(TCP_KWARGS, records=[device("dev-1")])
+        mqtt.client.subscribe_result = mqtt_module.mqtt_client.MQTT_ERR_NO_CONN
+        mqtt.subscribe_all()
+        assert mqtt.subscription_results == dict.fromkeys(
+            DEVICE_TOPICS[:3], "not sent: The client is not currently connected."
+        )
+        assert mqtt._pending_subscribes == {}
+
+    run(test)
+
+
+@pytest.mark.usefixtures("fake_paho")
+def test_an_acknowledgement_for_an_unknown_message_id_changes_nothing() -> None:
+    async def test() -> None:
+        mqtt = make(TCP_KWARGS, records=[device("dev-1")])
+        called: list[Any] = []
+
+        async def on_subscribe(*args: Any) -> None:
+            called.append(args)
+
+        mqtt.on_subscribe = on_subscribe
+        mqtt._on_connect(mqtt.client, None, {}, SUCCESS, None)
+        before = dict(mqtt.subscription_results)
+        mqtt._on_subscribe(mqtt.client, None, 12345, [UNSPECIFIED], None)
+        await drain()
+        assert (mqtt.subscription_results, called) == (before, [])
+
+    run(test)
+
+
+@pytest.mark.usefixtures("fake_paho")
+def test_an_acknowledgement_racing_the_subscribe_call_is_not_lost() -> None:
+    """paho's thread may handle the acknowledgement before subscribe() has returned the id.
+
+    The fake's subscribe starts that thread and gives it time to run before
+    returning; the acknowledgement must wait for the id to be recorded rather
+    than find nothing pending and be dropped.
+    """
+
+    async def test() -> None:
+        mqtt = make(TCP_KWARGS, records=[device("dev-1")])
+        seen: list[tuple[str, bool, tuple[int, ...]]] = []
+
+        async def on_subscribe(topic: str, granted: bool, codes: tuple[int, ...]) -> None:
+            seen.append((topic, granted, codes))
+
+        mqtt.on_subscribe = on_subscribe
+        client = mqtt.client
+        plain_subscribe = client.subscribe
+        acknowledgers: list[threading.Thread] = []
+
+        def racing_subscribe(topic: str) -> tuple[int, int | None]:
+            result, mid = plain_subscribe(topic)
+            thread = threading.Thread(target=mqtt._on_subscribe, args=(client, None, mid, [SUCCESS], None))
+            thread.start()
+            thread.join(timeout=0.05)  # still waiting for the lock, if subscribe_all holds it
+            acknowledgers.append(thread)
+            return result, mid
+
+        client.subscribe = racing_subscribe
+        mqtt.subscribe_all()
+        for thread in acknowledgers:
+            thread.join(timeout=5)
+            assert not thread.is_alive()
+        await drain()
+        assert mqtt.subscription_results == dict.fromkeys(DEVICE_TOPICS[:3], "granted")
+        assert mqtt._pending_subscribes == {}
+        # The acknowledging threads take the lock in whatever order they get it.
+        assert sorted(seen) == sorted((t, True, (0,)) for t in DEVICE_TOPICS[:3])
 
     run(test)

@@ -11,6 +11,12 @@ throughout.
 
 - `MowerAPI.async_get_devices_raw()`, the device-list entries as the cloud
   sent them, including the fields `Device.from_dict()` does not read.
+- `NavimowMQTT.subscription_results`, what the broker answered for each topic
+  subscribed since the latest connect (`pending`, `granted`,
+  `refused: <reason>` or `not sent: <error>`), with a warning logged for a
+  refused topic and an optional `on_subscribe(topic, granted, codes)` hook. A
+  refused subscription used to be invisible: its data simply never arrived.
+  Both are kept across `rebuild()`.
 - `SkippedLocationEntry`, one location entry that was not applied: its type,
   its time as read, the reason (`stale`, `implausible_time`, `placeholder`,
   `unparsable` or `unknown_type`) and the fields it carried, read as an applied

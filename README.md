@@ -133,6 +133,12 @@ no longer supported.
 ten minutes, and a ping a minute keeps them alive and finds a dead one quickly. Pass
 `keepalive_seconds=2400` for the previous value.
 
+**Subscriptions.** `sdk.mqtt.subscription_results` maps each topic subscribed since the latest
+connect to `pending`, `granted`, `refused: <reason>` or `not sent: <error>`; a refused topic is
+also logged as a warning, and `sdk.mqtt.on_subscribe` can be set to an async
+`(topic, granted, codes)` callback. A refused subscription otherwise looks the same as a mower that
+does not publish on that topic.
+
 **Broker credentials.** The MQTT username and password come from the cloud's credential endpoint,
 which allows about one call a minute. `await sdk.async_refresh_broker_credentials(api,
 auth_headers=...)` fetches and applies them, at most once per 65 seconds: call it at startup

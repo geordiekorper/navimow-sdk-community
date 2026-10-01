@@ -219,7 +219,16 @@ class NavimowMQTT:
     the subTopics names the credential reply advertises); an extra topic that
     overlaps a built-in one can make the broker deliver a message more than
     once (MQTT allows a copy per matching subscription), and a device-scoped wildcard was refused by the
-    broker on an X430 in September 2026. ``on_raw(topic, payload)`` is called
+    broker on an X430 in September 2026.
+
+    ``subscription_results`` says what the broker answered for each topic
+    subscribed since the latest connect: ``"pending"`` until its
+    acknowledgement arrives, then ``"granted"`` or ``"refused: <reason>"``, or
+    ``"not sent: <error>"`` when paho could not send the request. A refused
+    topic is logged as a warning, and ``on_subscribe(topic, granted, codes)``
+    is called for each acknowledged topic with the broker's reason code
+    values. Without this a refused subscription is invisible: its data simply
+    never arrives. ``on_raw(topic, payload)`` is called
     for every message on any topic with the bytes as received, before
     anything is decoded or added.
 
@@ -270,6 +279,7 @@ class NavimowMQTT:
         self.on_disconnected: Callable[[], Awaitable[None]] | None = None
         self.on_connect_fail: Callable[[str], Awaitable[None]] | None = None
         self.on_raw: Callable[[str, bytes], Awaitable[None]] | None = None
+        self.on_subscribe: Callable[[str, bool, tuple[int, ...]], Awaitable[None]] | None = None
 
         self.last_connect_fail_reason: str | None = None
         self.last_disconnect_reason: str | None = None
@@ -279,6 +289,12 @@ class NavimowMQTT:
         self.connect_failures = 0
         self.rebuilds = 0
         self.last_rebuild_reason: str | None = None
+        self.subscription_results: dict[str, str] = {}
+        # message id of a SUBSCRIBE sent -> its topic, until the broker acknowledges it.
+        # subscribe_all may run on a caller's thread while paho's thread handles an
+        # acknowledgement, so both sides hold the lock.
+        self._pending_subscribes: dict[int, str] = {}
+        self._subscribe_lock = threading.Lock()
         # True from the paho connect_async/loop_start pair until disconnect() or a
         # rebuild: paho's network thread keeps retrying after a failed connect, so
         # a failure does not clear it.
@@ -369,6 +385,7 @@ class NavimowMQTT:
         client.on_disconnect = self._on_disconnect
         client.on_connect_fail = self._on_connect_fail
         client.on_message = self._on_message
+        client.on_subscribe = self._on_subscribe
 
     def _credentials_set(self) -> bool:
         """Whether username_pw_set applies: both values given. An empty string is a value."""
@@ -611,9 +628,10 @@ class NavimowMQTT:
         With subscribe_location, the location topic too; then every extra topic,
         as given. With no device ids known, the device segment is the + wildcard.
         Called on every connect, so the subscriptions survive a reconnect.
-        product_key and device_name are ignored; they are kept, optional, so
-        callers and overrides written against the original signature keep
-        working.
+        Each topic is recorded in subscription_results as pending until the
+        broker answers. product_key and device_name are ignored; they are kept,
+        optional, so callers and overrides written against the original
+        signature keep working.
         """
         topics, device_ids = self._topics()
         if not device_ids:
@@ -625,7 +643,13 @@ class NavimowMQTT:
                 "NavimowMQTT subscribing cloud topics for %d device(s)", len(device_ids)
             )
         for topic in topics:
-            self.client.subscribe(topic)
+            with self._subscribe_lock:
+                result, mid = self.client.subscribe(topic)
+                if result == mqtt_client.MQTT_ERR_SUCCESS and mid is not None:
+                    self._pending_subscribes[mid] = topic
+                    self.subscription_results[topic] = "pending"
+                else:
+                    self.subscription_results[topic] = f"not sent: {mqtt_client.error_string(result)}"
 
     def unsubscribe_all(self, product_key: str = "", device_name: str = "") -> None:  # noqa: ARG002
         """Unsubscribe from the topics subscribe_all subscribed to.
@@ -689,6 +713,11 @@ class NavimowMQTT:
             return
         self.connects += 1
         self.last_connected_at = datetime.now(UTC)
+        with self._subscribe_lock:
+            # A new session: the broker keeps no subscription of the last one (clean
+            # session), and acknowledgements still owed for it will not come.
+            self.subscription_results = {}
+            self._pending_subscribes.clear()
         _LOGGER.info(
             "NavimowMQTT connected: broker=%s port=%s client_id=%s",
             self.broker,
@@ -734,6 +763,33 @@ class NavimowMQTT:
         )
         if self.on_disconnected is not None:
             self._schedule(self.on_disconnected())
+
+    def _on_subscribe(self, client, _userdata, mid, reason_code_list, _properties=None) -> None:
+        """paho's on_subscribe, callback API version 2: one reason code per topic sent.
+
+        subscribe_all sends one topic per request, so the first code decides. A
+        code of 0x80 or more is a refusal.
+        """
+        if client is not self.client:
+            return
+        with self._subscribe_lock:
+            topic = self._pending_subscribes.pop(mid, None)
+            if topic is None:
+                return  # not sent by subscribe_all, or from before the latest connect
+            codes = tuple(int(code.value) for code in reason_code_list)
+            refused = next((code for code in reason_code_list if code.is_failure), None)
+            granted = bool(reason_code_list) and refused is None
+            if granted:
+                self.subscription_results[topic] = "granted"
+            else:
+                reason = f"{refused} ({refused.value})" if refused is not None else "no reason code"
+                self.subscription_results[topic] = f"refused: {reason}"
+        if not granted:
+            _LOGGER.warning(
+                "NavimowMQTT subscription refused by the broker: topic=%s reason=%s", topic, reason
+            )
+        if self.on_subscribe is not None:
+            self._schedule(self.on_subscribe(topic, granted, codes))
 
     _parse_topic = staticmethod(_parse_topic)
 
