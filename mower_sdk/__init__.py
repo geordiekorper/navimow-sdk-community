@@ -80,7 +80,7 @@ if TYPE_CHECKING:
         ThingStatusMessage as ThingStatusMessage,
     )
 
-__version__ = "0.2.0a3"
+__version__ = "0.2.0a4"
 
 
 def _warn_if_upstream_installed(version_of: Callable[[str], str] = importlib.metadata.version) -> None:

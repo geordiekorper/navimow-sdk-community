@@ -7,6 +7,8 @@ throughout.
 
 ## [Unreleased]
 
+## [0.2.0a4] - 2026-10-01
+
 ### Changed
 
 - **`async_refresh_broker_credentials` follows a broker that moved.** When the
@@ -510,7 +512,8 @@ metadata and its guards. No line of executable code differs from upstream
 - `UPSTREAM.md`, recording the fork point, the remotes, provenance and the
   rules that keep a merge-back possible.
 
-[Unreleased]: https://github.com/geordiekorper/navimow-sdk-community/compare/v0.2.0a3...HEAD
+[Unreleased]: https://github.com/geordiekorper/navimow-sdk-community/compare/v0.2.0a4...HEAD
+[0.2.0a4]: https://github.com/geordiekorper/navimow-sdk-community/compare/v0.2.0a3...v0.2.0a4
 [0.2.0a3]: https://github.com/geordiekorper/navimow-sdk-community/compare/v0.2.0a2...v0.2.0a3
 [0.2.0a2]: https://github.com/geordiekorper/navimow-sdk-community/compare/v0.2.0a1...v0.2.0a2
 [0.2.0a1]: https://github.com/geordiekorper/navimow-sdk-community/releases/tag/v0.2.0a1
