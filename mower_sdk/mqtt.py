@@ -259,7 +259,12 @@ class NavimowMQTT:
     zero-argument ``on_connected`` and ``on_disconnected`` carry neither, and the
     attributes they would read may have changed by a rebuild before they run); ``last_connect_fail_reason``,
     ``last_disconnect_reason`` and ``last_connected_at`` keep the latest of
-    each; ``connects``, ``disconnects`` and ``connect_failures`` count them
+    each, and ``last_connect_failed_at`` and ``last_disconnected_at`` the UTC
+    time of the failure and the disconnect the reasons belong to;
+    ``last_connected_monotonic`` is ``last_connected_at`` on
+    ``time.monotonic()``, the clock ``last_message_age()`` uses, for measuring
+    how long the client has been connected without a wall-clock jump in
+    between; ``connects``, ``disconnects`` and ``connect_failures`` count them
     since construction; ``client_id`` is the id the wire client was built
     with; and ``last_message_at()`` and ``last_message_age()`` say when a
     message last arrived for a device, per channel or across channels. The
@@ -346,6 +351,9 @@ class NavimowMQTT:
         self.last_connect_fail_reason: str | None = None
         self.last_disconnect_reason: str | None = None
         self.last_connected_at: datetime | None = None
+        self.last_connected_monotonic: float | None = None
+        self.last_connect_failed_at: datetime | None = None
+        self.last_disconnected_at: datetime | None = None
         self.connects = 0
         self.disconnects = 0
         self.connect_failures = 0
@@ -768,25 +776,28 @@ class NavimowMQTT:
         if close is not None:
             close()
 
-    def _connection_event(self, client: Any, kind: str, reason: str | None) -> None:
+    def _connection_event(self, client: Any, kind: str, reason: str | None, at: datetime) -> None:
         """Schedule on_connection_event, if set, with the context of the client the event came from.
 
-        A client this object did not install (a consumer replaced self.client) is
-        described by the current client id and rebuild count.
+        at is the stamp the matching attribute holds (last_connected_at,
+        last_disconnected_at or last_connect_failed_at), so the event and the
+        attribute agree. A client this object did not install (a consumer replaced
+        self.client) is described by the current client id and rebuild count.
         """
         if self.on_connection_event is not None:
             client_id, rebuilds = self._client_context.get(client, (self._client_id, self.rebuilds))
             event = ConnectionEvent(
-                kind=kind, client_id=client_id, reason=reason, at=datetime.now(UTC), rebuilds=rebuilds
+                kind=kind, client_id=client_id, reason=reason, at=at, rebuilds=rebuilds
             )
             self._schedule(self.on_connection_event(event))
 
     def _connect_failed(self, client: Any, reason: str) -> None:
         self.connect_failures += 1
         self.last_connect_fail_reason = reason
+        self.last_connect_failed_at = datetime.now(UTC)
         if self.on_connect_fail is not None:
             self._schedule(self.on_connect_fail(reason))
-        self._connection_event(client, "connect_failed", reason)
+        self._connection_event(client, "connect_failed", reason, self.last_connect_failed_at)
 
     def _on_connect(self, client, _userdata, _flags, reason_code, _properties=None) -> None:
         """paho's on_connect, callback API version 2: reason_code is a paho ReasonCode."""
@@ -798,6 +809,7 @@ class NavimowMQTT:
             return
         self.connects += 1
         self.last_connected_at = datetime.now(UTC)
+        self.last_connected_monotonic = time.monotonic()
         with self._subscribe_lock:
             # A new session: the broker keeps no subscription of the last one (clean
             # session), and acknowledgements still owed for it will not come.
@@ -817,7 +829,7 @@ class NavimowMQTT:
             self._schedule(self.on_connected())
         if self.on_ready is not None:
             self._schedule(self.on_ready())
-        self._connection_event(client, "connected", None)
+        self._connection_event(client, "connected", None, self.last_connected_at)
 
     def _on_connect_fail(self, client, _userdata) -> None:
         """paho's on_connect_fail: no CONNACK at all.
@@ -840,6 +852,7 @@ class NavimowMQTT:
             return
         self.disconnects += 1
         self.last_disconnect_reason = "requested" if not reason_code.is_failure else str(reason_code)
+        self.last_disconnected_at = datetime.now(UTC)
         _LOGGER.debug(
             "NavimowMQTT disconnected: broker=%s port=%s client_id=%s rc=%s",
             self.broker,
@@ -849,7 +862,7 @@ class NavimowMQTT:
         )
         if self.on_disconnected is not None:
             self._schedule(self.on_disconnected())
-        self._connection_event(client, "disconnected", self.last_disconnect_reason)
+        self._connection_event(client, "disconnected", self.last_disconnect_reason, self.last_disconnected_at)
 
     def _on_subscribe(self, client, _userdata, mid, reason_code_list, _properties=None) -> None:
         """paho's on_subscribe, callback API version 2: one reason code per topic sent.

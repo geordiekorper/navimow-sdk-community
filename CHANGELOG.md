@@ -44,6 +44,13 @@ throughout.
   them, so a consumer can tell which entry of a mixed message was skipped and
   keep a late reading marked as late. The applied entries and the record are
   unchanged.
+- On `NavimowMQTT`: `last_disconnected_at` and `last_connect_failed_at`, the
+  UTC time of the disconnect and the connect failure whose reasons
+  `last_disconnect_reason` and `last_connect_fail_reason` hold, and
+  `last_connected_monotonic`, the time of the last accepted connect on
+  `time.monotonic()`, the clock `last_message_age()` uses. All three are set in
+  paho's thread with the reasons and counters, whether or not a hook is set,
+  and are None until the first such event.
 
 - README: "Threaded applications", a tested recipe for applications that are
   not asyncio (WSGI apps, scripts, CLI tools): the SDK's loop on a thread of
