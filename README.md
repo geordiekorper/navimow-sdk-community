@@ -182,6 +182,12 @@ SDK does not recognise is passed through as the cloud sent it (REST gives `unkno
 
 `charging` comes only from the location channel's pose code.
 
+The same readers are public for payloads a consumer keeps raw (from
+`async_get_vehicle_status_raw()`, `on_raw` or a history): `mower_status_from_raw(raw)` gives the
+`MowerStatus` REST would, `canonical_state(raw)` the string a state message would,
+`RAW_STATE_TO_CANONICAL` is the table behind both, and `battery_from_payload(data)` reads the
+battery percentage from either payload shape.
+
 ## Development
 
 ```bash

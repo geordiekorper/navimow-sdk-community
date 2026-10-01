@@ -17,6 +17,12 @@ throughout.
   refused topic and an optional `on_subscribe(topic, granted, codes)` hook. A
   refused subscription used to be invisible: its data simply never arrived.
   Both are kept across `rebuild()`.
+- The payload readers the models use, public so a consumer that keeps raw
+  REST or MQTT payloads reads them the same way instead of copying them:
+  `RAW_STATE_TO_CANONICAL` (read-only), `canonical_state(raw)` (what
+  `DeviceStateMessage.state` holds), `mower_status_from_raw(raw)` (what
+  `DeviceStatus.status` holds) and `battery_from_payload(data)` (what both
+  models' `battery` holds; None for anything but a dict).
 - `SkippedLocationEntry`, one location entry that was not applied: its type,
   its time as read, the reason (`stale`, `implausible_time`, `placeholder`,
   `unparsable` or `unknown_type`) and the fields it carried, read as an applied
