@@ -20,6 +20,10 @@ throughout.
   take keyword-only `broker`, `port` and `ws_path` (None keeps the current
   value; a change always rebuilds). A WebSocket path's query is no longer shown
   in log lines.
+- `MowerAPI` with no token (empty or `None`) raises `MowerAuthRequiredError`
+  instead of a plain `MowerAPIError`, still before any request and still with
+  `status_code` 401 and `error_code` `TOKEN_EXPIRED`, so a consumer that
+  branches on the class asks for sign-in rather than retrying.
 
 ### Added
 
@@ -65,9 +69,9 @@ throughout.
   `time.monotonic()`, the clock `last_message_age()` uses. All three are set in
   paho's thread with the reasons and counters, whether or not a hook is set,
   and are None until the first such event.
-- `parse_topic(topic)` in `mower_sdk.mqtt` and the package, the device id and channel of a cloud
-  topic (`(None, None)` for any other topic); `_parse_topic` and
-  `NavimowMQTT._parse_topic` remain as the same function.
+- `parse_topic(topic)` in `mower_sdk.mqtt` and the package, the device id and
+  channel of a cloud topic (`(None, None)` for any other topic); `_parse_topic`
+  and `NavimowMQTT._parse_topic` remain as the same function.
 - `on_message_seen(device_id, channel, received_at)`: an async hook on
   `NavimowMQTT` and a callback registration on `NavimowSDK`, called for every
   message whose topic names a device and a channel, whatever its payload, with
@@ -117,18 +121,10 @@ throughout.
   `TargetZone.NONE` otherwise, None before any target report. An inference:
   the mower sends the same empty report for a mow-all task as when idle, and a
   charging break during a mow-all task reads `NONE`.
-
 - README: "Threaded applications", a tested recipe for applications that are
   not asyncio (WSGI apps, scripts, CLI tools): the SDK's loop on a thread of
   its own, REST through `run_coroutine_threadsafe`, callbacks handed over from
   the loop, and which calls block and must stay off the loop.
-
-### Changed
-
-- `MowerAPI` with no token (empty or `None`) raises `MowerAuthRequiredError`
-  instead of a plain `MowerAPIError`, still before any request and still with
-  `status_code` 401 and `error_code` `TOKEN_EXPIRED`, so a consumer that
-  branches on the class asks for sign-in rather than retrying.
 
 ### Fixed
 
