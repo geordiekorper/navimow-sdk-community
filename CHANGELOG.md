@@ -7,12 +7,26 @@ throughout.
 
 ## [Unreleased]
 
+### Added
+
+- `MowerAPI.async_get_devices_raw()`, the device-list entries as the cloud
+  sent them, including the fields `Device.from_dict()` does not read.
+
 ### Changed
 
 - `MowerAPI` with no token (empty or `None`) raises `MowerAuthRequiredError`
   instead of a plain `MowerAPIError`, still before any request and still with
   `status_code` 401 and `error_code` `TOKEN_EXPIRED`, so a consumer that
   branches on the class asks for sign-in rather than retrying.
+
+### Fixed
+
+- `MowerAPI.async_get_devices()` raised `AttributeError` or `TypeError` for a
+  successful reply whose `data`, `payload` or `devices` was null or of another
+  type, and for an entry that is not an object; it returns an empty list for
+  such a reply and leaves such an entry out. An entry without an `id` (missing,
+  null or empty) is left out and logged at warning level instead of becoming
+  `Device(id="")`.
 
 ## [0.2.0a3] - 2026-09-30
 

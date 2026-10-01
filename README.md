@@ -118,7 +118,8 @@ new token to `api.set_token()` and the new bearer header to
 default. Pass `MowerAPI(..., request_timeout=None)` to leave the session's own timeout policy in
 force instead, or another number of seconds to change the bound. A failed request or a refusal
 is a `MowerAPIError` (one exception is kept from upstream: a successful reply whose `data` is
-null makes most calls raise `AttributeError`); `MowerTransportError` means no usable reply (a timeout, a connection error, an
+null makes the two command calls raise `AttributeError`; the device list and the statuses are
+then empty); `MowerTransportError` means no usable reply (a timeout, a connection error, an
 HTTP 5xx, or a reply that is not JSON), so a command may still have been carried out;
 `MowerAuthRequiredError` means the credentials were refused, or that no token is set (then no
 request is sent); `MowerRateLimitedError` means slow down.

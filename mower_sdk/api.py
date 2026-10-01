@@ -5,6 +5,7 @@ Provides access to the mower platform's REST API.
 
 import asyncio
 import json
+import logging
 import uuid
 import warnings
 from typing import Any
@@ -19,6 +20,8 @@ from mower_sdk.errors import (
     ERROR_MESSAGES,
 )
 from mower_sdk.models import CommandReceipt, CommandVerdict, Device, DeviceStatus, MowerCommand, _int
+
+_LOGGER = logging.getLogger(__name__)
 
 # An HTTP error body is kept in the error message up to this many characters.
 _ERROR_BODY_LIMIT = 500
@@ -302,8 +305,44 @@ class MowerAPI:
             raise MowerAPIError(message, envelope_code=envelope_code)
         return response.get("data", {})
 
+    @staticmethod
+    def _device_entries(data: Any) -> list[dict[str, Any]]:
+        """The dict entries of data.payload.devices, or [] when there are none.
+
+        A successful reply without entries, whether data, payload or devices is
+        missing, null or not of the expected type, is an empty list; an entry
+        that is not a dict is left out.
+        """
+        payload = data.get("payload") if isinstance(data, dict) else None
+        devices = payload.get("devices") if isinstance(payload, dict) else None
+        return [entry for entry in devices if isinstance(entry, dict)] if isinstance(devices, list) else []
+
+    async def async_get_devices_raw(self) -> list[dict[str, Any]]:
+        """Fetch the device list as the cloud sent it.
+
+        One authList request; returns the dict entries of the reply's
+        data.payload.devices unchanged, and an empty list for a successful reply
+        without entries (data, payload or devices missing, null or not of the
+        expected type). Device.from_dict keeps only the fields it names, so a
+        field it does not read reaches the caller here. async_get_devices reads
+        the same entries into Device.
+
+        Returns:
+            The device entries, as dicts
+
+        Raises:
+            MowerAPIError: If the request fails
+        """
+        response = await self._async_request("GET", "/openapi/smarthome/authList")
+        return self._device_entries(self._unwrap(response))
+
     async def async_get_devices(self) -> list[Device]:
         """Fetch the device list asynchronously.
+
+        Reads async_get_devices_raw's entries into Device. A successful reply
+        without entries gives an empty list; an entry without an id (missing,
+        null or empty) is left out and logged at warning level, since a device
+        cannot be addressed without one.
 
         Returns:
             List of devices
@@ -311,10 +350,15 @@ class MowerAPI:
         Raises:
             MowerAPIError: If the request fails
         """
-        response = await self._async_request("GET", "/openapi/smarthome/authList")
-        payload = self._unwrap(response).get("payload", {})
-        devices_data = payload.get("devices", [])
-        return [Device.from_dict(device_data) for device_data in devices_data]
+        devices = []
+        for entry in await self.async_get_devices_raw():
+            if not entry.get("id"):
+                _LOGGER.warning(
+                    "Skipping a device entry without an id (keys: %s)", sorted(map(str, entry))
+                )
+                continue
+            devices.append(Device.from_dict(entry))
+        return devices
 
     async def async_get_mqtt_user_info(self) -> dict[str, Any]:
         """Fetch the MQTT connection information asynchronously.
@@ -379,12 +423,7 @@ class MowerAPI:
             "/openapi/smarthome/getVehicleStatus",
             data={"devices": [{"id": device_id} for device_id in device_ids]},
         )
-        # A successful reply without entries, whether the keys are missing or null,
-        # is an empty list.
-        data = self._unwrap(response)
-        payload = data.get("payload") if isinstance(data, dict) else None
-        devices = payload.get("devices") if isinstance(payload, dict) else None
-        return [entry for entry in devices if isinstance(entry, dict)] if isinstance(devices, list) else []
+        return self._device_entries(self._unwrap(response))
 
     async def async_get_device_statuses(
         self, device_ids: list[str]
