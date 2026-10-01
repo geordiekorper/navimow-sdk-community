@@ -11,6 +11,13 @@ throughout.
 
 - `MowerAPI.async_get_devices_raw()`, the device-list entries as the cloud
   sent them, including the fields `Device.from_dict()` does not read.
+- `SkippedLocationEntry`, one location entry that was not applied: its type,
+  its time as read, the reason (`stale`, `implausible_time`, `placeholder`,
+  `unparsable` or `unknown_type`) and the fields it carried, read as an applied
+  entry's would be. `ParsedLocation.skipped` and `RejectedMessage.skipped` list
+  them, so a consumer can tell which entry of a mixed message was skipped and
+  keep a late reading marked as late. The applied entries and the record are
+  unchanged.
 
 ### Changed
 

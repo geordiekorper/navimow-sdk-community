@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 # The public surface upstream published from this module, plus the community
 # additions CommandReceipt and CommandVerdict and the location channel's
 # DeviceLocation, DeviceLocationMessage, VEHICLE_STATE_TO_STATUS and
-# mower_time_ms, RejectedMessage, and STATE_KNOWN_FIELDS and
+# mower_time_ms, RejectedMessage, SkippedLocationEntry, and STATE_KNOWN_FIELDS and
 # REST_STATUS_KNOWN_FIELDS. The four Thing* classes now live
 # in mower_sdk.legacy.thing_models and are served by __getattr__.
 __all__ = [
@@ -42,6 +42,7 @@ __all__ = [
     "MowerStatus",
     "REST_STATUS_KNOWN_FIELDS",
     "RejectedMessage",
+    "SkippedLocationEntry",
     "STATE_KNOWN_FIELDS",
     "VEHICLE_STATE_TO_STATUS",
     "mower_time_ms",
@@ -985,6 +986,51 @@ class DeviceLocationMessage:
 
 
 @dataclass(frozen=True)
+class SkippedLocationEntry:
+    """One entry of a location message that was not applied, decoded as far as it goes.
+
+    ``reason`` is why it was skipped: stale (at or below the newest applied time
+    of its type), implausible_time, placeholder (an all-zero pose), unparsable (a
+    pose whose x or y cannot be read) or unknown_type. ``entry_type`` is the
+    type as sent when it is an integer, else None; ``timestamp`` the entry's
+    time as read, which for implausible_time may be zero, negative or far off,
+    and None when the entry has none or it cannot be read. The entry's own
+    fields follow, read the same way as DeviceLocationMessage's and None for
+    those it does not carry (all of them for an unknown type). ``raw`` is the
+    entry as decoded. Nothing in it reached the record, so it carries no
+    DeviceLocation; a consumer that keeps a history can store it marked as
+    skipped.
+    """
+
+    device_id: str
+    entry_type: int | None
+    timestamp: int | None
+    reason: str
+    received_at: datetime | None
+    x: float | None = None
+    y: float | None = None
+    theta: float | None = None
+    vehicle_state: int | None = None
+    current_zone: int | None = None
+    route_progress: int | None = None
+    mowing_percentage: float | None = None
+    area_m2: float | None = None
+    week_area_m2: float | None = None
+    action: int | None = None
+    sub_action: int | None = None
+    mow_start_type: int | None = None
+    map_work_position: str | None = None
+    partition_ids: tuple[int, ...] | None = None
+    task_delay: bool | None = None
+    raw: dict[str, Any] = field(default_factory=dict, compare=False, repr=False)
+
+    @property
+    def status(self) -> MowerStatus | None:
+        """The pose code as a MowerStatus; None without one, UNKNOWN for a code not in the table."""
+        return _status_of(self.vehicle_state)
+
+
+@dataclass(frozen=True)
 class RejectedMessage:
     """A message NavimowSDK did not apply, or applied with something unknown in it.
 
@@ -992,7 +1038,9 @@ class RejectedMessage:
     unknown_type, unknown_field, stale, placeholder). ``payload`` is the bytes the
     facade received: the wire bytes for an array, and for an object the MQTT
     client's re-encoded form with device_id added. Recording it is the
-    consumer's.
+    consumer's. ``skipped`` lists, for a location message, each entry that was
+    not applied, in the order the decoder met them (empty for the other
+    channels, and for a location message that was unparsable as a whole).
     """
 
     channel: str
@@ -1002,6 +1050,7 @@ class RejectedMessage:
     reasons: tuple[str, ...]
     payload: bytes
     received_at: datetime
+    skipped: tuple[SkippedLocationEntry, ...] = ()
 
 
 # Names that moved to mower_sdk.legacy: attribute here -> (legacy module, attribute there).

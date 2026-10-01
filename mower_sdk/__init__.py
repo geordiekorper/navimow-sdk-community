@@ -42,6 +42,7 @@ from mower_sdk.models import (
     REST_STATUS_KNOWN_FIELDS,
     RejectedMessage,
     STATE_KNOWN_FIELDS,
+    SkippedLocationEntry,
     VEHICLE_STATE_TO_STATUS,
     mower_time_ms,
 )
@@ -123,6 +124,7 @@ __all__ = [
     "REST_STATUS_KNOWN_FIELDS",
     "RejectedMessage",
     "STATE_KNOWN_FIELDS",
+    "SkippedLocationEntry",
     "VEHICLE_STATE_TO_STATUS",
     "mower_time_ms",
     "ThingStatusMessage",

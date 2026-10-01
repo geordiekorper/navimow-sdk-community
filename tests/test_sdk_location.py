@@ -130,6 +130,8 @@ def test_one_callback_per_applied_entry_with_the_record_as_of_that_entry_and_one
     (rejection,) = rejected
     assert (rejection.channel, rejection.topic, rejection.device_id) == ("location", topic("location"), DEVICE_ID)
     assert (rejection.reason, rejection.reasons) == ("unknown_type", ("unknown_type", "placeholder"))
+    assert [(s.entry_type, s.reason, s.x) for s in rejection.skipped] == [(9, "unknown_type", None), (1, "placeholder", 0.0)]
+    assert all(s.received_at == rejection.received_at for s in rejection.skipped)
     assert rejection.payload is payload
     assert rejection.received_at.tzinfo is UTC
 
@@ -139,7 +141,9 @@ def test_an_unreadable_location_payload_is_rejected_as_unparsable(sdk: NavimowSD
     rejected: list[RejectedMessage] = []
     sdk.on_rejected(rejected.append)
     deliver(sdk, "location", payload)
-    assert [(r.reason, r.reasons, r.payload) for r in rejected] == [("unparsable", ("unparsable",), payload)]
+    assert [(r.reason, r.reasons, r.payload, r.skipped) for r in rejected] == [
+        ("unparsable", ("unparsable",), payload, ())
+    ]
     assert sdk.get_cached_location(DEVICE_ID) is None
 
 

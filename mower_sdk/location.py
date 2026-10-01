@@ -27,7 +27,13 @@ from dataclasses import dataclass, field, fields, replace
 from datetime import datetime
 from typing import Any
 
-from mower_sdk.models import DeviceLocation, DeviceLocationMessage, _number, _whole
+from mower_sdk.models import (
+    DeviceLocation,
+    DeviceLocationMessage,
+    SkippedLocationEntry,
+    _number,
+    _whole,
+)
 
 __all__ = [
     "LOCATION_ENTRY_TYPES",
@@ -75,12 +81,14 @@ class ParsedLocation:
 
     ``messages`` holds one DeviceLocationMessage per applied entry, in the order
     they were applied (timed entries by ascending time, untimed entries in their
-    place in the message); ``reasons`` why any part of the message was not
-    applied, or was applied with something unknown in it.
+    place in the message); ``skipped`` one SkippedLocationEntry per entry that
+    was not applied, in the order the decoder met them; ``reasons`` why any part
+    of the message was not applied, or was applied with something unknown in it.
     """
 
     messages: list[DeviceLocationMessage] = field(default_factory=list)
     reasons: list[str] = field(default_factory=list)
+    skipped: list[SkippedLocationEntry] = field(default_factory=list)
 
     def _reject(self, reason: str) -> None:
         if reason not in self.reasons:
@@ -129,6 +137,40 @@ def _partition_ids(value: Any) -> tuple[int, ...]:
 
 def _task_delay(value: Any) -> bool | None:
     return value if isinstance(value, bool) else None
+
+
+def _entry_fields(entry_type: int, item: dict[str, Any]) -> dict[str, Any]:
+    """The entry's own fields, read from item, as DeviceLocationMessage names them.
+
+    A task entry carries current_zone and route_progress only when it sent their
+    keys, so a record field it did not report is left alone.
+    """
+    if entry_type == 1:
+        return {
+            "x": _number(item.get("postureX")),
+            "y": _number(item.get("postureY")),
+            "theta": _number(item.get("postureTheta")),
+            "vehicle_state": _whole(item.get("vehicleState")),
+        }
+    if entry_type == 2:
+        own: dict[str, Any] = {}
+        if "currentMowBoundary" in item:
+            own["current_zone"] = _whole(item.get("currentMowBoundary"))
+        if "currentMowProgress" in item:
+            own["route_progress"] = _whole(item.get("currentMowProgress"))
+        own.update(
+            mowing_percentage=_number(item.get("mowingPercentage")),
+            area_m2=_number(item.get("subtotalArea")),
+            week_area_m2=_number(item.get("mowingWeekArea")),
+            action=_whole(item.get("action")),
+            sub_action=_whole(item.get("subAction")),
+            mow_start_type=_whole(item.get("mowStartType")),
+            map_work_position=None if item.get("mapWorkPosition") is None else str(item["mapWorkPosition"]),
+        )
+        return own
+    if entry_type == 3:
+        return {"partition_ids": _partition_ids(item.get("partitionIds"))}
+    return {"task_delay": _task_delay(item.get("taskDelay"))}
 
 
 class LocationDecoder:
@@ -186,7 +228,10 @@ class LocationDecoder:
         (delay entries carry no time and are never stale); a pose whose x or y is
         unreadable is unparsable, and an all-zero pose a placeholder, neither
         applied; a target entry without partitionIds clears the target; a repeat of
-        the same target set advances only target_last_at.
+        the same target set advances only target_last_at. Every entry skipped for
+        one of these reasons is in ParsedLocation.skipped, with its fields read as
+        far as they go; an item that is not an object, and the reconnect-time delay
+        entry, are not entries and are left out of it.
         """
         result = ParsedLocation()
         if isinstance(payload, dict):
@@ -202,6 +247,20 @@ class LocationDecoder:
         record["device_id"] = device_id
         record["marks"] = dict(current.marks)
 
+        def skip(reason: str, entry_type: int | None, entry_time: int | None, own: dict[str, Any]) -> None:
+            result._reject(reason)
+            result.skipped.append(
+                SkippedLocationEntry(
+                    device_id=device_id,
+                    entry_type=entry_type,
+                    timestamp=entry_time,
+                    reason=reason,
+                    received_at=received_at,
+                    raw=dict(item),
+                    **own,
+                )
+            )
+
         for item in _in_time_order(payload):
             if not isinstance(item, dict):
                 continue
@@ -209,10 +268,11 @@ class LocationDecoder:
             if not item.keys() <= LOCATION_KNOWN_FIELDS:
                 result._reject("unknown_field")
             if type(entry_type) is not int or entry_type not in LOCATION_ENTRY_TYPES:
-                result._reject("unknown_type")
+                skip("unknown_type", entry_type if type(entry_type) is int else None, _whole(item.get("time")), {})
                 continue
             if entry_type == 4 and "taskDelay" not in item:
                 continue  # the reconnect-time shape: no delay in it, the pose has the state
+            own = _entry_fields(entry_type, item)
             # A delay entry carries no time of its own and is never guarded. A time sent
             # as zero, negative or unreadable is not believed either, rather than taken
             # as "no time", which would skip the stale check.
@@ -220,51 +280,34 @@ class LocationDecoder:
             if entry_type in _OBSERVED_AT and item.get("time") is not None:
                 entry_time = _whole(item["time"])
                 if entry_time is None or not _plausible(entry_time, now_ms):
-                    result._reject("implausible_time")
+                    skip("implausible_time", entry_type, entry_time, own)
                     continue
             newest = self._newest(record, entry_type)
             if entry_time is not None and newest is not None and entry_time <= newest:
-                result._reject("stale")
+                skip("stale", entry_type, entry_time, own)
                 continue
 
-            own: dict[str, Any] = {}
             if entry_type == 1:
-                x, y = _number(item.get("postureX")), _number(item.get("postureY"))
-                if x is None or y is None:
-                    result._reject("unparsable")
+                if own["x"] is None or own["y"] is None:
+                    skip("unparsable", entry_type, entry_time, own)
                     continue
-                theta = _number(item.get("postureTheta"))
-                if x == 0 and y == 0 and not theta:
-                    result._reject("placeholder")
+                if own["x"] == 0 and own["y"] == 0 and not own["theta"]:
+                    skip("placeholder", entry_type, entry_time, own)
                     continue
-                own = {"x": x, "y": y, "theta": theta, "vehicle_state": _whole(item.get("vehicleState"))}
                 record.update(own, pose_at=entry_time, pose_received_at=received_at)
             elif entry_type == 2:
-                if "currentMowBoundary" in item:
-                    own["current_zone"] = _whole(item.get("currentMowBoundary"))
+                if "current_zone" in own:
                     record.update(current_zone=own["current_zone"], zone_at=entry_time)
-                if "currentMowProgress" in item:
-                    own["route_progress"] = _whole(item.get("currentMowProgress"))
+                if "route_progress" in own:
                     record.update(route_progress=own["route_progress"], progress_at=entry_time)
-                task = {
-                    "mowing_percentage": _number(item.get("mowingPercentage")),
-                    "area_m2": _number(item.get("subtotalArea")),
-                    "week_area_m2": _number(item.get("mowingWeekArea")),
-                    "action": _whole(item.get("action")),
-                    "sub_action": _whole(item.get("subAction")),
-                    "mow_start_type": _whole(item.get("mowStartType")),
-                    "map_work_position": None if item.get("mapWorkPosition") is None else str(item["mapWorkPosition"]),
-                }
-                own.update(task)
+                task = {key: value for key, value in own.items() if key not in ("current_zone", "route_progress")}
                 record.update(task, task_at=entry_time)
             elif entry_type == 3:
-                ids = _partition_ids(item.get("partitionIds"))
-                own["partition_ids"] = ids
+                ids = own["partition_ids"]
                 if record["partition_ids"] is None or set(ids) != set(record["partition_ids"]):
                     record.update(partition_ids=ids, target_at=entry_time)
                 record["target_last_at"] = entry_time  # a repeat of the same set, in any order, only advances this
             else:
-                own["task_delay"] = _task_delay(item.get("taskDelay"))
                 record.update(task_delay=own["task_delay"], delay_received_at=received_at)
 
             if entry_time is not None:

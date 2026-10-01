@@ -43,6 +43,7 @@ COMMUNITY_ADDITIONS: dict[str, set[str]] = {
         "REST_STATUS_KNOWN_FIELDS",
         "RejectedMessage",
         "STATE_KNOWN_FIELDS",
+        "SkippedLocationEntry",
         "VEHICLE_STATE_TO_STATUS",
         "mower_time_ms",
     },
