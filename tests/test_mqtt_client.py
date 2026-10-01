@@ -612,7 +612,16 @@ def test_redact_client_id(value: str, redacted: str) -> None:
 
 @pytest.mark.parametrize(
     ("path", "redacted"),
-    [("/mqtt/12345678", "/mqtt/…"), ("/mqtt/1/2", "/mqtt/…"), ("/mqtt", "/mqtt"), ("", ""), (None, None)],
+    [
+        ("/mqtt/12345678", "/mqtt/…"),
+        ("/mqtt/1/2", "/mqtt/…"),
+        ("/mqtt", "/mqtt"),
+        ("/mqtt?token=secret", "/mqtt?…"),
+        ("/mqtt/1?token=secret", "/mqtt/…"),
+        ("/?token=secret", "/?…"),
+        ("", ""),
+        (None, None),
+    ],
 )
 def test_redact_ws_path(path: str | None, redacted: str | None) -> None:
     assert mqtt_module._redact_ws_path(path) == redacted
@@ -1438,6 +1447,143 @@ def test_force_reconnect_rebuilds_a_healthy_connection(fake_paho: type[FakeClien
         assert mqtt.client.named("username_pw_set") == [("username_pw_set", ("user", "rotated"), {})]
         assert mqtt.rebuilds == 2
         assert fake_paho.instances == [first, second, mqtt.client]
+
+    run(test)
+
+
+def test_a_new_broker_address_rebuilds_a_live_connection_on_it(
+    fake_paho: type[FakeClient], caplog: pytest.LogCaptureFixture
+) -> None:
+    async def test() -> None:
+        mqtt = make(WS_KWARGS)
+        first = mqtt.client
+        first.connected = True
+        with caplog.at_level(logging.INFO, logger="mower_sdk.mqtt"):
+            mqtt.update_credentials(password="new", broker="moved.example.invalid", ws_path="/mqtt/12345?t=secret")
+        second = mqtt.client
+        assert second is not first
+        assert first.named("disconnect") == [("disconnect", (), {})]
+        assert (mqtt.broker, mqtt.port, mqtt.ws_path, mqtt._use_tls) == (
+            "moved.example.invalid",
+            8884,  # not named: kept
+            "/mqtt/12345?t=secret",
+            True,
+        )
+        assert second.named("connect_async") == [("connect_async", ("moved.example.invalid", 8884, 60), {})]
+        assert second.named("ws_set_options")[0][2]["path"] == "/mqtt/12345?t=secret"
+        assert second.named("username_pw_set") == [("username_pw_set", ("user", "new"), {})]
+        assert (mqtt.rebuilds, mqtt.last_rebuild_reason) == (1, "broker changed")
+        lines = [record.getMessage() for record in caplog.records]
+        assert (
+            "NavimowMQTT broker changed: from broker=broker.example.invalid port=8884 ws_path=/mqtt "
+            "to broker=moved.example.invalid port=8884 ws_path=/mqtt/… tls=True"
+        ) in lines
+        assert not any("secret" in line or "12345" in line for line in lines)
+        assert fake_paho.instances == [first, second]
+
+    run(test)
+
+
+@pytest.mark.parametrize(
+    ("change", "address"),
+    [
+        ({"port": 9443}, ("broker.example.invalid", 9443, "/mqtt")),
+        ({"broker": "wss://moved.example.invalid:9443"}, ("moved.example.invalid", 9443, "/mqtt")),
+        ({"broker": "wss://moved.example.invalid:9443", "port": 1}, ("moved.example.invalid", 9443, "/mqtt")),
+        ({"broker": "moved.example.invalid"}, ("moved.example.invalid", 8884, "/mqtt")),
+        ({"ws_path": "/other"}, ("broker.example.invalid", 8884, "/other")),
+    ],
+    ids=["port", "url_with_port", "url_port_wins", "host", "path"],
+)
+def test_each_part_of_the_address_is_merged_and_rebuilds(
+    fake_paho: type[FakeClient], change: dict[str, Any], address: tuple[str, int, str]
+) -> None:
+    async def test() -> None:
+        mqtt = make(WS_KWARGS)
+        mqtt.update_credentials(**change)
+        assert (mqtt.broker, mqtt.port, mqtt.ws_path) == address
+        assert mqtt.client.named("connect_async") == [("connect_async", (address[0], address[1], 60), {})]
+        assert mqtt.last_rebuild_reason == "broker changed"
+        assert len(fake_paho.instances) == 2
+
+    run(test)
+
+
+@pytest.mark.parametrize(
+    "same",
+    [
+        {"broker": "BROKER.example.invalid"},
+        {"broker": "wss://broker.example.invalid:8884", "port": 8884, "ws_path": "/mqtt"},
+        {"port": 8884},
+        {"broker": None, "port": None, "ws_path": None},
+    ],
+    ids=["case", "all_equal", "port_equal", "none"],
+)
+def test_the_same_address_does_not_rebuild_a_live_client(fake_paho: type[FakeClient], same: dict[str, Any]) -> None:
+    async def test() -> None:
+        mqtt = make(WS_KWARGS)
+        mqtt.client.connected = True
+        mqtt.update_credentials(password="rotated", **same)
+        assert mqtt.rebuilds == 0
+        assert mqtt.client.named("username_pw_set")[-1] == ("username_pw_set", ("user", "rotated"), {})
+        assert fake_paho.instances == [mqtt.client]
+
+    run(test)
+
+
+def test_a_tcp_client_moved_to_another_host_stays_on_tcp(fake_paho: type[FakeClient]) -> None:
+    async def test() -> None:
+        mqtt = make(TCP_KWARGS)
+        mqtt.rebuild(broker="moved.example.invalid", reason="test")
+        assert (mqtt.broker, mqtt.port, mqtt.ws_path, mqtt._use_tls) == ("moved.example.invalid", 1883, None, False)
+        assert mqtt.client.calls[0][2]["transport"] == "tcp"
+        assert mqtt.client.named("tls_set") == []
+        assert len(fake_paho.instances) == 2
+
+    run(test)
+
+
+def test_a_wss_broker_keeps_tls_when_moved_to_a_host_without_a_scheme(fake_paho: type[FakeClient]) -> None:
+    async def test() -> None:
+        mqtt = make(WSS_NO_PATH_KWARGS)
+        assert mqtt._use_tls is True
+        mqtt.rebuild(broker="moved.example.invalid", reason="test")
+        assert mqtt._use_tls is True
+        assert mqtt.client.named("tls_set") == [("tls_set", (), {})]
+        assert len(fake_paho.instances) == 2
+
+    run(test)
+
+
+@pytest.mark.parametrize(
+    ("start", "change", "transport", "tls"),
+    [
+        # A scheme names TLS: wss:// turns it on, another scheme off, on the same host and port.
+        (TCP_KWARGS, {"broker": "wss://broker.example.invalid:1883"}, "tcp", True),
+        (WSS_NO_PATH_KWARGS, {"broker": "tcp://broker.example.invalid:443"}, "tcp", False),
+        # A WebSocket path turns on the WebSocket transport and TLS; an empty one turns both off.
+        (TCP_KWARGS, {"ws_path": "/mqtt"}, "websockets", True),
+        ({**TCP_KWARGS, "ws_path": "/mqtt"}, {"ws_path": ""}, "tcp", False),
+        # An empty path with a wss:// broker keeps TLS on TCP.
+        (WS_KWARGS, {"ws_path": ""}, "tcp", True),
+    ],
+    ids=["scheme_on", "scheme_off", "path_added", "path_cleared", "path_cleared_wss"],
+)
+def test_the_transport_and_tls_follow_a_new_scheme_or_path(
+    fake_paho: type[FakeClient], start: dict[str, Any], change: dict[str, Any], transport: str, tls: bool
+) -> None:
+    async def test() -> None:
+        mqtt = make(start)
+        old = mqtt.client
+        mqtt.update_credentials(**change)
+        new = mqtt.client
+        assert new is not old
+        assert (mqtt.rebuilds, mqtt.last_rebuild_reason) == (1, "broker changed")
+        assert new.calls[0][2]["transport"] == transport
+        assert mqtt._use_tls is tls
+        assert new.named("tls_set") == ([("tls_set", (), {})] if tls else [])
+        assert bool(new.named("ws_set_options")) is (transport == "websockets")
+        assert fake_paho.instances == [old, new]
 
     run(test)
 

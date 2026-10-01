@@ -219,11 +219,18 @@ def _redact_client_id(client_id: str) -> str:
 
 
 def _redact_ws_path(path: str | None) -> str | None:
-    """The WebSocket path for a log line: its first segment only (/mqtt/{userId} logs as /mqtt/…)."""
+    """The WebSocket path for a log line: its first segment only (/mqtt/{userId} logs as /mqtt/…).
+
+    A query is never shown (/mqtt?token=… logs as /mqtt?…): a path read from a
+    full URL in the credential reply may carry one.
+    """
     if not path:
         return path
-    first, sep, _ = path.lstrip("/").partition("/")
-    return f"/{first}/…" if sep else path
+    path_only, query, _ = path.partition("?")
+    first, sep, _ = path_only.lstrip("/").partition("/")
+    if sep:
+        return f"/{first}/…"
+    return f"{path_only}?…" if query else path
 
 
 def _configured(value: str | None) -> str:
@@ -349,7 +356,10 @@ class NavimowMQTT:
         self.loop = _resolve_event_loop(loop)
         self.ws_path = ws_path
         self.auth_headers = auth_headers
-        self._use_tls = bool(ws_path) or parsed.scheme == "wss"
+        # A wss:// broker asks for TLS even without a WebSocket path; kept so a later
+        # change of path or of a scheme-less host does not lose it.
+        self._wss_scheme = parsed.scheme == "wss"
+        self._use_tls = bool(ws_path) or self._wss_scheme
         self._client_id = _build_web_client_id(self.username)
         self.keepalive_seconds = max(30, int(keepalive_seconds))
         self.reconnect_min_delay = max(0, int(reconnect_min_delay))
@@ -497,12 +507,50 @@ class NavimowMQTT:
         self._configure_client(client)
         return client
 
+    def _endpoint_after(
+        self, broker: str | None, port: int | None, ws_path: str | None
+    ) -> tuple[str, int, str | None, bool]:
+        """(broker, port, ws_path, wss scheme) once the given values are merged; None means keep.
+
+        broker is read as the constructor reads it: a URL's host and, when it has
+        one, its port, which wins over port.
+        """
+        new_broker, new_port, new_path, wss = self.broker, self.port, self.ws_path, self._wss_scheme
+        if broker is not None:
+            parsed = urlparse(broker)
+            new_broker = parsed.hostname or broker
+            if parsed.scheme:
+                wss = parsed.scheme == "wss"
+            if parsed.port:
+                port = parsed.port
+        if port is not None:
+            new_port = int(port)
+        if ws_path is not None:
+            new_path = ws_path
+        return new_broker, new_port, new_path, wss
+
+    def _endpoint_differs(self, broker: str | None, port: int | None, ws_path: str | None) -> bool:
+        """Whether merging the given broker, port and ws_path changes where the client connects.
+
+        Host names are compared without regard to case.
+        """
+        new_broker, new_port, new_path, wss = self._endpoint_after(broker, port, ws_path)
+        return (new_broker.lower(), new_port, new_path, wss) != (
+            self.broker.lower(),
+            self.port,
+            self.ws_path,
+            self._wss_scheme,
+        )
+
     def update_credentials(
         self,
         username: str | None = None,
         password: str | None = None,
         auth_headers: dict[str, str] | None = None,
         *,
+        broker: str | None = None,
+        port: int | None = None,
+        ws_path: str | None = None,
         force_reconnect: bool = False,
     ) -> None:
         """Update the MQTT credentials.
@@ -523,11 +571,26 @@ class NavimowMQTT:
         not anything changed and whether or not the client is connected, dropping a
         healthy connection on purpose.
 
+        broker, port and ws_path (None means keep) move the client to another
+        address. A live client cannot change address, so when any of them differs
+        from the current value the update goes through rebuild() whether or not
+        the client is connected, dropping a live connection.
+
         The rebuilding paths block (see rebuild()) and must be called off the event
         loop. The connected, non-forced path does no blocking work of its own, but
         like connect_async() it waits while a rebuild runs on another thread.
         """
         with self._lifecycle_lock:
+            if self._endpoint_differs(broker, port, ws_path):
+                # Decision: a new address always rebuilds, connected or not. paho keeps
+                # the host, port and path of the client it connected with, so setting
+                # them on a live client would change nothing until a rebuild, and a
+                # client left on a host the cloud no longer names can never reconnect.
+                # A live connection to the old address is dropped.
+                self.rebuild(
+                    username, password, auth_headers, broker=broker, port=port, ws_path=ws_path, reason="broker changed"
+                )
+                return
             changed = False
             if username is not None and username != self.username:
                 self.username = username
@@ -574,12 +637,18 @@ class NavimowMQTT:
         password: str | None = None,
         auth_headers: dict[str, str] | None = None,
         *,
+        broker: str | None = None,
+        port: int | None = None,
+        ws_path: str | None = None,
         reason: str | None = None,
     ) -> None:
         """Replace the paho client with a new one and connect it.
 
         The given values are merged into the stored ones (None means keep, as in
-        update_credentials). The new client is built through _build_new_client with
+        update_credentials). broker is read as the constructor reads it (a URL's
+        host, and its port when it has one); a change of broker, port or ws_path
+        is logged with the old and the new address, the path redacted, and TLS
+        follows the new values as at construction. The new client is built through _build_new_client with
         a fresh random suffix in its client id and installed as self.client before
         the old one is torn down, so the SDK's own callbacks (on_connect,
         on_disconnect, on_connect_fail, on_message, on_subscribe) from the old
@@ -610,6 +679,18 @@ class NavimowMQTT:
                 self.password = password
             if auth_headers is not None:
                 self.auth_headers = auth_headers
+            if self._endpoint_differs(broker, port, ws_path):
+                old_address = (self.broker, self.port, _redact_ws_path(self.ws_path))
+                self.broker, self.port, self.ws_path, self._wss_scheme = self._endpoint_after(broker, port, ws_path)
+                self._use_tls = bool(self.ws_path) or self._wss_scheme
+                _LOGGER.info(
+                    "NavimowMQTT broker changed: from broker=%s port=%s ws_path=%s to broker=%s port=%s ws_path=%s tls=%s",
+                    *old_address,
+                    self.broker,
+                    self.port,
+                    _redact_ws_path(self.ws_path),
+                    self._use_tls,
+                )
 
             old = self.client
             self._client_id = _build_web_client_id(self.username)

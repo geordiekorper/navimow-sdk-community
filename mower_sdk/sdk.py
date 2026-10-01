@@ -24,6 +24,7 @@ from mower_sdk.models import (
     RejectedMessage,
     STATE_KNOWN_FIELDS,
     SkippedLocationEntry,
+    _broker_endpoint,
     _credential,
     mower_time_ms,
 )
@@ -243,9 +244,12 @@ class NavimowSDK:
         password: str | None = None,
         auth_headers: dict[str, str] | None = None,
         *,
+        broker: str | None = None,
+        port: int | None = None,
+        ws_path: str | None = None,
         force_reconnect: bool = False,
     ) -> None:
-        """Update the MQTT credentials.
+        """Update the MQTT credentials, and the broker's address when it moved.
 
         Unchanged values are ignored and None means "keep", so a password-only or
         headers-only update is merged with the stored values. While connected, the
@@ -254,6 +258,8 @@ class NavimowSDK:
         them at its next connect, automatic reconnects included. While disconnected,
         changed values rebuild the paho client and start an asynchronous reconnect.
         force_reconnect=True rebuilds and reconnects in any case (NavimowMQTT.rebuild).
+        broker, port and ws_path (None means keep) that differ from the client's
+        rebuild it on the new address, connected or not (NavimowMQTT.update_credentials).
         The rebuilding paths block and must be called off the event loop; every
         path, like connect(), disconnect() and the command methods, waits while a
         rebuild runs on another thread.
@@ -265,6 +271,9 @@ class NavimowSDK:
             username=username,
             password=password,
             auth_headers=auth_headers,
+            broker=broker,
+            port=port,
+            ws_path=ws_path,
             force_reconnect=force_reconnect,
         )
 
@@ -292,7 +301,12 @@ class NavimowSDK:
         at a time. Otherwise userName and pwdInfo from the reply are applied,
         as strings, through update_mqtt_credentials(..., force_reconnect=...),
         run in the default executor because its rebuilding paths block, and
-        True is returned. It does not start a connection of its own: unchanged
+        True is returned. When the reply names a broker host, port or WebSocket
+        path (read as MqttConnectionInfo reads them) that differs from the
+        client's, they are applied too, and the client is rebuilt on the new
+        address whether or not it is connected; a value the reply does not name
+        is kept, and a broker the reply names but that cannot be read is logged
+        and kept while the credentials are still applied. It does not start a connection of its own: unchanged
         values without force_reconnect leave the client alone. Changed values
         on a client that is not connected go through a rebuild, which connects,
         as update_mqtt_credentials always has; a connect() after it is then a
@@ -329,6 +343,19 @@ class NavimowSDK:
             password = _credential(info.get("pwdInfo")) if isinstance(info, dict) else None
             if username is None and password is None:
                 raise MowerAPIError(f"{ERROR_MESSAGES['API_REQUEST_FAILED']}: no broker credentials in the reply")
+            broker = port = ws_path = None
+            try:
+                broker, port, ws_path = _broker_endpoint(info)
+            except MowerAPIError as exc:
+                _LOGGER.warning("Navimow credential reply: broker address kept, the reply's cannot be read: %s", exc)
+            # Decision: the reply is authoritative for the broker. A host, port or path
+            # it names that differs from the client's rebuilds the client on the new
+            # address, dropping a live connection; this helper runs after a failed
+            # connect, so the client is normally retrying against the old address
+            # already, and on a host the cloud no longer names it never succeeds. What
+            # the reply does not name (the port, when mqttHost has none) is kept rather
+            # than defaulted, so a client built for another port or transport is not
+            # moved by a reply that says nothing about it.
             await running.run_in_executor(
                 None,
                 functools.partial(
@@ -336,6 +363,9 @@ class NavimowSDK:
                     username,
                     password,
                     auth_headers,
+                    broker=broker,
+                    port=port,
+                    ws_path=ws_path,
                     force_reconnect=force_reconnect,
                 ),
             )

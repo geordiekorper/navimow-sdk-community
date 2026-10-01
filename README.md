@@ -266,7 +266,8 @@ as in the quick example. The constructor stays available for another transport.
 **Broker credentials.** The MQTT username and password come from the cloud's credential endpoint,
 which allows about one call a minute. `await sdk.async_refresh_broker_credentials(api,
 auth_headers=...)` fetches and applies them, at most once per 65 seconds: call it at startup
-before `connect()`, and again after a failed connect (`sdk.mqtt.on_connect_fail`). Do not call it
+before `connect()`, and again after a failed connect (`sdk.mqtt.on_connect_fail`). When the reply
+names another broker host, port or path, the client is rebuilt on it. Do not call it
 on a timer or on an OAuth token refresh: after a token refresh, pass the new bearer header with
 `sdk.update_mqtt_credentials(auth_headers=...)` alone.
 

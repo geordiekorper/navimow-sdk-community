@@ -7,6 +7,20 @@ throughout.
 
 ## [Unreleased]
 
+### Changed
+
+- **`async_refresh_broker_credentials` follows a broker that moved.** When the
+  credential reply names a broker host, port or WebSocket path (read as
+  `MqttConnectionInfo` reads them) that differs from the client's, the client
+  is rebuilt on the new address, connected or not, dropping a live connection
+  (`last_rebuild_reason` is "broker changed"). A value the reply does not name
+  is kept; a broker it names but that cannot be read is logged and kept, and
+  the credentials are applied as before. `NavimowMQTT.rebuild()`,
+  `NavimowMQTT.update_credentials()` and `NavimowSDK.update_mqtt_credentials()`
+  take keyword-only `broker`, `port` and `ws_path` (None keeps the current
+  value; a change always rebuilds). A WebSocket path's query is no longer shown
+  in log lines.
+
 ### Added
 
 - `MowerAPI.async_get_devices_raw()`, the device-list entries as the cloud
