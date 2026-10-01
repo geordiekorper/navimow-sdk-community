@@ -50,7 +50,7 @@ from mower_sdk.models import (
     mower_status_from_raw,
     mower_time_ms,
 )
-from mower_sdk.mqtt import ConnectionEvent, NavimowMQTT, ReceivedPayload
+from mower_sdk.mqtt import ConnectionEvent, NavimowMQTT, ReceivedPayload, parse_topic
 from mower_sdk.sdk import NavimowSDK
 
 if TYPE_CHECKING:
@@ -109,6 +109,7 @@ __all__ = [
     "ConnectionEvent",
     "NavimowMQTT",
     "ReceivedPayload",
+    "parse_topic",
     "NavimowCloud",
     "NavimowCloudDevice",
     "StateManager",

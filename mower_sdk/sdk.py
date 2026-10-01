@@ -25,7 +25,7 @@ from mower_sdk.models import (
     SkippedLocationEntry,
     mower_time_ms,
 )
-from mower_sdk.mqtt import NavimowMQTT, _decode_json, _original_payload, _parse_topic, _resolve_event_loop
+from mower_sdk.mqtt import NavimowMQTT, _decode_json, _original_payload, _resolve_event_loop, parse_topic
 
 if TYPE_CHECKING:
     from mower_sdk.api import MowerAPI
@@ -139,6 +139,7 @@ class NavimowSDK:
         self._location_callbacks: list[Callable[[DeviceLocationMessage], None]] = []
         self._rejected_callbacks: list[Callable[[RejectedMessage], None]] = []
         self._raw_callbacks: list[Callable[[str, bytes], None]] = []
+        self._seen_callbacks: list[Callable[[str, str, datetime], None]] = []
         self._location = LocationDecoder()
         self._credentials_lock = asyncio.Lock()
         self._credentials_attempted_at: float | None = None
@@ -301,6 +302,17 @@ class NavimowSDK:
         self._raw_callbacks.append(callback)
         self._mqtt.on_raw = self._on_mqtt_raw
 
+    def on_message_seen(self, callback: Callable[[str, str, datetime], None]) -> None:
+        """Call callback(device_id, channel, received_at) for every message on a device's topic.
+
+        Every message whose topic names a device and a channel counts, whatever
+        its payload and whether or not it is applied, with the UTC receipt time
+        mqtt.last_message_at() records for it. Nothing extra runs per message
+        until the first such callback is registered.
+        """
+        self._seen_callbacks.append(callback)
+        self._mqtt.on_message_seen = self._on_mqtt_message_seen
+
     def get_cached_location(self, device_id: str) -> DeviceLocation | None:
         """The merged location record for device_id, or None before any location entry or restore."""
         return self._location.get(device_id)
@@ -341,10 +353,20 @@ class NavimowSDK:
             except Exception:
                 _LOGGER.exception("Navimow raw callback %r failed for topic %s", callback, topic)
 
+    async def _on_mqtt_message_seen(self, device_id: str, channel: str, received_at: datetime) -> None:
+        """Call each message-seen callback; one that raises is logged and the rest still run."""
+        for callback in list(self._seen_callbacks):
+            try:
+                callback(device_id, channel, received_at)
+            except Exception:
+                _LOGGER.exception(
+                    "Navimow message-seen callback %r failed for device %s channel %s", callback, device_id, channel
+                )
+
     async def _on_mqtt_message(
         self, topic: str, payload: bytes, device_id: str
     ) -> None:
-        _, channel = _parse_topic(topic)
+        _, channel = parse_topic(topic)
         if channel == "location":
             self._on_location_message(topic, payload, device_id)
             return

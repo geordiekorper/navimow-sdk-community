@@ -51,6 +51,14 @@ throughout.
   `time.monotonic()`, the clock `last_message_age()` uses. All three are set in
   paho's thread with the reasons and counters, whether or not a hook is set,
   and are None until the first such event.
+- `parse_topic(topic)` in `mower_sdk.mqtt` and the package, the device id and channel of a cloud
+  topic (`(None, None)` for any other topic); `_parse_topic` and
+  `NavimowMQTT._parse_topic` remain as the same function.
+- `on_message_seen(device_id, channel, received_at)`: an async hook on
+  `NavimowMQTT` and a callback registration on `NavimowSDK`, called for every
+  message whose topic names a device and a channel, whatever its payload, with
+  the UTC time `last_message_at()` records for it. For a consumer that only
+  needs to know that a message arrived and parsed the topic again in `on_raw`.
 
 - README: "Threaded applications", a tested recipe for applications that are
   not asyncio (WSGI apps, scripts, CLI tools): the SDK's loop on a thread of

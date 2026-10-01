@@ -496,6 +496,31 @@ def test_parse_topic_accepts_a_missing_leading_slash(fake_paho: type[FakeClient]
     run(test)
 
 
+@pytest.mark.parametrize(
+    ("topic", "parsed"),
+    [
+        ("/downlink/vehicle/dev-1/realtimeDate/state", ("dev-1", "state")),
+        ("downlink/vehicle/dev-1/realtimeDate/location", ("dev-1", "location")),
+        ("/downlink/vehicle/dev-1/realtimeDate/newChannel", ("dev-1", "newChannel")),
+        ("/downlink/vehicle//realtimeDate/state", ("", "state")),
+        ("/downlink/vehicle/dev-1/realtimeDate/", ("dev-1", "")),
+        ("navimow/dev-1/state", (None, None)),
+        ("/downlink/vehicle/dev-1/other/state", (None, None)),
+        ("/downlink/vehicle/dev-1/realtimeDate/state/extra", (None, None)),
+        ("/uplink/vehicle/dev-1/realtimeDate/state", (None, None)),
+        ("", (None, None)),
+    ],
+)
+def test_parse_topic_is_public_and_the_old_names_are_the_same_function(
+    topic: str, parsed: tuple[str | None, str | None]
+) -> None:
+    assert mqtt_module.parse_topic(topic) == parsed
+    assert mqtt_module._parse_topic is mqtt_module.parse_topic
+    assert NavimowMQTT._parse_topic is mqtt_module.parse_topic
+    assert mower_sdk.parse_topic is mqtt_module.parse_topic
+    assert "parse_topic" in mower_sdk.__all__
+
+
 def test_connect_async_disconnect_and_publish(fake_paho: type[FakeClient]) -> None:
     async def test() -> None:
         mqtt = make(WS_KWARGS, keepalive_seconds=600)
@@ -1818,6 +1843,58 @@ def test_on_raw_receives_the_wire_bytes_on_every_topic(fake_paho: type[FakeClien
         assert raw[0][1] is state  # before device_id is added
         assert received == [(STATE_TOPIC, b'{"state": "isDocked", "device_id": "dev-1"}', "dev-1")]
         assert fake_paho.instances == [mqtt.client]
+
+    run(test)
+
+
+def test_on_message_seen_gets_the_device_channel_and_the_recorded_time(
+    fake_paho: type[FakeClient], clock: FakeClock
+) -> None:
+    async def test() -> None:
+        seen: list[tuple[str, str, datetime]] = []
+
+        async def on_message_seen(device_id: str, channel: str, received_at: datetime) -> None:
+            seen.append((device_id, channel, received_at))
+
+        mqtt = make(TCP_KWARGS, extra_topics=["custom/topic"])
+        mqtt.on_message_seen = on_message_seen
+        mqtt._on_message(mqtt.client, None, FakeMessage(STATE_TOPIC, b"not json"))
+        clock.advance(2)
+        mqtt._on_message(mqtt.client, None, FakeMessage(LOCATION_TOPIC, b"[]"))
+        # Neither of these names a device and a channel: nothing seen, nothing recorded.
+        mqtt._on_message(mqtt.client, None, FakeMessage("custom/topic", b"{}"))
+        mqtt._on_message(mqtt.client, None, FakeMessage("/downlink/vehicle//realtimeDate/state", b"{}"))
+        mqtt._on_message(mqtt.client, None, FakeMessage("/downlink/vehicle/dev-1/realtimeDate/", b"{}"))
+        await drain()
+        assert seen == [("dev-1", "state", T0), ("dev-1", "location", T0 + timedelta(seconds=2))]
+        assert seen[0][2] is mqtt.last_message_at("dev-1", "state")  # the stamp stored, not a second reading
+        assert mqtt._last_message.keys() == {"dev-1"}
+        assert fake_paho.instances == [mqtt.client]
+
+    run(test)
+
+
+def test_on_message_seen_is_not_called_for_a_retired_client(
+    fake_paho: type[FakeClient], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(mqtt_module.mqtt_client, "Client", FiringClient)
+
+    async def test() -> None:
+        seen: list[tuple[str, str]] = []
+
+        async def on_message_seen(device_id: str, channel: str, _received_at: datetime) -> None:
+            seen.append((device_id, channel))
+
+        mqtt = make(TCP_KWARGS)
+        mqtt.on_message_seen = on_message_seen
+        old = mqtt.client
+        mqtt.rebuild(reason="test")
+        old.on_message(old, None, FakeMessage(STATE_TOPIC, b"{}"))
+        new = mqtt.client
+        new.on_message(new, None, FakeMessage(STATE_TOPIC, b"{}"))
+        await drain()
+        assert seen == [("dev-1", "state")]
+        assert fake_paho.instances == [old, new]
 
     run(test)
 

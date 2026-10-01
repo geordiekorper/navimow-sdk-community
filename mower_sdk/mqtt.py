@@ -37,6 +37,7 @@ __all__ = [
     "ConnectionEvent",
     "MowerMQTT",
     "NavimowMQTT",
+    "parse_topic",
     "Device",
     "DeviceStatus",
     "ERROR_MESSAGES",
@@ -151,8 +152,16 @@ def _build_web_client_id(username: str | None) -> str:
 _MAX_TOPIC_BYTES = 65_535
 
 
-def _parse_topic(topic: str) -> tuple[str | None, str | None]:
-    """(device id, channel) of a /downlink/vehicle/{id}/realtimeDate/{channel} topic, else (None, None)."""
+def parse_topic(topic: str) -> tuple[str | None, str | None]:
+    """The device id and channel of a cloud topic, else (None, None).
+
+    A cloud topic is /downlink/vehicle/{device id}/realtimeDate/{channel}, the
+    leading slash optional; the channel is "state", "event", "attributes",
+    "location" or whatever else the cloud publishes there. Any other topic
+    (an extra topic, say) gives (None, None). Either part may come back empty
+    for a topic with an empty level; NavimowMQTT keeps message times only when
+    both are non-empty.
+    """
     parts = topic.split("/")
     if parts and parts[0] == "":
         parts = parts[1:]
@@ -163,6 +172,10 @@ def _parse_topic(topic: str) -> tuple[str | None, str | None]:
     if parts[3] != "realtimeDate":
         return None, None
     return parts[2], parts[4]
+
+
+# The name the SDK used before parse_topic was public; kept for code that imported it.
+_parse_topic = parse_topic
 
 
 def _decode_json(payload: bytes) -> Any:
@@ -296,7 +309,12 @@ class NavimowMQTT:
     values. Without this a refused subscription is invisible: its data simply
     never arrives. ``on_raw(topic, payload)`` is called
     for every message on any topic with the bytes as received, before
-    anything is decoded or added.
+    anything is decoded or added. ``on_message_seen(device_id, channel,
+    received_at)`` is called for every message whose topic names both a device
+    and a channel (see ``parse_topic``), with the UTC time
+    ``last_message_at()`` records for it, for a consumer that only needs to
+    know that a message arrived and would otherwise parse the topic in
+    ``on_raw`` again.
 
     ``keepalive_seconds`` defaults to 60 (at least 30 is used): the cloud's
     idle links die after about ten minutes without a FIN or DISCONNECT, and a
@@ -347,6 +365,7 @@ class NavimowMQTT:
         self.on_raw: Callable[[str, bytes], Awaitable[None]] | None = None
         self.on_subscribe: Callable[[str, bool, tuple[int, ...]], Awaitable[None]] | None = None
         self.on_connection_event: Callable[[ConnectionEvent], Awaitable[None]] | None = None
+        self.on_message_seen: Callable[[str, str, datetime], Awaitable[None]] | None = None
 
         self.last_connect_fail_reason: str | None = None
         self.last_disconnect_reason: str | None = None
@@ -891,7 +910,8 @@ class NavimowMQTT:
         if self.on_subscribe is not None:
             self._schedule(self.on_subscribe(topic, granted, codes))
 
-    _parse_topic = staticmethod(_parse_topic)
+    # Kept for subclasses and callers that used the method before parse_topic was public.
+    _parse_topic = staticmethod(parse_topic)
 
     def _on_message(self, client, _userdata, msg) -> None:
         """paho's on_message.
@@ -905,7 +925,15 @@ class NavimowMQTT:
         topic = msg.topic
         device_id, channel = self._parse_topic(topic)
         if device_id and channel:
-            self._last_message.setdefault(device_id, {})[channel] = (datetime.now(UTC), time.monotonic())
+            received_at = datetime.now(UTC)
+            self._last_message.setdefault(device_id, {})[channel] = (received_at, time.monotonic())
+            if self.on_message_seen is not None:
+                # The same condition as the message times, both parts non-empty, so a
+                # consumer's own record of "a message arrived" agrees with
+                # last_message_at(); and the stamp stored there, not a second reading
+                # of the clock. Scheduled like on_raw, with no order promised between
+                # the two or with on_message.
+                self._schedule(self.on_message_seen(device_id, channel, received_at))
 
         payload_bytes = msg.payload
         if self.on_raw is not None:
