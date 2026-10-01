@@ -110,6 +110,121 @@ itself. Obtain the token through the Navimow account's OAuth flow, and after eac
 new token to `api.set_token()` and the new bearer header to
 `sdk.update_mqtt_credentials(auth_headers=...)`.
 
+## Threaded applications
+
+The live path is asyncio: MQTT callbacks run on the event loop the facade is bound to, and with no
+running loop they are dropped. An application built on threads (a Flask or other WSGI app, a
+script, a CLI tool) can give the SDK a loop on a thread of its own and talk to it from anywhere
+else. The helper below is the whole bridge; the suite runs this exact code.
+
+```python
+import asyncio
+import threading
+from collections.abc import Callable, Coroutine
+from typing import Any, TypeVar
+
+T = TypeVar("T")
+
+
+class NavimowThread:
+    """An event loop on a thread of its own, for the SDK's coroutines and callbacks."""
+
+    def __init__(self) -> None:
+        self.loop = asyncio.new_event_loop()
+        self._thread = threading.Thread(target=self.loop.run_forever, name="navimow", daemon=True)
+        self._thread.start()
+
+    def run(self, coro: Coroutine[Any, Any, T], timeout: float | None = 60) -> T:
+        """Run a coroutine on the loop and wait for its result, from any other thread.
+
+        On timeout the coroutine is cancelled before TimeoutError is raised.
+        """
+        if threading.current_thread() is self._thread:
+            coro.close()
+            raise RuntimeError("NavimowThread.run() called on the loop's own thread would wait forever")
+        future = asyncio.run_coroutine_threadsafe(coro, self.loop)
+        try:
+            return future.result(timeout)
+        except TimeoutError:
+            future.cancel()
+            raise
+
+    def call(self, function: Callable[..., T], *args: Any, timeout: float | None = 60) -> T:
+        """Run a plain function on the loop's thread (to create an aiohttp session, say)."""
+
+        async def call() -> T:
+            return function(*args)
+
+        return self.run(call(), timeout)
+
+    def stop(self) -> None:
+        """Cancel what is still running on the loop, then stop it, join its thread and close it.
+
+        Close sessions and disconnect first.
+        """
+
+        async def cancel_the_rest() -> None:
+            tasks = [task for task in asyncio.all_tasks() if task is not asyncio.current_task()]
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+        asyncio.run_coroutine_threadsafe(cancel_the_rest(), self.loop).result()
+        self.loop.call_soon_threadsafe(self.loop.stop)
+        self._thread.join()
+        self.loop.close()
+```
+
+Using it, from the application's own threads:
+
+```python
+import queue
+
+import aiohttp
+
+from mower_sdk import MowerAPI, NavimowSDK
+
+mowers = NavimowThread()
+session = mowers.call(aiohttp.ClientSession)  # an aiohttp session belongs to one loop
+sdk = None
+try:
+    api = MowerAPI(session, TOKEN, BASE_URL)
+    devices = mowers.run(api.async_get_devices())  # every REST call goes through run()
+    info = mowers.run(api.async_get_mqtt_user_info())
+
+    sdk = NavimowSDK(
+        broker=info["mqttHost"], port=443, ws_path=info["mqttUrl"],
+        username=info["userName"], password=info["pwdInfo"],
+        auth_headers={"Authorization": f"Bearer {TOKEN}"},
+        records=devices, loop=mowers.loop,  # callbacks go to the helper's loop
+    )
+    states = queue.Queue()
+    sdk.on_state(states.put)  # callbacks run on the loop's thread: hand them over, don't block there
+    sdk.connect()
+
+    message = states.get(timeout=120)  # in the application's thread
+finally:
+    # A failed REST call or a wait that timed out still releases everything.
+    if sdk is not None:
+        sdk.disconnect()
+    mowers.run(session.close())
+    mowers.stop()
+```
+
+Three rules keep it working:
+
+- Pass `loop=mowers.loop` when constructing the facade (or `NavimowMQTT`), since the constructing
+  thread has no loop of its own.
+- `sdk.connect()`, `sdk.disconnect()`, `sdk.update_mqtt_credentials()`, `sdk.mqtt.rebuild()` and
+  `sdk.mqtt.update_credentials()` are plain calls, and every one of them can block: each waits
+  while a rebuild runs on another thread, `disconnect()` joins paho's network thread, and the
+  credential updates and `rebuild()` can rebuild the client, which joins that thread and loads
+  certificates. Make them from the application's threads, never inside a callback, which runs on
+  the loop.
+- Coroutines, REST calls and `sdk.async_refresh_broker_credentials(api, ...)` included, go through
+  `mowers.run()`, never from inside a callback: `run()` refuses to wait on the loop's own thread,
+  where it would wait forever.
+
 ## Behaviour notes
 
 ### REST

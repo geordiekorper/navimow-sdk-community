@@ -45,6 +45,11 @@ throughout.
   keep a late reading marked as late. The applied entries and the record are
   unchanged.
 
+- README: "Threaded applications", a tested recipe for applications that are
+  not asyncio (WSGI apps, scripts, CLI tools): the SDK's loop on a thread of
+  its own, REST through `run_coroutine_threadsafe`, callbacks handed over from
+  the loop, and which calls block and must stay off the loop.
+
 ### Changed
 
 - `MowerAPI` with no token (empty or `None`) raises `MowerAuthRequiredError`
