@@ -23,6 +23,12 @@ throughout.
   `DeviceStateMessage.state` holds), `mower_status_from_raw(raw)` (what
   `DeviceStatus.status` holds) and `battery_from_payload(data)` (what both
   models' `battery` holds; None for anything but a dict).
+- `ConnectionEvent` and `NavimowMQTT.on_connection_event(event)`: each
+  connect, disconnect and connect failure with the client id it came from,
+  the reason, the UTC time and the rebuild count, captured when it happened.
+  The zero-argument `on_connected` and `on_disconnected` are unchanged; read
+  from inside them, `last_disconnect_reason` and `client_id` may already
+  belong to a client a `rebuild()` put in place.
 - The payload bytes exactly as the mower sent them, beside the re-encoded
   form with `device_id` added: `NavimowMQTT.on_message` receives a re-encoded
   object payload as `mower_sdk.mqtt.ReceivedPayload`, a `bytes` subclass equal

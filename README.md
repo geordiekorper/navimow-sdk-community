@@ -139,6 +139,13 @@ also logged as a warning, and `sdk.mqtt.on_subscribe` can be set to an async
 `(topic, granted, codes)` callback. A refused subscription otherwise looks the same as a mower that
 does not publish on that topic.
 
+**Connection events.** `sdk.mqtt.on_connection_event` can be set to an async callback that
+receives a `ConnectionEvent` for each connect, disconnect and connect failure: its `kind`, the
+`client_id` of the client it came from, the `reason`, the UTC time `at` and the `rebuilds` count,
+all as they were when it happened. The zero-argument `on_connected` and `on_disconnected` still
+run; code that reads `last_disconnect_reason` or `client_id` inside them may see a later client's
+values after a `rebuild()`.
+
 **Payload bytes.** A JSON object payload is re-encoded with `device_id` added before it reaches
 `NavimowMQTT.on_message`, so those bytes are not the mower's. They arrive as a
 `mower_sdk.mqtt.ReceivedPayload`, still `bytes` and equal to the re-encoded form, whose `original`

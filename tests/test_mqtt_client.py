@@ -2039,3 +2039,170 @@ def test_the_mowers_bytes_survive_the_re_encoding_exactly() -> None:
         assert json.loads(payload) == {**json.loads(wire), "device_id": "dev-1"}
 
     run(test)
+
+
+# ---- connection events with their context ---------------------------------------------------------
+
+
+def recording_events(mqtt: NavimowMQTT) -> list[mqtt_module.ConnectionEvent]:
+    events: list[mqtt_module.ConnectionEvent] = []
+
+    async def on_connection_event(event: mqtt_module.ConnectionEvent) -> None:
+        events.append(event)
+
+    mqtt.on_connection_event = on_connection_event
+    return events
+
+
+@pytest.mark.usefixtures("fake_paho")
+def test_each_connection_change_is_an_event_with_its_client_id_and_reason() -> None:
+    async def test() -> None:
+        mqtt = make(TCP_KWARGS)
+        events = recording_events(mqtt)
+        client_id = mqtt.client_id
+        before = datetime.now(UTC)
+        mqtt._on_connect(mqtt.client, None, {}, NOT_AUTHORIZED, None)
+        mqtt._on_connect_fail(mqtt.client, None)
+        mqtt._on_connect(mqtt.client, None, {}, SUCCESS, None)
+        mqtt._on_disconnect(mqtt.client, None, {}, UNSPECIFIED, None)
+        mqtt._on_disconnect(mqtt.client, None, {}, SUCCESS, None)
+        await drain()
+        assert [(e.kind, e.client_id, e.reason, e.rebuilds) for e in events] == [
+            ("connect_failed", client_id, "refused: Not authorized (135)", 0),
+            ("connect_failed", client_id, "connection failed before CONNACK", 0),
+            ("connected", client_id, None, 0),
+            ("disconnected", client_id, "Unspecified error", 0),
+            ("disconnected", client_id, "requested", 0),
+        ]
+        assert all(before <= e.at <= datetime.now(UTC) and e.at.tzinfo is UTC for e in events)
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            events[0].reason = "changed"  # type: ignore[misc]
+        assert mower_sdk.ConnectionEvent is mqtt_module.ConnectionEvent
+        assert "ConnectionEvent" in mower_sdk.__all__
+
+    run(test)
+
+
+@pytest.mark.usefixtures("fake_paho")
+def test_an_event_delivered_after_a_rebuild_names_the_client_it_came_from() -> None:
+    """The zero-argument hook can only read the attributes, which the rebuild has changed by then."""
+
+    async def test() -> None:
+        mqtt = make(TCP_KWARGS)
+        events = recording_events(mqtt)
+        read_by_plain_hook: list[tuple[str, str | None]] = []
+
+        async def on_disconnected() -> None:
+            read_by_plain_hook.append((mqtt.client_id, mqtt.last_disconnect_reason))
+
+        mqtt.on_disconnected = on_disconnected
+        mqtt.connect_async()
+        old_id = mqtt.client_id
+        mqtt._on_connect(mqtt.client, None, {}, SUCCESS, None)
+        mqtt._on_disconnect(mqtt.client, None, {}, UNSPECIFIED, None)  # scheduled, not yet run
+        mqtt.rebuild(reason="watchdog")
+        mqtt._on_connect(mqtt.client, None, {}, SUCCESS, None)
+        mqtt._on_disconnect(mqtt.client, None, {}, SUCCESS, None)
+        await drain()
+        new_id = mqtt.client_id
+        assert new_id != old_id
+        assert [(e.kind, e.client_id, e.reason, e.rebuilds) for e in events] == [
+            ("connected", old_id, None, 0),
+            ("disconnected", old_id, "Unspecified error", 0),
+            ("connected", new_id, None, 1),
+            ("disconnected", new_id, "requested", 1),
+        ]
+        # What the plain hook reads when it runs: the new client's id and latest reason, twice.
+        assert read_by_plain_hook == [(new_id, "requested"), (new_id, "requested")]
+
+    run(test)
+
+
+@pytest.mark.usefixtures("fake_paho")
+def test_the_plain_hooks_still_run_beside_the_event_hook() -> None:
+    async def test() -> None:
+        mqtt = make(TCP_KWARGS)
+        events = recording_events(mqtt)
+        plain: list[Any] = []
+
+        async def on_connected() -> None:
+            plain.append("connected")
+
+        async def on_disconnected() -> None:
+            plain.append("disconnected")
+
+        async def on_connect_fail(reason: str) -> None:
+            plain.append(("connect_fail", reason))
+
+        mqtt.on_connected, mqtt.on_disconnected, mqtt.on_connect_fail = on_connected, on_disconnected, on_connect_fail
+        mqtt._on_connect_fail(mqtt.client, None)
+        mqtt._on_connect(mqtt.client, None, {}, SUCCESS, None)
+        mqtt._on_disconnect(mqtt.client, None, {}, SUCCESS, None)
+        await drain()
+        assert plain == [("connect_fail", "connection failed before CONNACK"), "connected", "disconnected"]
+        assert [e.kind for e in events] == ["connect_failed", "connected", "disconnected"]
+
+    run(test)
+
+
+@pytest.mark.usefixtures("fake_paho")
+def test_no_event_for_a_replaced_client_or_without_the_hook() -> None:
+    async def test() -> None:
+        mqtt = make(TCP_KWARGS)
+        mqtt._on_connect(mqtt.client, None, {}, SUCCESS, None)  # no hook: nothing scheduled, nothing raised
+        events = recording_events(mqtt)
+        mqtt.connect_async()
+        old = mqtt.client
+        mqtt.rebuild(reason="test")
+        mqtt._on_disconnect(old, None, {}, UNSPECIFIED, None)
+        mqtt._on_connect_fail(old, None)
+        await drain()
+        assert events == []
+
+    run(test)
+
+
+@pytest.mark.usefixtures("fake_paho")
+def test_an_event_from_the_old_client_while_its_successor_is_built_names_the_old_client() -> None:
+    """rebuild() sets the new client id first and self.client last; the old client's
+    callbacks still pass the replaced-client guard in between, as paho's thread
+    may deliver them while TLS is set up on the new client."""
+
+    class PausingBuild(NavimowMQTT):
+        def _build_new_client(self) -> Any:
+            # The old client is still self.client here, and the id is already the new one.
+            self._on_disconnect(self.client, None, {}, UNSPECIFIED, None)
+            self._on_connect_fail(self.client, None)
+            return super()._build_new_client()
+
+    async def test() -> None:
+        mqtt = PausingBuild(**TCP_KWARGS)
+        events = recording_events(mqtt)
+        old_id = mqtt.client_id
+        mqtt.connect_async()
+        mqtt._on_connect(mqtt.client, None, {}, SUCCESS, None)
+        mqtt.rebuild(reason="watchdog")
+        mqtt._on_connect(mqtt.client, None, {}, SUCCESS, None)
+        await drain()
+        assert mqtt.client_id != old_id
+        assert [(e.kind, e.client_id, e.rebuilds) for e in events] == [
+            ("connected", old_id, 0),
+            ("disconnected", old_id, 0),
+            ("connect_failed", old_id, 0),
+            ("connected", mqtt.client_id, 1),
+        ]
+
+    run(test)
+
+
+@pytest.mark.usefixtures("fake_paho")
+def test_a_client_the_object_did_not_install_is_described_by_the_current_context() -> None:
+    async def test() -> None:
+        mqtt = make(TCP_KWARGS)
+        events = recording_events(mqtt)
+        mqtt.client = FakeClient()
+        mqtt._on_connect(mqtt.client, None, {}, SUCCESS, None)
+        await drain()
+        assert [(e.kind, e.client_id, e.rebuilds) for e in events] == [("connected", mqtt.client_id, 0)]
+
+    run(test)

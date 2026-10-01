@@ -11,8 +11,10 @@ import sys
 import threading
 import time
 import uuid
+import weakref
 from urllib.parse import urlparse
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -32,6 +34,7 @@ if TYPE_CHECKING:
 # MowerMQTT and are kept as inventory aliases; MowerMQTT and
 # parse_json now live in mower_sdk.legacy and are served by __getattr__.
 __all__ = [
+    "ConnectionEvent",
     "MowerMQTT",
     "NavimowMQTT",
     "Device",
@@ -43,6 +46,31 @@ __all__ = [
 ]
 
 _LOGGER = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class ConnectionEvent:
+    """One change in NavimowMQTT's connection, with the context it happened in.
+
+    ``kind`` is ``"connected"``, ``"disconnected"`` or ``"connect_failed"``.
+    ``client_id`` is the MQTT client id of the paho client the event came from:
+    a rebuild gives the next client a new one, so an event delivered after a
+    rebuild still names the client it is about. ``reason`` is None for
+    connected; for disconnected, ``"requested"`` or paho's reason, as
+    last_disconnect_reason holds it; for connect_failed, the text
+    last_connect_fail_reason holds. ``at`` is the UTC time the event was
+    recorded, in paho's thread, and ``rebuilds`` the rebuild count the client
+    started at (0 for the first client, n for the one the nth rebuild built).
+    All of it is fixed when the event happens, not when the callback runs, and
+    belongs to the client the event came from, even while a rebuild is building
+    its successor.
+    """
+
+    kind: str
+    client_id: str
+    reason: str | None
+    at: datetime
+    rebuilds: int
 
 
 class ReceivedPayload(bytes):
@@ -225,7 +253,11 @@ class NavimowMQTT:
 
     The connection is observable without wrapping paho's callbacks:
     ``on_connect_fail`` is called with a reason when a connect is refused or
-    fails before the broker answers; ``last_connect_fail_reason``,
+    fails before the broker answers; ``on_connection_event(event)`` is called
+    with a ConnectionEvent for each connect, disconnect and connect failure,
+    carrying the client id and reason as they were at that moment (the
+    zero-argument ``on_connected`` and ``on_disconnected`` carry neither, and the
+    attributes they would read may have changed by a rebuild before they run); ``last_connect_fail_reason``,
     ``last_disconnect_reason`` and ``last_connected_at`` keep the latest of
     each; ``connects``, ``disconnects`` and ``connect_failures`` count them
     since construction; ``client_id`` is the id the wire client was built
@@ -309,6 +341,7 @@ class NavimowMQTT:
         self.on_connect_fail: Callable[[str], Awaitable[None]] | None = None
         self.on_raw: Callable[[str, bytes], Awaitable[None]] | None = None
         self.on_subscribe: Callable[[str, bool, tuple[int, ...]], Awaitable[None]] | None = None
+        self.on_connection_event: Callable[[ConnectionEvent], Awaitable[None]] | None = None
 
         self.last_connect_fail_reason: str | None = None
         self.last_disconnect_reason: str | None = None
@@ -339,9 +372,16 @@ class NavimowMQTT:
         # device id -> channel -> (UTC receipt time, time.monotonic() at receipt)
         self._last_message: dict[str, dict[str, tuple[datetime, float]]] = {}
 
+        # Each paho client built -> (its client id, the rebuild count it starts at),
+        # recorded when it is installed, so a connection event is attributed to the
+        # client it came from even while rebuild() is building the next one (the
+        # client id changes first, self.client last).
+        self._client_context: weakref.WeakKeyDictionary[Any, tuple[str, int]] = weakref.WeakKeyDictionary()
+
         # self.client is assigned before it is configured: the callback lookups
         # in _configure_client may read it, and a subclass can rely on that.
         self.client = self._new_paho_client()
+        self._client_context[self.client] = (self._client_id, 0)
         self._configure_client(self.client)
         _LOGGER.info(
             "NavimowMQTT init: broker=%s port=%s ws_path=%s tls=%s client_id=%s",
@@ -547,6 +587,7 @@ class NavimowMQTT:
             old = self.client
             self._client_id = _build_web_client_id(self.username)
             self.client = self._build_new_client()
+            self._client_context[self.client] = (self._client_id, self.rebuilds + 1)
             self._loop_started = False
             _LOGGER.info(
                 "NavimowMQTT rebuilding the client: reason=%s broker=%s port=%s client_id=%s",
@@ -727,11 +768,25 @@ class NavimowMQTT:
         if close is not None:
             close()
 
-    def _connect_failed(self, reason: str) -> None:
+    def _connection_event(self, client: Any, kind: str, reason: str | None) -> None:
+        """Schedule on_connection_event, if set, with the context of the client the event came from.
+
+        A client this object did not install (a consumer replaced self.client) is
+        described by the current client id and rebuild count.
+        """
+        if self.on_connection_event is not None:
+            client_id, rebuilds = self._client_context.get(client, (self._client_id, self.rebuilds))
+            event = ConnectionEvent(
+                kind=kind, client_id=client_id, reason=reason, at=datetime.now(UTC), rebuilds=rebuilds
+            )
+            self._schedule(self.on_connection_event(event))
+
+    def _connect_failed(self, client: Any, reason: str) -> None:
         self.connect_failures += 1
         self.last_connect_fail_reason = reason
         if self.on_connect_fail is not None:
             self._schedule(self.on_connect_fail(reason))
+        self._connection_event(client, "connect_failed", reason)
 
     def _on_connect(self, client, _userdata, _flags, reason_code, _properties=None) -> None:
         """paho's on_connect, callback API version 2: reason_code is a paho ReasonCode."""
@@ -739,7 +794,7 @@ class NavimowMQTT:
             return  # a client replaced by rebuild()
         if reason_code.is_failure:
             _LOGGER.error("MQTT connection failed: %s (%s)", reason_code, reason_code.value)
-            self._connect_failed(f"refused: {reason_code} ({reason_code.value})")
+            self._connect_failed(client, f"refused: {reason_code} ({reason_code.value})")
             return
         self.connects += 1
         self.last_connected_at = datetime.now(UTC)
@@ -762,6 +817,7 @@ class NavimowMQTT:
             self._schedule(self.on_connected())
         if self.on_ready is not None:
             self._schedule(self.on_ready())
+        self._connection_event(client, "connected", None)
 
     def _on_connect_fail(self, client, _userdata) -> None:
         """paho's on_connect_fail: no CONNACK at all.
@@ -776,7 +832,7 @@ class NavimowMQTT:
             self.broker,
             self.port,
         )
-        self._connect_failed("connection failed before CONNACK")
+        self._connect_failed(client, "connection failed before CONNACK")
 
     def _on_disconnect(self, client, _userdata, _flags, reason_code, _properties=None) -> None:
         """paho's on_disconnect, callback API version 2."""
@@ -793,6 +849,7 @@ class NavimowMQTT:
         )
         if self.on_disconnected is not None:
             self._schedule(self.on_disconnected())
+        self._connection_event(client, "disconnected", self.last_disconnect_reason)
 
     def _on_subscribe(self, client, _userdata, mid, reason_code_list, _properties=None) -> None:
         """paho's on_subscribe, callback API version 2: one reason code per topic sent.
