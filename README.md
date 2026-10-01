@@ -120,8 +120,8 @@ force instead, or another number of seconds to change the bound. A failed reques
 is a `MowerAPIError` (one exception is kept from upstream: a successful reply whose `data` is
 null makes most calls raise `AttributeError`); `MowerTransportError` means no usable reply (a timeout, a connection error, an
 HTTP 5xx, or a reply that is not JSON), so a command may still have been carried out;
-`MowerAuthRequiredError` means the credentials were refused; `MowerRateLimitedError` means slow
-down.
+`MowerAuthRequiredError` means the credentials were refused, or that no token is set (then no
+request is sent); `MowerRateLimitedError` means slow down.
 
 ### MQTT
 

@@ -183,9 +183,15 @@ class MowerAPI:
         self._token = token
 
     def _get_auth_headers(self) -> dict[str, str]:
-        """Return the authentication headers."""
+        """Return the authentication headers.
+
+        Raises:
+            MowerAuthRequiredError: No token is set (None or empty), before any
+                request is sent; it carries status_code 401 and error_code
+                TOKEN_EXPIRED, as a 401 from the cloud would call for sign-in.
+        """
         if not self._token:
-            raise MowerAPIError(
+            raise MowerAuthRequiredError(
                 ERROR_MESSAGES["TOKEN_EXPIRED"],
                 status_code=401,
                 error_code="TOKEN_EXPIRED",
@@ -214,7 +220,7 @@ class MowerAPI:
             MowerTransportError: No usable reply (see the class docstring); the
                 aiohttp error, TimeoutError or decoding error, if any, is its
                 __cause__.
-            MowerAuthRequiredError: HTTP 401 or 403.
+            MowerAuthRequiredError: HTTP 401 or 403, or no token is set.
             MowerAPIError: Any other HTTP status of 400 or more.
         """
         url = f"{self.base_url}/{endpoint.lstrip('/')}"

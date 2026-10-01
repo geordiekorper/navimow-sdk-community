@@ -7,6 +7,13 @@ throughout.
 
 ## [Unreleased]
 
+### Changed
+
+- `MowerAPI` with no token (empty or `None`) raises `MowerAuthRequiredError`
+  instead of a plain `MowerAPIError`, still before any request and still with
+  `status_code` 401 and `error_code` `TOKEN_EXPIRED`, so a consumer that
+  branches on the class asks for sign-in rather than retrying.
+
 ## [0.2.0a3] - 2026-09-30
 
 The MQTT transport, the location channel, the models and the REST errors.

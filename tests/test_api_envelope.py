@@ -147,7 +147,7 @@ def ok(payload: Any) -> dict[str, Any]:
     return {"code": 1, "desc": "success", "data": {"payload": payload}}
 
 
-def api_with(*responses: FakeResponse, token: str = TOKEN) -> tuple[MowerAPI, FakeSession]:
+def api_with(*responses: FakeResponse, token: str | None = TOKEN) -> tuple[MowerAPI, FakeSession]:
     session = FakeSession(*responses)
     return MowerAPI(session=session, token=token, base_url=BASE_URL), session  # type: ignore[arg-type]
 
@@ -471,10 +471,13 @@ def test_timeout_is_wrapped_with_its_cause() -> None:
     assert info.value.__cause__ is cause
 
 
-def test_empty_token_raises_before_any_request() -> None:
-    api, session = api_with(token="")
-    with pytest.raises(MowerAPIError) as info:
+@pytest.mark.parametrize("token", ["", None])
+def test_missing_token_is_auth_required_before_any_request(token: str | None) -> None:
+    api, session = api_with(token=token)
+    with pytest.raises(MowerAuthRequiredError) as info:
         run(api.async_get_devices())
+    assert isinstance(info.value, MowerAPIError)
+    assert not isinstance(info.value, MowerTransportError)
     assert info.value.message == ERROR_MESSAGES["TOKEN_EXPIRED"]
     assert info.value.status_code == 401
     assert info.value.error_code == "TOKEN_EXPIRED"
