@@ -120,41 +120,35 @@ The forks reviewed on 2026-09-26, in the order their pieces are applied:
 ## Moved files
 
 Everything outside the live path was moved into `mower_sdk.legacy` with
-`git mv`, so the history of every moved line can still be traced, and a
-deprecating re-export was left at the old location. The move does not by itself
-keep `git merge` working; upstream changes are ported with the tool described
-under "Porting upstream commits" below. `git log --follow` on a new path finds
-the commit that moved or extracted it.
+`git mv`, so the history of every moved line can still be traced. The move
+does not by itself keep `git merge` working; upstream changes are ported with
+the tool described under "Porting upstream commits" below. `git log --follow`
+on a new path finds the commit that moved or extracted it.
 
-Every old path is a shim: it emits one `DeprecationWarning` per legacy module
-per process, on the first deprecated access through any old path, and then
-re-exports the legacy module with a star import. Importing
-`mower_sdk.legacy.<module>` directly never warns. The policy lives in
-`mower_sdk/_deprecation.py`.
+Every old import still works. [`mower_sdk/legacy/README.md`](mower_sdk/legacy/README.md)
+says how the old paths resolve and when they warn, what replaces each module,
+how the files differ from upstream's text and why the folder is frozen. This
+section records only where each piece came from.
 
-| At the fork point | Now | How | Old import still works |
-|---|---|---|---|
-| `mower_sdk/client.py` | `mower_sdk/legacy/client.py` | whole file, `git mv` | yes: a shim at the old path warns once per process |
-| `mower_sdk/cloud.py` | `mower_sdk/legacy/cloud.py` | whole file, `git mv` | yes: a shim at the old path warns once per process |
-| `mower_sdk/device.py` | `mower_sdk/legacy/device.py` | whole file, `git mv` | yes: a shim at the old path warns once per process |
-| `mower_sdk/event.py` | `mower_sdk/legacy/event.py` | whole file, `git mv` | yes: a shim at the old path warns once per process |
-| `mower_sdk/navimow.py` | `mower_sdk/legacy/navimow.py` | whole file, `git mv` | yes: a shim at the old path warns once per process |
-| `mower_sdk/state_manager.py` | `mower_sdk/legacy/state_manager.py` | whole file, `git mv` | yes: a shim at the old path warns once per process |
-| `mower_sdk/utils.py` | `mower_sdk/legacy/utils.py` | whole file, `git mv` | yes: a shim at the old path warns once per process |
-| `mower_sdk/mqtt.py` lines 49–454: `MowerMQTT` | `mower_sdk/legacy/mqtt_v1.py` | extracted | yes: `mower_sdk.mqtt.MowerMQTT` is served lazily and warns once per process |
-| `mower_sdk/models.py` lines 192–271: `ThingParams`, `ThingStatusMessage`, `ThingPropertiesMessage`, `ThingEventMessage` | `mower_sdk/legacy/thing_models.py` | extracted | yes: served lazily from `mower_sdk.models`, one warning per process |
-| `mower_sdk/errors.py` lines 44–58: `MowerAuthError`; lines 94–112: `COMMAND_ERRORS` | `mower_sdk/legacy/errors.py` | extracted | yes: served lazily from `mower_sdk.errors`, one warning per process |
+| At the fork point | Now | How |
+|---|---|---|
+| `mower_sdk/client.py` | `mower_sdk/legacy/client.py` | whole file, `git mv` |
+| `mower_sdk/cloud.py` | `mower_sdk/legacy/cloud.py` | whole file, `git mv` |
+| `mower_sdk/device.py` | `mower_sdk/legacy/device.py` | whole file, `git mv` |
+| `mower_sdk/event.py` | `mower_sdk/legacy/event.py` | whole file, `git mv` |
+| `mower_sdk/navimow.py` | `mower_sdk/legacy/navimow.py` | whole file, `git mv` |
+| `mower_sdk/state_manager.py` | `mower_sdk/legacy/state_manager.py` | whole file, `git mv` |
+| `mower_sdk/utils.py` | `mower_sdk/legacy/utils.py` | whole file, `git mv` |
+| `mower_sdk/mqtt.py` lines 49–454: `MowerMQTT` | `mower_sdk/legacy/mqtt_v1.py` | extracted |
+| `mower_sdk/models.py` lines 192–271: `ThingParams`, `ThingStatusMessage`, `ThingPropertiesMessage`, `ThingEventMessage` | `mower_sdk/legacy/thing_models.py` | extracted |
+| `mower_sdk/errors.py` lines 44–58: `MowerAuthError`; lines 94–112: `COMMAND_ERRORS` | `mower_sdk/legacy/errors.py` | extracted |
 
-The moved files received no edit beyond imports of sibling legacy modules
-retargeted to `mower_sdk.legacy.*`; imports of core classes (`MowerAPI`,
-`NavimowMQTT`, the models) still come from core. The three extractions are
-cuts from files that stay, so default `git blame` on the new files starts at
-the extraction commit; the line ranges above are at the fork point `6596aa0`,
-and `git blame -C` or `git log -L` on those ranges is the way back. Each
-extracted node is AST-identical to its original: `tools/check_extraction.py`
-checks that, with docstrings and decorators included. No core module imports
-`mower_sdk.legacy`: `mower_sdk.mqtt.parse_json`, which core no longer uses, is
-served lazily from `mower_sdk/legacy/utils.py` like the extracted names.
+The three extractions are cuts from files that stay, so default `git blame`
+on the new files starts at the extraction commit; the line ranges above are at
+the fork point `6596aa0`, and `git blame -C` or `git log -L` on those ranges
+is the way back. Each extracted node is AST-identical to its original:
+`tools/check_extraction.py` checks that, with docstrings and decorators
+included.
 
 ## Porting upstream commits
 
@@ -222,5 +216,8 @@ The map must be extended in the same commit as any later move.
   and `git blame -C` show the history of moved lines (default `git blame` on
   the extracted files starts at the extraction commit). The move alone does
   not keep `git merge` working: see the section above.
+- Code in `mower_sdk/legacy/` is not edited; the folder's
+  [README](mower_sdk/legacy/README.md) says what enforces that and how an
+  exception is made.
 - Changes that do not depend on the fork identity are written so they can be
   offered upstream as they are.
