@@ -17,7 +17,15 @@ from typing import Any
 import pytest
 
 from mower_sdk import sdk as sdk_module
-from mower_sdk.models import DeviceLocation, DeviceLocationMessage, RejectedMessage
+from mower_sdk.models import (
+    DeviceAttributesMessage,
+    DeviceEventMessage,
+    DeviceLocation,
+    DeviceLocationMessage,
+    DeviceStateMessage,
+    RejectedMessage,
+)
+from mower_sdk.mqtt import ReceivedPayload
 from mower_sdk.sdk import NavimowSDK
 
 DEVICE_ID = "dev-1"
@@ -130,6 +138,8 @@ def test_one_callback_per_applied_entry_with_the_record_as_of_that_entry_and_one
     (rejection,) = rejected
     assert (rejection.channel, rejection.topic, rejection.device_id) == ("location", topic("location"), DEVICE_ID)
     assert (rejection.reason, rejection.reasons) == ("unknown_type", ("unknown_type", "placeholder"))
+    assert [(s.entry_type, s.reason, s.x) for s in rejection.skipped] == [(9, "unknown_type", None), (1, "placeholder", 0.0)]
+    assert all(s.received_at == rejection.received_at for s in rejection.skipped)
     assert rejection.payload is payload
     assert rejection.received_at.tzinfo is UTC
 
@@ -139,7 +149,9 @@ def test_an_unreadable_location_payload_is_rejected_as_unparsable(sdk: NavimowSD
     rejected: list[RejectedMessage] = []
     sdk.on_rejected(rejected.append)
     deliver(sdk, "location", payload)
-    assert [(r.reason, r.reasons, r.payload) for r in rejected] == [("unparsable", ("unparsable",), payload)]
+    assert [(r.reason, r.reasons, r.payload, r.skipped) for r in rejected] == [
+        ("unparsable", ("unparsable",), payload, ())
+    ]
     assert sdk.get_cached_location(DEVICE_ID) is None
 
 
@@ -201,3 +213,68 @@ def test_the_facade_forwards_subscribe_location_and_extra_topics(monkeypatch: py
     monkeypatch.setattr(sdk_module, "NavimowMQTT", FakeMQTT)
     facade = NavimowSDK(broker="broker.example.invalid", port=443, subscribe_location=True, extra_topics=["a/b"])
     assert (facade.mqtt.kwargs["subscribe_location"], facade.mqtt.kwargs["extra_topics"]) == (True, ["a/b"])
+
+
+# ---- the bytes as the mower sent them ----------------------------------------------------------------
+
+
+def re_encoded(wire: bytes) -> ReceivedPayload:
+    """What NavimowMQTT hands on for an object payload: device_id added, the original kept."""
+    return ReceivedPayload(json.dumps({**json.loads(wire), "device_id": DEVICE_ID}).encode(), wire)
+
+
+@pytest.mark.parametrize(
+    ("channel", "wire"),
+    [
+        ("state", b'{ "state":"isDocked", "battery" : 50 }'),
+        ("event", b'{"event":"bladeBlocked",  "type":"alarm"}'),
+        ("attributes", b'{"attributes": {"firmware":"1.2"} }'),
+    ],
+)
+def test_each_typed_message_carries_the_bytes_as_sent(sdk: NavimowSDK, channel: str, wire: bytes) -> None:
+    delivered: list[Any] = []
+    getattr(sdk, f"on_{channel}")(delivered.append)
+    deliver(sdk, channel, re_encoded(wire))
+    (message,) = delivered
+    assert message.original is wire
+    assert message.raw["device_id"] == DEVICE_ID  # raw stays the decoded payload with device_id
+    assert "original" not in message.to_dict()
+
+
+def test_a_message_not_re_encoded_carries_its_own_bytes(sdk: NavimowSDK) -> None:
+    states: list[DeviceStateMessage] = []
+    sdk.on_state(states.append)
+    payload = b'{"state":"isDocked","device_id":"dev-1"}'
+    deliver(sdk, "state", payload)
+    assert states[0].original is payload
+
+
+def test_a_rejection_carries_the_bytes_as_sent(sdk: NavimowSDK) -> None:
+    rejected: list[RejectedMessage] = []
+    sdk.on_rejected(rejected.append)
+    wire = b'{"state":"isDocked", "speed": 1}'
+    payload = re_encoded(wire)
+    deliver(sdk, "state", payload)
+    array = json.dumps([pose(T, "0") | {"postureY": "0"}]).encode()
+    deliver(sdk, "location", array)
+    first, second = rejected
+    assert (first.reason, first.payload, first.original) == ("unknown_field", payload, wire)
+    assert first.original is wire
+    assert (second.reason, second.original) == ("placeholder", array)
+    assert second.original is array
+
+
+def test_original_is_left_out_of_equality_and_none_by_default() -> None:
+    for cls, payload in (
+        (DeviceStateMessage, {"device_id": "d", "state": "isDocked"}),
+        (DeviceEventMessage, {"device_id": "d", "event": "e"}),
+        (DeviceAttributesMessage, {"device_id": "d", "attributes": {}}),
+    ):
+        message = cls.from_dict(payload)
+        assert message.original is None
+        other = cls.from_dict(payload)
+        other.original = b"{}"
+        assert message == other
+    base = RejectedMessage("state", "t", "d", "stale", ("stale",), b"{}", datetime.now(UTC))
+    assert base.original is None
+    assert base == RejectedMessage("state", "t", "d", "stale", ("stale",), b"{}", base.received_at, original=b"x")

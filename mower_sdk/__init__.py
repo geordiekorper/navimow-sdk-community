@@ -39,13 +39,18 @@ from mower_sdk.models import (
     MowerCommand,
     MowerError,
     MowerStatus,
+    RAW_STATE_TO_CANONICAL,
     REST_STATUS_KNOWN_FIELDS,
     RejectedMessage,
     STATE_KNOWN_FIELDS,
+    SkippedLocationEntry,
     VEHICLE_STATE_TO_STATUS,
+    battery_from_payload,
+    canonical_state,
+    mower_status_from_raw,
     mower_time_ms,
 )
-from mower_sdk.mqtt import NavimowMQTT
+from mower_sdk.mqtt import ConnectionEvent, NavimowMQTT, ReceivedPayload
 from mower_sdk.sdk import NavimowSDK
 
 if TYPE_CHECKING:
@@ -101,7 +106,9 @@ __all__ = [
     # Submodules
     "MowerAPI",
     "MowerMQTT",
+    "ConnectionEvent",
     "NavimowMQTT",
+    "ReceivedPayload",
     "NavimowCloud",
     "NavimowCloudDevice",
     "StateManager",
@@ -120,10 +127,15 @@ __all__ = [
     "MowerStatus",
     "MowerCommand",
     "MowerError",
+    "RAW_STATE_TO_CANONICAL",
     "REST_STATUS_KNOWN_FIELDS",
     "RejectedMessage",
     "STATE_KNOWN_FIELDS",
+    "SkippedLocationEntry",
     "VEHICLE_STATE_TO_STATUS",
+    "battery_from_payload",
+    "canonical_state",
+    "mower_status_from_raw",
     "mower_time_ms",
     "ThingStatusMessage",
     "ThingPropertiesMessage",

@@ -9,7 +9,7 @@ timeout's default, a custom value and ``None`` can be checked.
 
 Every expectation is what the code does today, pinned so the envelope refactor
 can show that nothing observable changed. That includes the ugly cases: an
-explicit ``"data": null`` raises AttributeError from four of the five
+explicit ``"data": null`` raises AttributeError from the two command
 endpoints, and that is pinned on purpose rather than corrected here.
 """
 
@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 import uuid
 from typing import Any
@@ -147,7 +148,7 @@ def ok(payload: Any) -> dict[str, Any]:
     return {"code": 1, "desc": "success", "data": {"payload": payload}}
 
 
-def api_with(*responses: FakeResponse, token: str = TOKEN) -> tuple[MowerAPI, FakeSession]:
+def api_with(*responses: FakeResponse, token: str | None = TOKEN) -> tuple[MowerAPI, FakeSession]:
     session = FakeSession(*responses)
     return MowerAPI(session=session, token=token, base_url=BASE_URL), session  # type: ignore[arg-type]
 
@@ -371,13 +372,16 @@ def test_missing_data_key_is_an_empty_result(name: str, args: tuple, expected: A
 def test_explicit_null_data_is_passed_through_as_none(name: str, args: tuple) -> None:
     """``response.get("data", {})`` returns None for an explicit null, unlike a missing key.
 
-    async_get_mqtt_user_info returns that None; async_get_device_statuses, read
-    through async_get_vehicle_status_raw, gives an empty result as for a missing
-    key; the other three call ``.get`` on it and raise AttributeError.
+    async_get_mqtt_user_info returns that None; async_get_devices and
+    async_get_device_statuses, read through their raw calls, give an empty result
+    as for a missing key; the two command calls call ``.get`` on it and raise
+    AttributeError.
     """
     api, _ = api_with(FakeResponse({"code": 1, "desc": "success", "data": None}))
     if name == "async_get_mqtt_user_info":
         assert run(getattr(api, name)(*args)) is None
+    elif name == "async_get_devices":
+        assert run(getattr(api, name)(*args)) == []
     elif name == "async_get_device_statuses":
         assert run(getattr(api, name)(*args)) == {}
     else:
@@ -471,10 +475,13 @@ def test_timeout_is_wrapped_with_its_cause() -> None:
     assert info.value.__cause__ is cause
 
 
-def test_empty_token_raises_before_any_request() -> None:
-    api, session = api_with(token="")
-    with pytest.raises(MowerAPIError) as info:
+@pytest.mark.parametrize("token", ["", None])
+def test_missing_token_is_auth_required_before_any_request(token: str | None) -> None:
+    api, session = api_with(token=token)
+    with pytest.raises(MowerAuthRequiredError) as info:
         run(api.async_get_devices())
+    assert isinstance(info.value, MowerAPIError)
+    assert not isinstance(info.value, MowerTransportError)
     assert info.value.message == ERROR_MESSAGES["TOKEN_EXPIRED"]
     assert info.value.status_code == 401
     assert info.value.error_code == "TOKEN_EXPIRED"
@@ -767,6 +774,81 @@ def test_no_ids_make_no_raw_status_request() -> None:
 def test_a_reply_without_entries_is_an_empty_list(data: dict[str, Any] | None) -> None:
     api, _ = api_with(FakeResponse({"code": 1, "desc": "success", "data": data}))
     assert run(api.async_get_vehicle_status_raw([DEVICE_ID])) == []
+
+
+@pytest.mark.parametrize("call", ["async_get_devices", "async_get_devices_raw"])
+@pytest.mark.parametrize(
+    "data",
+    [
+        {}, {"payload": {}}, None, {"payload": None}, {"payload": {"devices": None}},
+        42, {"payload": 42}, {"payload": {"devices": 42}}, {"payload": {"devices": {}}},
+    ],
+    ids=[
+        "no_payload", "no_devices", "null_data", "null_payload", "null_devices",
+        "data_a_number", "payload_a_number", "devices_a_number", "devices_an_object",
+    ],
+)
+def test_a_device_list_without_entries_is_an_empty_list(
+    call: str, data: dict[str, Any] | None
+) -> None:
+    api, _ = api_with(FakeResponse({"code": 1, "desc": "success", "data": data}))
+    assert run(getattr(api, call)()) == []
+
+
+DEVICE_ENTRY = {
+    "id": DEVICE_ID,
+    "name": "Lawn",
+    "model": "i105",
+    "firmware": "1.2.3",
+    "newField": {"nested": [1, 2]},
+}
+
+
+def test_the_raw_device_list_is_the_entries_as_sent() -> None:
+    api, session = api_with(FakeResponse(ok({"devices": ["not a dict", DEVICE_ENTRY, None]})))
+    assert run(api.async_get_devices_raw()) == [DEVICE_ENTRY]
+    assert session.requests[0]["method"] == "GET"
+    assert session.requests[0]["url"].endswith("/openapi/smarthome/authList")
+
+
+def test_the_typed_devices_are_read_from_the_raw_entries() -> None:
+    api, _ = api_with(FakeResponse(ok({"devices": [DEVICE_ENTRY, "not a dict"]})))
+    assert run(api.async_get_devices()) == [Device.from_dict(DEVICE_ENTRY)]
+
+
+@pytest.mark.parametrize(
+    "entry", [{"name": "No id"}, {"id": None, "name": "Null id"}, {"id": "", "name": "Empty id"}],
+    ids=["missing", "null", "empty"],
+)
+def test_a_typed_device_without_an_id_is_skipped_and_logged(
+    entry: dict[str, Any], caplog: pytest.LogCaptureFixture
+) -> None:
+    api, _ = api_with(FakeResponse(ok({"devices": [entry, DEVICE_ENTRY]})))
+    with caplog.at_level(logging.WARNING, logger="mower_sdk.api"):
+        devices = run(api.async_get_devices())
+    assert [device.id for device in devices] == [DEVICE_ID]
+    assert [record.getMessage() for record in caplog.records] == [
+        f"Skipping a device entry without an id (keys: {sorted(entry)})"
+    ]
+
+
+@pytest.mark.parametrize(
+    "entry", [{"name": "No id"}, {"id": None, "name": "Null id"}, {"id": "", "name": "Empty id"}],
+    ids=["missing", "null", "empty"],
+)
+def test_a_raw_device_without_an_id_is_kept(
+    entry: dict[str, Any], caplog: pytest.LogCaptureFixture
+) -> None:
+    api, _ = api_with(FakeResponse(ok({"devices": [entry, DEVICE_ENTRY]})))
+    with caplog.at_level(logging.WARNING, logger="mower_sdk.api"):
+        assert run(api.async_get_devices_raw()) == [entry, DEVICE_ENTRY]
+    assert caplog.records == []
+
+
+def test_a_refused_raw_device_request_raises_like_the_others() -> None:
+    api, _ = api_with(FakeResponse({"code": 4005, "desc": "token expired"}))
+    with pytest.raises(MowerAuthRequiredError):
+        run(api.async_get_devices_raw())
 
 
 def test_the_typed_statuses_are_read_from_the_raw_entries() -> None:

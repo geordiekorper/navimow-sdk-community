@@ -50,6 +50,7 @@ async def core() -> None:
     )
     live = mqtt.client
     assert live.on_connect_fail == mqtt._on_connect_fail, "paho's connect-failure callback is set"
+    assert live.on_subscribe == mqtt._on_subscribe, "paho's subscribe-acknowledgement callback is set"
     live.is_connected = lambda: True
     mqtt.update_credentials(password="rotated", auth_headers={"Authorization": "Bearer new"})
     assert mqtt.client is live, "connected: the live client is kept"

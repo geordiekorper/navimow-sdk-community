@@ -7,6 +7,65 @@ throughout.
 
 ## [Unreleased]
 
+### Added
+
+- `MowerAPI.async_get_devices_raw()`, the device-list entries as the cloud
+  sent them, including the fields `Device.from_dict()` does not read.
+- `NavimowMQTT.subscription_results`, what the broker answered for each topic
+  subscribed since the latest connect (`pending`, `granted`,
+  `refused: <reason>` or `not sent: <error>`), with a warning logged for a
+  refused topic and an optional `on_subscribe(topic, granted, codes)` hook. A
+  refused subscription used to be invisible: its data simply never arrived.
+  Both are kept across `rebuild()`.
+- The payload readers the models use, public so a consumer that keeps raw
+  REST or MQTT payloads reads them the same way instead of copying them:
+  `RAW_STATE_TO_CANONICAL` (read-only), `canonical_state(raw)` (what
+  `DeviceStateMessage.state` holds), `mower_status_from_raw(raw)` (what
+  `DeviceStatus.status` holds) and `battery_from_payload(data)` (what both
+  models' `battery` holds; None for anything but a dict).
+- `ConnectionEvent` and `NavimowMQTT.on_connection_event(event)`: each
+  connect, disconnect and connect failure with the client id it came from,
+  the reason, the UTC time and the rebuild count, captured when it happened.
+  The zero-argument `on_connected` and `on_disconnected` are unchanged; read
+  from inside them, `last_disconnect_reason` and `client_id` may already
+  belong to a client a `rebuild()` put in place.
+- The payload bytes exactly as the mower sent them, beside the re-encoded
+  form with `device_id` added: `NavimowMQTT.on_message` receives a re-encoded
+  object payload as `mower_sdk.mqtt.ReceivedPayload`, a `bytes` subclass equal
+  to what it received before, whose `original` holds the wire bytes; and
+  `DeviceStateMessage`, `DeviceEventMessage`, `DeviceAttributesMessage` and
+  `RejectedMessage` gain `original` (not compared, not in `to_dict()`). A
+  consumer that stores messages as sent no longer has to pair `on_raw` with
+  the typed callbacks, whose order is not promised.
+- `SkippedLocationEntry`, one location entry that was not applied: its type,
+  its time as read, the reason (`stale`, `implausible_time`, `placeholder`,
+  `unparsable` or `unknown_type`) and the fields it carried, read as an applied
+  entry's would be. `ParsedLocation.skipped` and `RejectedMessage.skipped` list
+  them, so a consumer can tell which entry of a mixed message was skipped and
+  keep a late reading marked as late. The applied entries and the record are
+  unchanged.
+
+- README: "Threaded applications", a tested recipe for applications that are
+  not asyncio (WSGI apps, scripts, CLI tools): the SDK's loop on a thread of
+  its own, REST through `run_coroutine_threadsafe`, callbacks handed over from
+  the loop, and which calls block and must stay off the loop.
+
+### Changed
+
+- `MowerAPI` with no token (empty or `None`) raises `MowerAuthRequiredError`
+  instead of a plain `MowerAPIError`, still before any request and still with
+  `status_code` 401 and `error_code` `TOKEN_EXPIRED`, so a consumer that
+  branches on the class asks for sign-in rather than retrying.
+
+### Fixed
+
+- `MowerAPI.async_get_devices()` raised `AttributeError` or `TypeError` for a
+  successful reply whose `data`, `payload` or `devices` was null or of another
+  type, and for an entry that is not an object; it returns an empty list for
+  such a reply and leaves such an entry out. An entry without an `id` (missing,
+  null or empty) is left out and logged at warning level instead of becoming
+  `Device(id="")`.
+
 ## [0.2.0a3] - 2026-09-30
 
 The MQTT transport, the location channel, the models and the REST errors.

@@ -8,6 +8,7 @@ import math
 from dataclasses import dataclass, field, fields
 from datetime import datetime
 from enum import Enum, StrEnum
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
 from mower_sdk._deprecation import warn_legacy
@@ -23,8 +24,9 @@ if TYPE_CHECKING:
 # The public surface upstream published from this module, plus the community
 # additions CommandReceipt and CommandVerdict and the location channel's
 # DeviceLocation, DeviceLocationMessage, VEHICLE_STATE_TO_STATUS and
-# mower_time_ms, RejectedMessage, and STATE_KNOWN_FIELDS and
-# REST_STATUS_KNOWN_FIELDS. The four Thing* classes now live
+# mower_time_ms, RejectedMessage, SkippedLocationEntry, STATE_KNOWN_FIELDS and
+# REST_STATUS_KNOWN_FIELDS, and the payload readers RAW_STATE_TO_CANONICAL,
+# canonical_state, mower_status_from_raw and battery_from_payload. The four Thing* classes now live
 # in mower_sdk.legacy.thing_models and are served by __getattr__.
 __all__ = [
     "CommandReceipt",
@@ -42,8 +44,13 @@ __all__ = [
     "MowerStatus",
     "REST_STATUS_KNOWN_FIELDS",
     "RejectedMessage",
+    "RAW_STATE_TO_CANONICAL",
+    "SkippedLocationEntry",
     "STATE_KNOWN_FIELDS",
     "VEHICLE_STATE_TO_STATUS",
+    "battery_from_payload",
+    "canonical_state",
+    "mower_status_from_raw",
     "mower_time_ms",
     "ThingEventMessage",
     "ThingParams",
@@ -69,6 +76,10 @@ _RAW_STATE_TO_CANONICAL: dict[str, str] = {
     "Offline": "offline",
     "offline": "offline",
 }
+# The raw states the cloud sends, as the REST status's status/state/vehicleState
+# or the state message's state, mapped to MowerStatus values. Read-only: the
+# models read the table behind it.
+RAW_STATE_TO_CANONICAL = MappingProxyType(_RAW_STATE_TO_CANONICAL)
 
 
 def _raw_state(data: dict[str, Any], keys: tuple[str, ...]) -> Any:
@@ -101,13 +112,33 @@ def _first_present(data: dict[str, Any], keys: tuple[str, ...], default: Any) ->
     return default
 
 
-def _normalize_state_value(raw_state: Any) -> str:
-    """Normalize cloud/raw mower state to canonical internal state value."""
+def canonical_state(raw_state: Any) -> str:
+    """The canonical state for a raw state, as DeviceStateMessage.state holds it.
+
+    A raw state in RAW_STATE_TO_CANONICAL gives its value there; a MowerStatus
+    gives its value; any other string passes through unchanged, so a state the
+    SDK does not know yet stays visible; anything else (None, a number) is
+    "unknown". For the MowerStatus a DeviceStatus would hold, use
+    mower_status_from_raw.
+    """
     if isinstance(raw_state, MowerStatus):
         return raw_state.value
     if not isinstance(raw_state, str):
         return "unknown"
     return _RAW_STATE_TO_CANONICAL.get(raw_state, raw_state)
+
+
+def mower_status_from_raw(raw_state: Any) -> "MowerStatus":
+    """The MowerStatus for a raw state, as DeviceStatus.status holds it.
+
+    canonical_state, then the MowerStatus of that value, UNKNOWN for a value
+    MowerStatus lacks.
+    """
+    return _mower_status(canonical_state(raw_state))
+
+
+# The names these readers had while private, kept for code that reached for them.
+_normalize_state_value = canonical_state
 
 
 def _int(value: Any) -> int | None:
@@ -126,7 +157,7 @@ def _int(value: Any) -> int | None:
         return None
 
 
-def _extract_battery_value(data: dict[str, Any]) -> int | None:
+def battery_from_payload(data: Any) -> int | None:
     """Read the battery percentage from a REST status or an MQTT state payload.
 
     The ``capacityRemaining`` entry whose ``unit`` is PERCENTAGE (compared
@@ -135,8 +166,11 @@ def _extract_battery_value(data: dict[str, Any]) -> int | None:
     through ``_int``, so None is returned when the payload carries no readable
     value: both keys missing, an unparsable or non-numeric value, a bool, a
     non-finite float. Out-of-range numbers pass through unchanged. One reader
-    for both payload shapes.
+    for both payload shapes, the one DeviceStatus.battery and
+    DeviceStateMessage.battery are read with; None for data that is not a dict.
     """
+    if not isinstance(data, dict):
+        return None
     capacity = data.get("capacityRemaining")
     if isinstance(capacity, list):
         for entry in capacity:
@@ -153,6 +187,9 @@ def _extract_battery_value(data: dict[str, Any]) -> int | None:
                 if value is not None:
                     return value
     return _int(data.get("battery"))
+
+
+_extract_battery_value = battery_from_payload
 
 
 class MowerStatus(Enum):
@@ -442,11 +479,10 @@ class DeviceStatus:
             A DeviceStatus instance
         """
         status_source = _raw_state(data, ("status", "state", "vehicleState"))
-        normalized_state = _normalize_state_value(status_source)
-        status = _mower_status(normalized_state)
+        status = mower_status_from_raw(status_source)
         error_code = _mower_error(data.get("error_code", "none"))
 
-        battery = _extract_battery_value(data)
+        battery = battery_from_payload(data)
 
         # A new dict: the caller's extra, every payload key no field reads, and the
         # raw status keys. The caller's dict is never written to.
@@ -575,11 +611,15 @@ class DeviceStateMessage:
     # When NavimowSDK received the message (UTC); None for one built by hand. Not
     # compared and not in to_dict().
     received_at: datetime | None = field(default=None, compare=False)
+    # The payload's bytes exactly as the mower sent them (raw is decoded, with
+    # device_id added), set by NavimowSDK; None for a message built by hand or by
+    # from_dict directly. Not compared and not in to_dict().
+    original: bytes | None = field(default=None, compare=False, repr=False)
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "DeviceStateMessage":
         raw_state = _raw_state(payload, ("state", "status", "vehicleState"))
-        normalized_state = _normalize_state_value(raw_state)
+        normalized_state = canonical_state(raw_state)
         # raw is the payload as decoded, with its own copy of a metrics dict.
         raw = dict(payload)
         if isinstance(payload.get("metrics"), dict):
@@ -593,7 +633,7 @@ class DeviceStateMessage:
             device_id=payload.get("device_id", ""),
             timestamp=payload.get("timestamp"),
             state=normalized_state,
-            battery=_extract_battery_value(payload),
+            battery=battery_from_payload(payload),
             signal_strength=payload.get("signal_strength"),
             position=payload.get("position"),
             error=payload.get("error"),
@@ -654,6 +694,10 @@ class DeviceEventMessage:
     # When NavimowSDK received the message (UTC); None for one built by hand. Not
     # compared and not in to_dict().
     received_at: datetime | None = field(default=None, compare=False)
+    # The payload's bytes exactly as the mower sent them (raw is decoded, with
+    # device_id added), set by NavimowSDK; None for a message built by hand or by
+    # from_dict directly. Not compared and not in to_dict().
+    original: bytes | None = field(default=None, compare=False, repr=False)
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "DeviceEventMessage":
@@ -691,6 +735,10 @@ class DeviceAttributesMessage:
     # When NavimowSDK received the message (UTC); None for one built by hand. Not
     # compared and not in to_dict().
     received_at: datetime | None = field(default=None, compare=False)
+    # The payload's bytes exactly as the mower sent them (raw is decoded, with
+    # device_id added), set by NavimowSDK; None for a message built by hand or by
+    # from_dict directly. Not compared and not in to_dict().
+    original: bytes | None = field(default=None, compare=False, repr=False)
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "DeviceAttributesMessage":
@@ -985,6 +1033,51 @@ class DeviceLocationMessage:
 
 
 @dataclass(frozen=True)
+class SkippedLocationEntry:
+    """One entry of a location message that was not applied, decoded as far as it goes.
+
+    ``reason`` is why it was skipped: stale (at or below the newest applied time
+    of its type), implausible_time, placeholder (an all-zero pose), unparsable (a
+    pose whose x or y cannot be read) or unknown_type. ``entry_type`` is the
+    type as sent when it is an integer, else None; ``timestamp`` the entry's
+    time as read, which for implausible_time may be zero, negative or far off,
+    and None when the entry has none or it cannot be read. The entry's own
+    fields follow, read the same way as DeviceLocationMessage's and None for
+    those it does not carry (all of them for an unknown type). ``raw`` is the
+    entry as decoded. Nothing in it reached the record, so it carries no
+    DeviceLocation; a consumer that keeps a history can store it marked as
+    skipped.
+    """
+
+    device_id: str
+    entry_type: int | None
+    timestamp: int | None
+    reason: str
+    received_at: datetime | None
+    x: float | None = None
+    y: float | None = None
+    theta: float | None = None
+    vehicle_state: int | None = None
+    current_zone: int | None = None
+    route_progress: int | None = None
+    mowing_percentage: float | None = None
+    area_m2: float | None = None
+    week_area_m2: float | None = None
+    action: int | None = None
+    sub_action: int | None = None
+    mow_start_type: int | None = None
+    map_work_position: str | None = None
+    partition_ids: tuple[int, ...] | None = None
+    task_delay: bool | None = None
+    raw: dict[str, Any] = field(default_factory=dict, compare=False, repr=False)
+
+    @property
+    def status(self) -> MowerStatus | None:
+        """The pose code as a MowerStatus; None without one, UNKNOWN for a code not in the table."""
+        return _status_of(self.vehicle_state)
+
+
+@dataclass(frozen=True)
 class RejectedMessage:
     """A message NavimowSDK did not apply, or applied with something unknown in it.
 
@@ -992,7 +1085,12 @@ class RejectedMessage:
     unknown_type, unknown_field, stale, placeholder). ``payload`` is the bytes the
     facade received: the wire bytes for an array, and for an object the MQTT
     client's re-encoded form with device_id added. Recording it is the
-    consumer's.
+    consumer's. ``original`` is the bytes exactly as the mower sent them: the
+    same as ``payload`` except for an object the MQTT client re-encoded; it is
+    left out of equality. ``skipped`` lists, for a location message, each
+    entry that was not applied, in the order the decoder met them (empty for
+    the other channels, and for a location message that was unparsable as a
+    whole).
     """
 
     channel: str
@@ -1002,6 +1100,8 @@ class RejectedMessage:
     reasons: tuple[str, ...]
     payload: bytes
     received_at: datetime
+    skipped: tuple[SkippedLocationEntry, ...] = ()
+    original: bytes | None = field(default=None, compare=False, repr=False)
 
 
 # Names that moved to mower_sdk.legacy: attribute here -> (legacy module, attribute there).

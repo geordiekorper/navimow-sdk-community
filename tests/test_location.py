@@ -28,6 +28,7 @@ from mower_sdk.models import (
     DeviceLocation,
     DeviceLocationMessage,
     MowerStatus,
+    SkippedLocationEntry,
     mower_time_ms,
 )
 
@@ -216,9 +217,13 @@ def test_each_reason(entries: list[dict[str, Any]], reason: str) -> None:
     assert parsed.reasons == [reason]
     if reason == "unknown_field":
         assert len(parsed.messages) == 1  # applied, and marked
+        assert parsed.skipped == []
     else:
         assert parsed.messages == []
         assert decoder.get(DEVICE) is None
+        (skipped,) = parsed.skipped
+        assert (skipped.device_id, skipped.reason, skipped.received_at) == (DEVICE, reason, RECEIVED)
+        assert skipped.raw == entries[0]
 
 
 def test_the_edge_of_the_plausibility_window_is_believed() -> None:
@@ -580,3 +585,107 @@ def test_task_numbers_sent_as_strings_zero_and_negative_are_kept() -> None:
     record = message.location
     assert (record.area_m2, record.week_area_m2, record.mowing_percentage) == (100.0, 0.0, 0.0)
     assert (record.action, record.sub_action, record.map_work_position) == (-1, -1, "7")
+
+
+# ---- skipped entries -----------------------------------------------------------------------------
+
+
+def test_a_skipped_entry_is_a_frozen_public_model() -> None:
+    assert mower_sdk.SkippedLocationEntry is SkippedLocationEntry
+    skipped = SkippedLocationEntry(device_id=DEVICE, entry_type=1, timestamp=T, reason="stale", received_at=RECEIVED)
+    with pytest.raises(AttributeError):
+        skipped.reason = "placeholder"  # type: ignore[misc]
+
+
+def test_each_skipped_entry_is_named_in_a_mixed_message_and_the_applied_ones_are_unchanged() -> None:
+    decoder = LocationDecoder()
+    decode(decoder, [pose(T - 10_000), task(T - 10_000, mowingPercentage="10")])
+    payload = [
+        pose(T - 20_000, x="8"),
+        pose(T - 5000, x="9"),
+        task(T - 15_000, currentMowBoundary="3", currentMowProgress="4200", subtotalArea="120.5", mowingPercentage="42"),
+        {"type": 7, "time": str(T)},
+        pose(T - 1000, x="0", y="0", theta="0"),
+    ]
+    parsed = decode(decoder, payload)
+    assert [(m.entry_type, m.timestamp, m.x) for m in parsed.messages] == [(1, T - 5000, 9.0)]
+    # In the order the decoder met them: the timed entries by ascending time, the
+    # unknown type in its place.
+    assert [(s.entry_type, s.timestamp, s.reason) for s in parsed.skipped] == [
+        (1, T - 20_000, "stale"),
+        (2, T - 15_000, "stale"),
+        (7, T, "unknown_type"),
+        (1, T - 1000, "placeholder"),
+    ]
+    late_pose, late_task, unknown, placeholder = parsed.skipped
+    # The late task's readings, read as an applied task entry's would be.
+    assert (late_task.current_zone, late_task.route_progress, late_task.area_m2, late_task.mowing_percentage) == (
+        3, 4200, 120.5, 42.0,
+    )
+    assert (late_task.x, late_task.partition_ids) == (None, None)
+    assert (late_pose.x, late_pose.y, late_pose.theta, late_pose.vehicle_state) == (8.0, 2.5, 0.25, 4)
+    assert late_pose.status is MowerStatus.MOWING
+    assert unknown.x is None and unknown.raw == {"type": 7, "time": str(T)}
+    assert (placeholder.x, placeholder.y, placeholder.theta) == (0.0, 0.0, 0.0)
+    # Nothing skipped reached the record or its marks.
+    record = decoder.get(DEVICE)
+    assert (record.x, record.pose_at, record.task_at, record.mowing_percentage) == (9.0, T - 5000, T - 10_000, 10.0)
+    assert record.marks == {1: T - 5000, 2: T - 10_000}
+
+
+def test_a_skipped_task_leaves_out_the_zone_and_progress_it_did_not_send() -> None:
+    decoder = LocationDecoder()
+    decode(decoder, [task(T, currentMowBoundary="3")])
+    (skipped,) = decode(decoder, [task(T - 1000, subtotalArea="5")]).skipped
+    assert (skipped.reason, skipped.current_zone, skipped.route_progress, skipped.area_m2) == ("stale", None, None, 5.0)
+
+
+@pytest.mark.parametrize(
+    ("entry", "timestamp"),
+    [
+        (pose(0), 0),
+        (pose(-5), -5),
+        (pose(5000), 5000),
+        (pose(T + 5 * 60 * 1000 + 1), T + 5 * 60 * 1000 + 1),
+        ({**pose(None), "time": "soon"}, None),
+        (target(0, [1, 2]), 0),
+    ],
+    ids=["zero", "negative", "1970", "ahead", "unreadable", "target_zero"],
+)
+def test_an_implausible_time_is_kept_as_read(entry: dict[str, Any], timestamp: int | None) -> None:
+    (skipped,) = decode(LocationDecoder(), [entry]).skipped
+    assert (skipped.reason, skipped.timestamp) == ("implausible_time", timestamp)
+    if entry["type"] == 3:
+        assert skipped.partition_ids == (1, 2)
+    else:
+        assert (skipped.x, skipped.y) == (1.5, 2.5)
+
+
+def test_an_unparsable_pose_keeps_what_could_be_read() -> None:
+    (skipped,) = decode(LocationDecoder(), [pose(T, x="far")]).skipped
+    assert (skipped.reason, skipped.entry_type, skipped.timestamp) == ("unparsable", 1, T)
+    assert (skipped.x, skipped.y, skipped.theta, skipped.vehicle_state) == (None, 2.5, 0.25, 4)
+
+
+@pytest.mark.parametrize(
+    ("entry", "entry_type"),
+    [({"type": "1", "time": str(T)}, None), ({"type": True}, None), ({"postureX": "1"}, None), ({"type": 9}, 9)],
+    ids=["type_as_string", "type_as_bool", "no_type", "unknown_int"],
+)
+def test_an_unknown_type_is_skipped_with_its_type_only_when_it_is_an_integer(
+    entry: dict[str, Any], entry_type: int | None
+) -> None:
+    (skipped,) = decode(LocationDecoder(), [entry]).skipped
+    assert (skipped.reason, skipped.entry_type) == ("unknown_type", entry_type)
+    assert skipped.raw == entry
+
+
+def test_what_is_not_an_entry_is_not_listed_as_skipped() -> None:
+    decoder = LocationDecoder()
+    assert decode(decoder, "text").skipped == []
+    assert decode(decoder, [1, "x", {"type": 4, "time": str(T), "vehicleState": "1"}]).skipped == []
+
+
+def test_a_message_with_nothing_skipped_lists_nothing() -> None:
+    parsed = decode(LocationDecoder(), [pose(T), {**task(T), "speed": "1"}])
+    assert (len(parsed.messages), parsed.reasons, parsed.skipped) == (2, ["unknown_field"], [])

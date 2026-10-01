@@ -17,6 +17,7 @@ from typing import Any
 
 import pytest
 
+import mower_sdk
 from mower_sdk import models
 from mower_sdk.models import (
     DeviceAttributesMessage,
@@ -49,6 +50,61 @@ RAW_STATE_TABLE = [
 
 def test_raw_state_table_is_exactly_this() -> None:
     assert dict(RAW_STATE_TABLE) == models._RAW_STATE_TO_CANONICAL
+
+
+def test_the_public_raw_state_table_is_the_models_table_read_only() -> None:
+    assert mower_sdk.RAW_STATE_TO_CANONICAL is models.RAW_STATE_TO_CANONICAL
+    assert dict(models.RAW_STATE_TO_CANONICAL) == dict(RAW_STATE_TABLE)
+    with pytest.raises(TypeError):
+        models.RAW_STATE_TO_CANONICAL["isNew"] = "idle"  # type: ignore[index]
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [*RAW_STATE_TABLE, ("isSomethingNew", "isSomethingNew"), (MowerStatus.DOCKED, "docked"), (None, "unknown"), (3, "unknown")],
+)
+def test_canonical_state_is_what_a_state_message_holds(raw: Any, expected: str) -> None:
+    assert mower_sdk.canonical_state(raw) == expected
+    if raw is not None and not isinstance(raw, MowerStatus):
+        assert DeviceStateMessage.from_dict({"device_id": "d", "state": raw}).state == expected
+
+
+@pytest.mark.parametrize(
+    "raw", [*(raw for raw, _ in RAW_STATE_TABLE), "isSomethingNew", MowerStatus.PAUSED, None, 3, ""]
+)
+def test_mower_status_from_raw_is_what_a_rest_status_holds(raw: Any) -> None:
+    expected = DeviceStatus.from_dict({"id": "d", "vehicleState": raw}).status
+    assert mower_sdk.mower_status_from_raw(raw) is expected
+    if raw == "isSomethingNew":
+        assert expected is MowerStatus.UNKNOWN
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"capacityRemaining": [{"rawValue": "40", "unit": "MAH"}, {"rawValue": "88", "unit": "percentage"}]},
+        {"capacityRemaining": [{"rawValue": "x"}, {"rawValue": 55}], "battery": 10},
+        {"battery": "73"},
+        {"battery": True},
+        {"battery": 140},
+        {},
+    ],
+    ids=["percentage_first", "any_raw_value", "plain_battery", "bool", "out_of_range", "none"],
+)
+def test_battery_from_payload_is_what_both_models_read(payload: dict[str, Any]) -> None:
+    value = mower_sdk.battery_from_payload(payload)
+    assert value == DeviceStatus.from_dict({"id": "d", **payload}).battery
+    assert value == DeviceStateMessage.from_dict({"device_id": "d", **payload}).battery
+
+
+@pytest.mark.parametrize("data", [None, [], "88", 88], ids=["none", "list", "string", "number"])
+def test_battery_from_payload_reads_nothing_from_what_is_not_a_dict(data: Any) -> None:
+    assert mower_sdk.battery_from_payload(data) is None
+
+
+def test_the_private_reader_names_still_resolve() -> None:
+    assert models._normalize_state_value is models.canonical_state
+    assert models._extract_battery_value is models.battery_from_payload
 
 
 def test_mower_status_members() -> None:

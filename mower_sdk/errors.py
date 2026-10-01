@@ -87,7 +87,8 @@ class MowerTransportError(MowerAPIError):
 
 class MowerAuthRequiredError(MowerAPIError):
     """The credentials were refused: HTTP 401 or 403, envelope code 4005, or a reply
-    whose desc names CODE_OAUTH_INFO_ILLEGAL. Refresh or re-authorise, then retry."""
+    whose desc names CODE_OAUTH_INFO_ILLEGAL; or MowerAPI has no token to send, in
+    which case no request is made. Refresh or re-authorise, then retry."""
 
 
 class MowerRateLimitedError(MowerAPIError):

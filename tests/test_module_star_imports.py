@@ -29,6 +29,7 @@ MODULES = ["mower_sdk.mqtt", "mower_sdk.models", "mower_sdk.errors"]
 # inventory: module name -> the names added. Each addition is listed here in the
 # commit that introduces it; ``upstream_exports.json`` itself is never edited.
 COMMUNITY_ADDITIONS: dict[str, set[str]] = {
+    "mower_sdk.mqtt": {"ConnectionEvent", "ReceivedPayload"},
     "mower_sdk.errors": {
         "MowerAuthRequiredError",
         "MowerRateLimitedError",
@@ -40,10 +41,15 @@ COMMUNITY_ADDITIONS: dict[str, set[str]] = {
         "CommandVerdict",
         "DeviceLocation",
         "DeviceLocationMessage",
+        "RAW_STATE_TO_CANONICAL",
         "REST_STATUS_KNOWN_FIELDS",
         "RejectedMessage",
         "STATE_KNOWN_FIELDS",
+        "SkippedLocationEntry",
         "VEHICLE_STATE_TO_STATUS",
+        "battery_from_payload",
+        "canonical_state",
+        "mower_status_from_raw",
         "mower_time_ms",
     },
 }
