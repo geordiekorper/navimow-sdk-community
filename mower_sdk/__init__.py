@@ -53,6 +53,7 @@ from mower_sdk.models import (
 )
 from mower_sdk.mqtt import ConnectionEvent, NavimowMQTT, ReceivedPayload, parse_topic
 from mower_sdk.sdk import NavimowSDK
+from mower_sdk.watchdog import MqttWatchdog, RebuildRequest, WatchInput
 
 if TYPE_CHECKING:
     from mower_sdk.legacy.client import MowerClient as MowerClient
@@ -104,6 +105,9 @@ __all__ = [
     "MowerClient",
     "Navimow",
     "NavimowSDK",
+    "MqttWatchdog",
+    "RebuildRequest",
+    "WatchInput",
     # Submodules
     "MowerAPI",
     "MowerMQTT",

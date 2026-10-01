@@ -271,6 +271,14 @@ names another broker host, port or path, the client is rebuilt on it. Do not cal
 on a timer or on an OAuth token refresh: after a token refresh, pass the new bearer header with
 `sdk.update_mqtt_credentials(auth_headers=...)` alone.
 
+**A broker that stops delivering.** The keepalive finds a dead link, not a broker that has stopped
+delivering to a live one, which the cloud's broker has been seen to do. `MqttWatchdog(sdk)` finds
+that from the data: call `after_poll(inputs)` after each REST status poll and `check_silence(inputs)`
+every half minute or so (it needs `subscribe_location=True`), with a `WatchInput` per mower (the state you show, REST's latest state and
+when it was read). When either returns a `RebuildRequest`, rebuild the client off the event loop
+(`sdk.mqtt.rebuild(reason=request.reason)`) and pass the request to `acknowledge()`. It has no
+timer and makes no request of its own.
+
 **Location channel.** Pose, zone, route progress and target zones arrive on a separate MQTT
 channel, off by default (several models never publish on it, and it is a movement trace). Turn it
 on with `NavimowSDK(..., subscribe_location=True)`, then register `sdk.on_location(callback)`;

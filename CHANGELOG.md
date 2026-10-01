@@ -85,6 +85,19 @@ throughout.
   WebSocket, with `Authorization: Bearer <access_token>` merged into
   `auth_headers`. It refuses a reply without a WebSocket path and options that
   name what the info supplies. The README's quick example uses it.
+- `mower_sdk.watchdog`, with `MqttWatchdog`, `WatchInput` and `RebuildRequest`
+  also exported from the package: finds an MQTT connection that is up but no
+  longer delivering, from the facade's caches and the client's message times.
+  `after_poll(inputs)` asks for a rebuild when a current REST reading (taken at
+  least 120 s after the last accepted MQTT state report arrived) disagrees
+  with that report in a state the state channel reports, once per report;
+  `check_silence(inputs)` asks when a mower with a timestamped pose that is
+  shown or reported mowing or returning (never while shown mapping) has sent
+  no location message for 180 s on a connected client that subscribes the
+  location channel (`subscribe_location=True`). Nothing is asked
+  before the first connect; `acknowledge(request)` starts a 300 s debounce
+  covering both rules. No timer, no I/O: the consumer schedules the checks
+  and rebuilds. The thresholds are keyword arguments and module constants.
 
 - README: "Threaded applications", a tested recipe for applications that are
   not asyncio (WSGI apps, scripts, CLI tools): the SDK's loop on a thread of
