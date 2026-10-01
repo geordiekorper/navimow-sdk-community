@@ -515,17 +515,18 @@ class NavimowMQTT:
         update_credentials). The new client is built through _build_new_client with
         a fresh random suffix in its client id and installed as self.client before
         the old one is torn down, so the SDK's own callbacks (on_connect,
-        on_disconnect, on_connect_fail, on_message) from the old client, including
-        the disconnect paho reports while disconnect() runs, are ignored; one
-        already scheduled on the loop came from a live client and is delivered. The old client is then disconnected and its network thread
+        on_disconnect, on_connect_fail, on_message, on_subscribe) from the old
+        client, including the disconnect paho reports while disconnect() runs, are
+        ignored; one already scheduled on the loop came from a live client and is
+        delivered. The old client is then disconnected and its network thread
         stopped; an OSError, RuntimeError or ValueError from either is logged at
         debug level, since the client is being discarded anyway. Building a paho
         client does not connect, so two client objects exist during the teardown
         and never two connections. rebuilds is incremented and reason recorded as
         last_rebuild_reason.
 
-        Callbacks a consumer set directly on the old paho object (on_subscribe,
-        on_log and the like) are not guarded: they may still fire from the old
+        Callbacks a consumer set directly on the old paho object (on_log,
+        on_publish and the like) are not guarded: they may still fire from the old
         client during its teardown. Nor are they carried to the new one; set them
         again on self.client.
 
