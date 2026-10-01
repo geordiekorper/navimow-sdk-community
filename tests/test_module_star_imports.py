@@ -63,10 +63,13 @@ COMMUNITY_ADDITIONS: dict[str, set[str]] = {
         "LOCATION_ENTRY_TYPES",
         "LOCATION_KNOWN_FIELDS",
         "LocationDecoder",
+        "MOW_ALL_STATES",
         "PLAUSIBLE_MIN_MS",
         "ParsedLocation",
         "REASON_PRIORITY",
         "TIME_AHEAD_MAX_MS",
+        "TargetZone",
+        "target_zone",
     },
     "mower_sdk.watchdog": {
         "IGNORED_REST_STATES",

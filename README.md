@@ -285,7 +285,8 @@ on with `NavimowSDK(..., subscribe_location=True)`, then register `sdk.on_locati
 `sdk.get_cached_location(device_id)` returns the merged record, which `DeviceLocation.to_dict()`
 and `from_dict()` let you persist and hand back with `sdk.restore_location()` after a restart.
 The record also carries the dock's estimated position (`dock_x`, `dock_y`), learned from the poses
-the mower sends while docked.
+the mower sends while docked, and `target_zone(location, status)` reads its target report: a zone
+id, or `TargetZone.ALL` or `NONE` for a report that names none, inferred from the state you show.
 Messages that could not be applied are reported through `sdk.on_rejected(callback)`; for a
 location message, `RejectedMessage.skipped` lists each entry that was not applied, with its reason
 and its fields read as far as they go, so a late task reading can still be kept, marked as late.

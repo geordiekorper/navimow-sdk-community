@@ -996,7 +996,8 @@ class DeviceLocation:
 
     Target (type 3 entries): ``partition_ids``, None until a target report has
     arrived and empty for a report with no active target (a mow-all task sends
-    the same empty report as an idle mower); ``target_at``, when this set was
+    the same empty report as an idle mower; mower_sdk.location.target_zone reads
+    it with the mower's state); ``target_at``, when this set was
     first reported, and ``target_last_at``, its latest repeat.
 
     Delay (type 4 entries): ``task_delay`` (a rain or schedule delay) and

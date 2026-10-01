@@ -27,11 +27,13 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field, fields, replace
 from datetime import datetime
+from enum import StrEnum
 from typing import Any
 
 from mower_sdk.models import (
     DeviceLocation,
     DeviceLocationMessage,
+    MowerStatus,
     SkippedLocationEntry,
     _number,
     _whole,
@@ -45,10 +47,13 @@ __all__ = [
     "LOCATION_ENTRY_TYPES",
     "LOCATION_KNOWN_FIELDS",
     "LocationDecoder",
+    "MOW_ALL_STATES",
     "PLAUSIBLE_MIN_MS",
     "ParsedLocation",
     "REASON_PRIORITY",
     "TIME_AHEAD_MAX_MS",
+    "TargetZone",
+    "target_zone",
 ]
 
 # Every entry field the decoder knows. An entry with another field still applies
@@ -116,6 +121,42 @@ class ParsedLocation:
     def reason(self) -> str | None:
         """The deciding reason, by REASON_PRIORITY, or None when there is none."""
         return next((reason for reason in REASON_PRIORITY if reason in self.reasons), None)
+
+
+class TargetZone(StrEnum):
+    """What an empty target report is read as, by target_zone()."""
+
+    ALL = "all"  # an empty report while the mower mows or pauses: a mow-all task
+    NONE = "none"  # an empty report otherwise: no target
+
+
+# The states in which an empty target report is read as a mow-all task.
+MOW_ALL_STATES = frozenset({"mowing", "paused"})
+
+
+def target_zone(location: DeviceLocation | None, status: str | MowerStatus | None) -> int | TargetZone | None:
+    """The zone the mower is targeting, as far as the target report and the mower's state tell.
+
+    None before any target report (location is None, or its partition_ids is
+    None). A report that names zones gives its first partition id, whatever the
+    status. An empty report gives TargetZone.ALL while status is mowing or
+    paused, and TargetZone.NONE otherwise.
+
+    This is an inference, not something the mower reports: a mow-all task sends
+    the same empty report as an idle mower, and the mower's state is the only
+    way to tell them apart. returning is not in MOW_ALL_STATES because a dock
+    command clears the target for the trip home, so an empty report then means
+    no target; for the same reason a charging break during a mow-all task reads
+    NONE until the mower resumes. status is the state the consumer shows (which
+    may be REST's rather than the SDK's cached state), a canonical MowerStatus
+    string or a MowerStatus.
+    """
+    if location is None or location.partition_ids is None:
+        return None
+    if location.partition_ids:
+        return location.partition_ids[0]
+    state = status.value if isinstance(status, MowerStatus) else status
+    return TargetZone.ALL if state in MOW_ALL_STATES else TargetZone.NONE
 
 
 def _plausible(ms: int, now_ms: int) -> bool:

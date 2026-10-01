@@ -111,6 +111,12 @@ throughout.
   their running mean, replace the estimate.
   The three are keyword-only arguments of `LocationDecoder` and, with
   `DOCK_VEHICLE_STATES`, constants of `mower_sdk.location`.
+- `target_zone(location, status)` in `mower_sdk.location` and the package: the
+  first partition id of the target report, else `TargetZone.ALL` for an empty
+  report while the shown status is mowing or paused (`MOW_ALL_STATES`) and
+  `TargetZone.NONE` otherwise, None before any target report. An inference:
+  the mower sends the same empty report for a mow-all task as when idle, and a
+  charging break during a mow-all task reads `NONE`.
 
 - README: "Threaded applications", a tested recipe for applications that are
   not asyncio (WSGI apps, scripts, CLI tools): the SDK's loop on a thread of
