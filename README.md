@@ -80,17 +80,10 @@ async def main() -> None:
             print(device.id, device.name, status.status.value, status.battery)
 
         # The broker, its WebSocket path and the MQTT credentials come from the
-        # cloud; the endpoint allows about one call a minute.
-        info = await api.async_get_mqtt_user_info()
-        sdk = NavimowSDK(
-            broker=info["mqttHost"],  # wss://..., so TLS over WebSocket
-            port=443,
-            ws_path=info["mqttUrl"],
-            username=info["userName"],
-            password=info["pwdInfo"],
-            auth_headers={"Authorization": f"Bearer {TOKEN}"},
-            records=devices,
-        )
+        # cloud; the endpoint allows about one call a minute. The facade connects
+        # with TLS over WebSocket and the token as the bearer header.
+        info = await api.async_get_mqtt_connection_info()
+        sdk = NavimowSDK.from_connection_info(info, access_token=TOKEN, records=devices)
         sdk.on_state(print_state)
         sdk.connect()
         try:
@@ -190,13 +183,11 @@ sdk = None
 try:
     api = MowerAPI(session, TOKEN, BASE_URL)
     devices = mowers.run(api.async_get_devices())  # every REST call goes through run()
-    info = mowers.run(api.async_get_mqtt_user_info())
+    info = mowers.run(api.async_get_mqtt_connection_info())
 
-    sdk = NavimowSDK(
-        broker=info["mqttHost"], port=443, ws_path=info["mqttUrl"],
-        username=info["userName"], password=info["pwdInfo"],
-        auth_headers={"Authorization": f"Bearer {TOKEN}"},
-        records=devices, loop=mowers.loop,  # callbacks go to the helper's loop
+    sdk = NavimowSDK.from_connection_info(
+        info, access_token=TOKEN, records=devices,
+        loop=mowers.loop,  # callbacks go to the helper's loop
     )
     states = queue.Queue()
     sdk.on_state(states.put)  # callbacks run on the loop's thread: hand them over, don't block there
@@ -266,6 +257,11 @@ values after a `rebuild()`.
 `mower_sdk.mqtt.ReceivedPayload`, still `bytes` and equal to the re-encoded form, whose `original`
 holds the bytes exactly as received; the typed messages and `RejectedMessage` carry the same bytes
 as `original`.
+
+**Broker address.** `api.async_get_mqtt_connection_info()` reads the credential reply into an
+`MqttConnectionInfo` (host, port, WebSocket path, username, password), and
+`NavimowSDK.from_connection_info(info, access_token=..., records=...)` builds the facade from it,
+as in the quick example. The constructor stays available for another transport.
 
 **Broker credentials.** The MQTT username and password come from the cloud's credential endpoint,
 which allows about one call a minute. `await sdk.async_refresh_broker_credentials(api,

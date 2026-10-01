@@ -41,6 +41,7 @@ COMMUNITY_ADDITIONS: dict[str, set[str]] = {
         "CommandVerdict",
         "DeviceLocation",
         "DeviceLocationMessage",
+        "MqttConnectionInfo",
         "RAW_STATE_TO_CANONICAL",
         "REST_STATUS_KNOWN_FIELDS",
         "RejectedMessage",

@@ -59,6 +59,18 @@ throughout.
   message whose topic names a device and a channel, whatever its payload, with
   the UTC time `last_message_at()` records for it. For a consumer that only
   needs to know that a message arrived and parsed the topic again in `on_raw`.
+- `MqttConnectionInfo` in `mower_sdk.models` and the package, the MQTT
+  credential reply read once: `broker` (a host name, from `mqttHost` or a full
+  `mqttUrl`), `port` (a full `mqttUrl`'s, else `mqttHost`'s, else 443),
+  `ws_path` (`mqttUrl`'s path and query, `""` without one), `username` and
+  `password` (text when present). `from_dict` raises `MowerAPIError` for a
+  reply that names no broker, a scheme other than `wss` or a port that is not
+  a number. `MowerAPI.async_get_mqtt_connection_info()` returns one, and
+  `NavimowSDK.from_connection_info(info, *, access_token, records,
+  auth_headers=None, **options)` builds the facade from it: TLS over
+  WebSocket, with `Authorization: Bearer <access_token>` merged into
+  `auth_headers`. It refuses a reply without a WebSocket path and options that
+  name what the info supplies. The README's quick example uses it.
 
 - README: "Threaded applications", a tested recipe for applications that are
   not asyncio (WSGI apps, scripts, CLI tools): the SDK's loop on a thread of

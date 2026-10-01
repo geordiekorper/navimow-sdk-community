@@ -19,7 +19,15 @@ from mower_sdk.errors import (
     MowerTransportError,
     ERROR_MESSAGES,
 )
-from mower_sdk.models import CommandReceipt, CommandVerdict, Device, DeviceStatus, MowerCommand, _int
+from mower_sdk.models import (
+    CommandReceipt,
+    CommandVerdict,
+    Device,
+    DeviceStatus,
+    MowerCommand,
+    MqttConnectionInfo,
+    _int,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -371,6 +379,19 @@ class MowerAPI:
         """
         response = await self._async_request("GET", "/openapi/mqtt/userInfo/get/v2")
         return self._unwrap(response)
+
+    async def async_get_mqtt_connection_info(self) -> MqttConnectionInfo:
+        """Fetch the MQTT connection information, read into an MqttConnectionInfo.
+
+        The same request as async_get_mqtt_user_info, which allows about one
+        call a minute; the reply is read by MqttConnectionInfo.from_dict, and
+        NavimowSDK.from_connection_info builds the facade from the result.
+
+        Raises:
+            MowerAPIError: If the request fails, or the reply names no broker or
+                one that cannot be read (see MqttConnectionInfo.from_dict)
+        """
+        return MqttConnectionInfo.from_dict(await self.async_get_mqtt_user_info())
 
     def get_devices(self) -> list[Device]:
         """Fetch the device list synchronously.

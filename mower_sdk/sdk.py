@@ -20,9 +20,11 @@ from mower_sdk.models import (
     DeviceLocation,
     DeviceLocationMessage,
     DeviceStateMessage,
+    MqttConnectionInfo,
     RejectedMessage,
     STATE_KNOWN_FIELDS,
     SkippedLocationEntry,
+    _credential,
     mower_time_ms,
 )
 from mower_sdk.mqtt import NavimowMQTT, _decode_json, _original_payload, _resolve_event_loop, parse_topic
@@ -44,6 +46,8 @@ _NO_ALTERNATIVE: dict[str, str] = {
     "set_blade_height": "No supported call sets the blade height (the REST API has no such command);",
 }
 _NO_ALTERNATIVE_KNOWN = "No supported alternative is known;"
+# The constructor arguments NavimowSDK.from_connection_info takes from the connection info.
+_CONNECTION_INFO_ARGUMENTS = ("broker", "port", "ws_path", "username", "password")
 
 
 class NavimowSDK:
@@ -153,6 +157,68 @@ class NavimowSDK:
         self._attributes_cache_updated_at: dict[str, float] = {}
         self._state_cache_received_at: dict[str, datetime] = {}
 
+    @classmethod
+    def from_connection_info(
+        cls,
+        info: MqttConnectionInfo,
+        *,
+        access_token: str | None,
+        records: list[Any],
+        auth_headers: dict[str, str] | None = None,
+        **options: Any,
+    ) -> NavimowSDK:
+        """A facade for the broker the credential reply names, connected the way the cloud expects.
+
+        info is MowerAPI.async_get_mqtt_connection_info()'s result, records the
+        account's devices. The broker, port, WebSocket path, username and password
+        come from info; passing any of them in options is a TypeError. The other
+        options (loop, keepalive_seconds, subscribe_location, reject_late_state,
+        ...) go to the constructor unchanged. With an access_token the bearer
+        header Authorization: Bearer <access_token> is merged into auth_headers,
+        replacing an Authorization header given there in any spelling; with
+        access_token=None no Authorization header is added and auth_headers is
+        passed as given. After an OAuth token refresh, pass the new header with
+        update_mqtt_credentials(auth_headers=...) as usual.
+
+        Raises:
+            TypeError: options names an argument info supplies.
+            ValueError: info has no WebSocket path (ws_path is "").
+        """
+        owned = [name for name in _CONNECTION_INFO_ARGUMENTS if name in options]
+        if owned:
+            raise TypeError(
+                f"NavimowSDK.from_connection_info() takes {', '.join(owned)} from the connection info; "
+                "use the constructor to choose them"
+            )
+        # Decision: the factory builds the one connection the cloud has been seen to
+        # serve, TLS over WebSocket on the reply's port (443 unless named) with the
+        # bearer at the upgrade, so a reply without a WebSocket path cannot be built
+        # here and is refused rather than guessed at (with "/mqtt", say). A consumer
+        # that wants plain TCP or another scheme uses the constructor, whose rules for
+        # broker, port, ws_path and TLS are unchanged.
+        if not info.ws_path:
+            raise ValueError(
+                "NavimowSDK.from_connection_info(): the connection info names no WebSocket path (mqttUrl); "
+                "use the constructor to choose one"
+            )
+        headers = {
+            key: value
+            for key, value in (auth_headers or {}).items()
+            if access_token is None or key.lower() != "authorization"
+        }
+        if access_token is not None:
+            headers["Authorization"] = f"Bearer {access_token}"
+        return cls(
+            broker=info.broker,
+            port=info.port,
+            username=info.username,
+            password=info.password,
+            ws_path=info.ws_path,
+            auth_headers=headers,
+            records=records,
+            **options,
+        )
+
     @property
     def loop(self) -> asyncio.AbstractEventLoop | None:
         """The event loop the callbacks run on: the MQTT client's, which it may bind at connect."""
@@ -213,7 +279,7 @@ class NavimowSDK:
         """Fetch the broker username and password from the cloud and apply them.
 
         When to call it: at startup, then connect() (or construct the facade
-        from the reply instead); and after on_connect_fail, where paho's thread
+        with from_connection_info instead); and after on_connect_fail, where paho's thread
         is still retrying and uses the applied values at its next attempt, or
         at once with force_reconnect=True. Never on a timer, and never on an
         OAuth token refresh, which is update_mqtt_credentials(auth_headers=...)
@@ -256,16 +322,19 @@ class NavimowSDK:
                 return False
             self._credentials_attempted_at = now
             info = await api.async_get_mqtt_user_info()
-            username = info.get("userName") if isinstance(info, dict) else None
-            password = info.get("pwdInfo") if isinstance(info, dict) else None
+            # Read like MqttConnectionInfo reads them (text when present), but without
+            # its broker requirement: a reply that names no broker still carries
+            # credentials for the one the client has.
+            username = _credential(info.get("userName")) if isinstance(info, dict) else None
+            password = _credential(info.get("pwdInfo")) if isinstance(info, dict) else None
             if username is None and password is None:
                 raise MowerAPIError(f"{ERROR_MESSAGES['API_REQUEST_FAILED']}: no broker credentials in the reply")
             await running.run_in_executor(
                 None,
                 functools.partial(
                     self.update_mqtt_credentials,
-                    None if username is None else str(username),
-                    None if password is None else str(password),
+                    username,
+                    password,
                     auth_headers,
                     force_reconnect=force_reconnect,
                 ),

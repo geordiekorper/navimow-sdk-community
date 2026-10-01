@@ -10,8 +10,10 @@ from datetime import datetime
 from enum import Enum, StrEnum
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
 from mower_sdk._deprecation import warn_legacy
+from mower_sdk.errors import ERROR_MESSAGES, MowerAPIError
 
 if TYPE_CHECKING:
     from mower_sdk.legacy.thing_models import (
@@ -25,8 +27,9 @@ if TYPE_CHECKING:
 # additions CommandReceipt and CommandVerdict and the location channel's
 # DeviceLocation, DeviceLocationMessage, VEHICLE_STATE_TO_STATUS and
 # mower_time_ms, RejectedMessage, SkippedLocationEntry, STATE_KNOWN_FIELDS and
-# REST_STATUS_KNOWN_FIELDS, and the payload readers RAW_STATE_TO_CANONICAL,
-# canonical_state, mower_status_from_raw and battery_from_payload. The four Thing* classes now live
+# REST_STATUS_KNOWN_FIELDS, the payload readers RAW_STATE_TO_CANONICAL,
+# canonical_state, mower_status_from_raw and battery_from_payload, and
+# MqttConnectionInfo. The four Thing* classes now live
 # in mower_sdk.legacy.thing_models and are served by __getattr__.
 __all__ = [
     "CommandReceipt",
@@ -42,6 +45,7 @@ __all__ = [
     "MowerCommand",
     "MowerError",
     "MowerStatus",
+    "MqttConnectionInfo",
     "REST_STATUS_KNOWN_FIELDS",
     "RejectedMessage",
     "RAW_STATE_TO_CANONICAL",
@@ -300,6 +304,112 @@ class CommandReceipt:
     @property
     def already_in_state(self) -> bool:
         return self.verdict is CommandVerdict.ALREADY_IN_STATE
+
+
+def _credential(value: Any) -> str | None:
+    """A broker credential from the credential reply: its text when present, None when absent.
+
+    An empty string is a value, and a number (a user name sent as one) is read
+    as its text.
+    """
+    return None if value is None else str(value)
+
+
+def _endpoint(value: Any, key: str) -> tuple[str | None, int | None, str | None] | None:
+    """The host, port and path mqttHost or mqttUrl names, or None when the reply does not name one.
+
+    A value with a scheme is split as a URL; its path and query form the path,
+    "/" standing in for an empty path before a query. Without a scheme, mqttHost
+    is a host with an optional port, and mqttUrl is a path taken as given, with
+    a leading slash added. A scheme other than wss, a value that cannot be split
+    as a URL, or a port that is not a number from 0 to 65535 is a MowerAPIError
+    naming the key but not the value, which may carry an account id or a token.
+    """
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    if "://" not in text and key == "mqttUrl":
+        return None, None, text if text.startswith("/") else f"/{text}"
+    failed = f"{ERROR_MESSAGES['API_REQUEST_FAILED']}: the credential reply's {key}"
+    try:
+        parsed = urlsplit(text if "://" in text else f"//{text}")
+        hostname, port = parsed.hostname, parsed.port
+    except ValueError:
+        # An unreadable port, or a bracketed host that is not an IP address; the
+        # exception's own text would repeat the value.
+        raise MowerAPIError(f"{failed} cannot be read as a host and port") from None
+    if parsed.scheme.lower() not in ("", "wss"):
+        raise MowerAPIError(f"{failed} uses the scheme {parsed.scheme!r}; only wss is supported")
+    path = None
+    if "://" in text and (parsed.path or parsed.query):
+        path = (parsed.path or "/") + (f"?{parsed.query}" if parsed.query else "")
+    return hostname, port, path
+
+
+def _broker_endpoint(data: dict[str, Any]) -> tuple[str | None, int | None, str | None]:
+    """The broker host, port and WebSocket path a credential reply names, each None when it names none.
+
+    The host is mqttHost's, else a full mqttUrl's. The port is a full
+    mqttUrl's, else mqttHost's: mqttUrl is the address the connection is made
+    to, so its port wins. The path is mqttUrl's (see _endpoint); a path in
+    mqttHost is ignored.
+    """
+    host_host, host_port, _ = _endpoint(data.get("mqttHost"), "mqttHost") or (None, None, None)
+    url_host, url_port, url_path = _endpoint(data.get("mqttUrl"), "mqttUrl") or (None, None, None)
+    return host_host or url_host, url_port if url_port is not None else host_port, url_path
+
+
+@dataclass(frozen=True)
+class MqttConnectionInfo:
+    """What the cloud's MQTT credential reply says about the broker, read once for every consumer.
+
+    MowerAPI.async_get_mqtt_connection_info returns one, and
+    NavimowSDK.from_connection_info builds the facade from it. The reply of
+    /openapi/mqtt/userInfo/get/v2 has been seen with mqttHost as a wss:// URL
+    and mqttUrl as a path (/mqtt/{userId}); from_dict also reads mqttHost
+    without a scheme or with a port, and mqttUrl as a full wss:// URL.
+
+    Attributes:
+        broker: The broker's host name, never a URL
+        port: The port: a full mqttUrl's, else mqttHost's, else 443
+        ws_path: The WebSocket path, with the query a full mqttUrl carried; ""
+            when the reply names none
+        username: userName, as text, or None when the reply has none
+        password: pwdInfo, as text, or None when the reply has none; left out
+            of repr
+        raw: The reply as received (a copy), left out of repr and equality
+    """
+
+    broker: str
+    port: int
+    ws_path: str
+    username: str | None
+    password: str | None = field(default=None, repr=False)
+    raw: dict[str, Any] = field(default_factory=dict, compare=False, repr=False)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "MqttConnectionInfo":
+        """Read a credential reply.
+
+        Raises:
+            MowerAPIError: The reply is not an object or names no broker (neither
+                mqttHost nor a full mqttUrl), or names one that cannot be read: a
+                scheme other than wss, a host and port that cannot be split, or a
+                port that is not a number.
+        """
+        if not isinstance(data, dict):
+            raise MowerAPIError(f"{ERROR_MESSAGES['API_REQUEST_FAILED']}: the credential reply is not an object")
+        host, port, ws_path = _broker_endpoint(data)
+        if host is None:
+            raise MowerAPIError(f"{ERROR_MESSAGES['API_REQUEST_FAILED']}: no broker (mqttHost) in the credential reply")
+        return cls(
+            broker=host,
+            port=443 if port is None else port,
+            ws_path=ws_path or "",
+            username=_credential(data.get("userName")),
+            password=_credential(data.get("pwdInfo")),
+            raw=dict(data),
+        )
 
 
 @dataclass
