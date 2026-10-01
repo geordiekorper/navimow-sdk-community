@@ -77,7 +77,8 @@ repos:
       # inventory of upstream's public names are not changed. A deliberate
       # exception is committed with SKIP=no-protected-changes and a
       # "Legacy-edit: <reason>" trailer, which gitlint requires for any change
-      # to these paths, here and per commit in CI.
+      # to these paths, here and per commit in CI. The folder's README.md is
+      # the one path there that is not protected.
       - id: no-protected-changes
         name: code moved from upstream and the export inventory are not changed
         entry: python tools/check_protected_paths.py

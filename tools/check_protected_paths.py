@@ -6,6 +6,9 @@ edited, added to, deleted or moved away. The check reads the change itself
 (the staged diff, or the diff between two refs), because pre-commit passes
 hooks only files that still exist and so never shows them a deletion.
 
+The one path under mower_sdk/legacy/ that is not protected is its README.md:
+it describes the folder and is not upstream's code.
+
 A deliberate exception is committed with SKIP=no-protected-changes and a
 "Legacy-edit: <reason>" trailer, which the gitlint rules require for any
 change to these paths.

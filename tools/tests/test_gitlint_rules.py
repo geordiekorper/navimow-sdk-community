@@ -257,6 +257,29 @@ def test_a_protected_change_needs_a_legacy_edit_trailer(repo: Path, change: str,
     assert lint(repo, message) == expected
 
 
+@pytest.mark.parametrize(
+    ("with_module", "trailer", "expected"),
+    [
+        (False, False, []),  # the README alone is an ordinary change
+        (False, True, ["UC7"]),  # and a trailer on it claims a protected change that is not there
+        (True, False, ["UC7"]),  # the README does not carry a module edit
+        (True, True, []),
+    ],
+)
+def test_the_legacy_readme_needs_no_trailer(repo: Path, with_module: bool, trailer: bool,
+                                            expected: list[str]) -> None:
+    stage(repo, "mower_sdk/legacy/client.py", "OLD = 1\n")
+    run("git", "commit", "-q", "-m", "chore: layout", cwd=repo)
+    stage(repo, "mower_sdk/legacy/README.md", "# Legacy\n")
+    if with_module:
+        stage(repo, "mower_sdk/legacy/client.py", "OLD = 2\n")
+    message = "chore(legacy): x\n\nWhy the change is made, and what it does.\n" + (LEGACY if trailer else "")
+    assert lint(repo, message) == expected
+    run("git", "commit", "-q", "-m", message, cwd=repo)
+    # The same commit in range mode, as CI lints it.
+    assert gitlint(repo, "--commits", "HEAD~1..HEAD") == expected
+
+
 @pytest.mark.parametrize("trailer", [False, True])
 def test_moving_code_out_of_legacy_needs_the_trailer(repo: Path, trailer: bool) -> None:
     stage(repo, "mower_sdk/legacy/client.py", "OLD = 1\n")

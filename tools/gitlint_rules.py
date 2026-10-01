@@ -166,7 +166,8 @@ class LegacyEditTrailer(CommitRule):
     upstream's public names (tests/upstream_exports.json) are not changed;
     the hook no-protected-changes refuses it. A deliberate exception skips
     that hook and carries "Legacy-edit: <reason>", which this rule requires,
-    here and in CI.
+    here and in CI. The folder's README.md is not protected, so a commit that
+    changes only it carries no trailer.
     """
 
     name = "legacy-edit-trailer"

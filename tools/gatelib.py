@@ -65,13 +65,16 @@ def tracked_files() -> set[str]:
 
 
 # Code moved verbatim from upstream, and the inventory of upstream's public
-# names: never changed except with a Legacy-edit trailer.
+# names: never changed except with a Legacy-edit trailer. The folder's README
+# is this repository's own text, not upstream's, and is the one path under
+# the folder that is not protected: that exact path, nothing else.
 LEGACY_DIR = "mower_sdk/legacy/"
+LEGACY_README = LEGACY_DIR + "README.md"
 INVENTORY = "tests/upstream_exports.json"
 
 
 def is_protected(path: str) -> bool:
-    return path.startswith(LEGACY_DIR) or path == INVENTORY
+    return (path.startswith(LEGACY_DIR) and path != LEGACY_README) or path == INVENTORY
 
 
 def is_claude() -> bool:
