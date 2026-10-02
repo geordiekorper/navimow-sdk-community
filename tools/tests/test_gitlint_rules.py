@@ -91,11 +91,15 @@ def test_a_conventional_message_passes(code: Path) -> None:
         ("amend! feat(sdk): report the cache age", "CT1"),
         ("feat(sdk): report the age.", "T3"),
         ("feat(sdk): keepalive defaults to 60 s (" + "D1)", "UC2"),
-        ("feat(sdk): " + "x" * 110, "T1"),
+        ("feat(sdk): " + "x" * 62, "T1"),  # 73 characters
     ],
 )
 def test_subject_rules(code: Path, subject: str, rule: str) -> None:
     assert rule in lint(code, GOOD.replace(GOOD.splitlines()[0], subject, 1))
+
+
+def test_a_subject_of_72_characters_passes(code: Path) -> None:
+    assert lint(code, GOOD.replace(GOOD.splitlines()[0], "feat(sdk): " + "x" * 61, 1)) == []
 
 
 def test_body_length_limits(code: Path) -> None:
@@ -108,10 +112,14 @@ def test_a_tracker_trailer_is_refused(code: Path) -> None:
     assert "UC1" in lint(code, message)
 
 
-def test_a_body_is_required_except_for_docs_and_releases(repo: Path) -> None:
+def test_a_body_is_required_except_for_reverts_and_releases(repo: Path) -> None:
     stage(repo, "README.md", "# Test\n\nMore.\n")
     assert "B6" in lint(repo, "fix(api): x\n")
-    assert lint(repo, "docs: x\n") == []
+    assert "B6" in lint(repo, "docs: x\n")
+    assert "B6" in lint(repo, "docs(readme): x\n")
+    assert "B5" in lint(repo, "docs: x\n\nShort.\n")
+    assert lint(repo, "docs: x\n\nWhy the change is made, and what it does.\n") == []
+    assert lint(repo, "revert: fix(api): x\n") == []
     assert lint(repo, "chore(release): bump version to 1.0\n") == []
 
 

@@ -16,7 +16,7 @@ ignore-revert-commits=false
 regex-style-search=true
 
 [title-max-length]
-line-length=110
+line-length=72
 
 [body-max-line-length]
 line-length=100
@@ -24,7 +24,7 @@ line-length=100
 [contrib-title-conventional-commits]
 types=feat,fix,docs,test,refactor,perf,build,ci,chore,style,revert
 
-# Documentation, reverts and release commits may have no body.
+# Reverts and release commits may have no body.
 [ignore-by-title]
-regex=^(docs|revert)(\([^)]*\))?!?: |^chore\(release\):
+regex=^revert(\([^)]*\))?!?: |^chore\(release\):
 ignore=body-is-missing,body-min-length

@@ -100,7 +100,11 @@ them together:
 
 Committed text has to stand on its own. A document, comment or commit message
 does not refer to a file that is not in the repository, to a path on someone's
-machine, or to a plan or tracker the reader cannot see.
+machine, or to a plan or tracker the reader cannot see. The two leak checks
+know a file as untracked only from the untracked and ignored files on the
+machine they run on: the names they refuse differ from one machine to the
+next, and CI, whose checkout has no such files, refuses none. They are a local
+guard for this rule, not a guarantee.
 
 ## Commit messages
 
@@ -110,9 +114,9 @@ pass, not only the last.
 
 - The subject is a conventional commit: `type(scope): summary` with the scope
   optional and the type one of `feat`, `fix`, `docs`, `test`, `refactor`,
-  `perf`, `build`, `ci`, `chore`, `style`, `revert`. At most 110 characters.
-- A body is required, with lines of at most 100 characters. `docs`, `revert`
-  and `chore(release)` commits may leave it out.
+  `perf`, `build`, `ci`, `chore`, `style`, `revert`. At most 72 characters.
+- A body is required, with lines of at most 100 characters. `revert` and
+  `chore(release)` commits may leave it out.
 - `fixup!`, `squash!` and `amend!` commits are refused, and so is git's default
   `Revert "..."` subject: reword it to `revert: ...`.
 - No `Refs:` line and no tracker id: the message explains the change itself.
