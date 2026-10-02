@@ -85,6 +85,7 @@ case.
 | Location | `test_location.py`, `test_location_dock.py`, `test_target_zone.py` |
 | Watchdog | `test_watchdog.py` |
 | The README's threaded recipe, run as written | `test_threaded_recipe.py` |
+| The migration guide's "after" fragments, run as written | `test_migration_guide.py` |
 | Compatibility with upstream | `test_public_api_compat.py`, `test_module_star_imports.py`, `test_legacy_shims.py`, `test_core_isolation.py`, `test_upstream_distribution_warning.py` |
 | The upstream porting tool | `test_port_upstream.py` |
 
@@ -116,8 +117,9 @@ change to it.
 The `wheel` nox session copies this folder, and nothing else, to a temporary
 directory and runs it against the installed wheel. A test that needs a file
 from the repository therefore has to skip when the file is absent, at module
-level, as `test_threaded_recipe.py` does for `README.md` and
-`test_port_upstream.py` for the tool it tests. A test that only passes because
+level, as `test_threaded_recipe.py` does for `README.md`,
+`test_migration_guide.py` for `docs/migrating.md` and `test_port_upstream.py`
+for the tool it tests. A test that only passes because
 the source tree is on the path fails in that run, which is the point of it.
 
 ## Adding a test

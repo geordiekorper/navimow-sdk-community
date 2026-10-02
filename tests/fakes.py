@@ -9,6 +9,7 @@ install these fakes are in conftest.py.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from datetime import UTC, datetime, timedelta
@@ -231,6 +232,26 @@ class FakeMessage:
     def __init__(self, topic: str, payload: bytes) -> None:
         self.topic = topic
         self.payload = payload
+
+
+async def drain() -> None:
+    """Let call_soon_threadsafe callbacks and the tasks they create run to their end.
+
+    A marker queued on the loop runs after every callback queued before it, so
+    once it has run the tasks those callbacks created exist; they are awaited,
+    and the round repeats until no task is left. Nothing here counts turns of
+    the loop, so a delivery may take as many as it needs.
+    """
+    loop = asyncio.get_running_loop()
+    async with asyncio.timeout(5):
+        while True:
+            marker = loop.create_future()
+            loop.call_soon(marker.set_result, None)
+            await marker
+            tasks = asyncio.all_tasks() - {asyncio.current_task()}
+            if not tasks:
+                return
+            await asyncio.wait(tasks)
 
 
 # ---- MQTT: the client under the facade ------------------------------------------------------------

@@ -42,7 +42,7 @@ from mower_sdk.models import Device, RejectedMessage
 from mower_sdk.mqtt import NavimowMQTT
 from mower_sdk.sdk import NavimowSDK
 
-from .fakes import SUCCESS, T0, Call, FakeClient, FakeClock, FakeMessage, FakeReasonCode
+from .fakes import SUCCESS, T0, Call, FakeClient, FakeClock, FakeMessage, FakeReasonCode, drain
 
 VERSION2 = mqtt_module.mqtt_client.CallbackAPIVersion.VERSION2
 
@@ -53,26 +53,6 @@ UNSPECIFIED = FakeReasonCode(128, "Unspecified error")
 
 def run(test: Callable[[], Awaitable[None]]) -> None:
     asyncio.run(test())
-
-
-async def drain() -> None:
-    """Let call_soon_threadsafe callbacks and the tasks they create run to their end.
-
-    A marker queued on the loop runs after every callback queued before it, so
-    once it has run the tasks those callbacks created exist; they are awaited,
-    and the round repeats until no task is left. Nothing here counts turns of
-    the loop, so a delivery may take as many as it needs.
-    """
-    loop = asyncio.get_running_loop()
-    async with asyncio.timeout(5):
-        while True:
-            marker = loop.create_future()
-            loop.call_soon(marker.set_result, None)
-            await marker
-            tasks = asyncio.all_tasks() - {asyncio.current_task()}
-            if not tasks:
-                return
-            await asyncio.wait(tasks)
 
 
 class WatchedLock:
