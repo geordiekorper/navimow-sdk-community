@@ -117,8 +117,9 @@ def test_the_hook_reads_the_change_on_every_commit() -> None:
 @pytest.mark.parametrize(
     ("line", "refused"),
     [
-        ("import pytest_" + "asyncio", True),
-        ("@pytest.mark." + "asyncio", True),
+        # The async plugin was refused once; async tests use it now.
+        ("import pytest_asyncio", False),
+        ("@pytest.mark.asyncio", False),
         ("client = " + "Mock()", True),
         ("client = mock.Magic" + "Mock(spec=Client)", True),
         ("send = Async" + "Mock(return_value=None)", True),

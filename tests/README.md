@@ -17,8 +17,7 @@ does: see [docs/development.md](../docs/development.md#the-checks).
 
 ## Style
 
-Tests are plain functions that call `asyncio.run`; pytest-asyncio is not
-used.
+Tests of async code are plain functions that call `asyncio.run`.
 
 What a test replaces (an aiohttp session, paho's client, the MQTT client
 under the facade) is replaced by a recording fake, not by a `Mock` object. A
@@ -32,7 +31,7 @@ classes (`Mock`, `MagicMock`, `AsyncMock` and their relatives, and
 `create_autospec`) are ruled out, not the rest of `unittest.mock`; a bare
 `patch()` makes a `MagicMock` too, so give it an explicit replacement or use
 pytest's `monkeypatch`, as the suite does. The `test-style` commit hook
-refuses the async plugin and the `Mock` classes in this folder.
+refuses the `Mock` classes in this folder.
 
 Typical fakes:
 
@@ -42,8 +41,6 @@ Typical fakes:
   fixture in `test_mqtt_client.py`.
 - `FakeMQTT` stands in for `NavimowMQTT` under the facade, and `FakeClock`
   for time, in several of the `test_sdk_*.py` modules.
-
-Each module defines the fakes it needs; there is no shared `conftest.py`.
 
 Several modules call themselves characterisation tests: they pin what the code
 does today, case by case. When a change alters behaviour that such a test

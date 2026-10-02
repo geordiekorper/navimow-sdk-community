@@ -346,7 +346,7 @@ For someone working on it:
 ## Development
 
 ```bash
-pip install -e . nox pytest
+pip install -e ".[dev]"
 pytest
 nox -s tests-3.14
 ```

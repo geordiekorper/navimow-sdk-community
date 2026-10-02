@@ -36,7 +36,8 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=7.0.0",
+    "pytest>=8.4",
+    "pytest-asyncio>=1.0",
     "nox>=2025.5.1",
     "pre-commit",
     "ruff",
@@ -55,8 +56,16 @@ version = {attr = "mower_sdk.__version__"}
 include = ["mower_sdk*"]
 
 [tool.pytest.ini_options]
-minversion = "7.0"
+# From 8.4 an async test without its marker fails; before, pytest skipped it
+# with a warning and the suite stayed green.
+minversion = "8.4"
 testpaths = ["tests"]
+# pytest-asyncio: each async test is marked, and each runs on a loop of its
+# own. Both are the plugin's defaults; the loop scope is set because the
+# plugin warns while it is unset, and the core-isolation run turns warnings
+# into errors.
+asyncio_mode = "strict"
+asyncio_default_fixture_loop_scope = "function"
 
 [tool.ruff]
 line-length = 100

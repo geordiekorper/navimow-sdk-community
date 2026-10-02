@@ -36,6 +36,8 @@ BOUNDS = {
     "oldest": ("3.11", ["aiohttp==3.9.0", "paho-mqtt==2.1.0"]),
     "newest": ("3.14", ["aiohttp", "paho-mqtt"]),
 }
+# What the suite needs beside the package: async tests are pytest-asyncio tests.
+TEST_DEPS = ["pytest", "pytest-asyncio"]
 RUFF = "ruff==0.16.9"  # the version the ruff hook in .pre-commit-config.yaml uses
 GITLINT = "gitlint==0.19.1"  # the version the gitlint hook uses
 
@@ -47,7 +49,7 @@ def _remove_build_output() -> None:
 
 @nox.session(python=PYTHONS)
 def tests(session: nox.Session) -> None:
-    session.install("-e", ".", "pytest")
+    session.install("-e", ".", *TEST_DEPS)
     session.run("python", "-m", "pytest", *session.posargs)
     session.run(
         "python", "-W", "error::DeprecationWarning", "-m", "pytest", "tests/test_core_isolation.py"
@@ -60,7 +62,7 @@ def tests(session: nox.Session) -> None:
     [nox.param(python, pins, id=name) for name, (python, pins) in BOUNDS.items()],
 )
 def bounds(session: nox.Session, pins: list[str]) -> None:
-    session.install("--upgrade", ".", *pins, "pytest")
+    session.install("--upgrade", ".", *pins, *TEST_DEPS)
     _remove_build_output()
     session.run(
         "python", "-c",
@@ -86,7 +88,7 @@ def wheel(session: nox.Session) -> None:
     session.run("python", "-m", "venv", str(venv))
     python = str(venv / "bin" / "python")
     (wheel_file,) = dist.glob("*.whl")
-    session.run(python, "-m", "pip", "install", "-q", str(wheel_file), "pytest", external=True)
+    session.run(python, "-m", "pip", "install", "-q", str(wheel_file), *TEST_DEPS, external=True)
     # Outside the source tree, so neither the package source nor the
     # repository's pytest configuration is found from there.
     checkout = Path(tempfile.mkdtemp(prefix="navimow-wheel-tests-"))
@@ -110,5 +112,7 @@ def lint(session: nox.Session) -> None:
 
 @nox.session(python=PYTHONS)
 def tools(session: nox.Session) -> None:
-    session.install("pytest", "pyyaml", "nox", GITLINT)
+    # The plugin is installed here too: pyproject.toml sets its options, and
+    # pytest warns about options no installed plugin knows.
+    session.install(*TEST_DEPS, "pyyaml", "nox", GITLINT)
     session.run("python", "-m", "pytest", "tools/tests", "-q", *session.posargs)

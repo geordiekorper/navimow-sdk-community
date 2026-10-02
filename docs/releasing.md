@@ -74,7 +74,7 @@ environment. The dependencies come from PyPI, hence the second index:
 
 ```bash
 python -m venv /tmp/release-check
-/tmp/release-check/bin/pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple navimow-sdk-community==<version> pytest
+/tmp/release-check/bin/pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple navimow-sdk-community==<version> pytest pytest-asyncio
 ```
 
 Run the tag's tests against it from a directory that is not the checkout, so
@@ -91,7 +91,7 @@ nothing installed from TestPyPI is reused, and run the same tests with it:
 
 ```bash
 python -m venv /tmp/release-check-pypi
-/tmp/release-check-pypi/bin/pip install navimow-sdk-community==<version> pytest
+/tmp/release-check-pypi/bin/pip install navimow-sdk-community==<version> pytest pytest-asyncio
 cd /tmp/release-check && /tmp/release-check-pypi/bin/python -m pytest tests
 ```
 
