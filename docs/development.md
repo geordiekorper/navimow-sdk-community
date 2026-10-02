@@ -143,6 +143,12 @@ pass, not only the last.
   in `UPSTREAM.md`. Both go in the commit that makes the change.
 - **One concern per commit.** A behaviour change and the test that pins it go
   together; an unrelated tidy-up is its own commit.
+- **Decisions are written where they are taken.** Where the code takes one
+  side of a choice that has consequences for a consumer or for the data, a
+  comment at that point, starting `# Decision:`, gives the decision, the
+  reason and the consequence, so that a reader of the code needs no other
+  document. `mower_sdk/location.py` and `mower_sdk/watchdog.py` have
+  examples.
 
 ## Pull requests
 
