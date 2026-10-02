@@ -1780,6 +1780,23 @@ def test_a_closed_loop_is_refused_at_construction(fake_paho: type[FakeClient]) -
     assert fake_paho.instances == []
 
 
+def test_the_facade_names_the_closed_loop_it_found(fake_paho: type[FakeClient]) -> None:
+    """Without loop= the facade looks for the current loop itself, so the message says so."""
+    closed = asyncio.new_event_loop()
+    asyncio.set_event_loop(closed)
+    closed.close()
+    try:
+        with pytest.raises(ValueError, match="^NavimowSDK: the loop set as current is closed$"):
+            NavimowSDK(broker="broker.example.invalid", port=1883)
+        with pytest.raises(ValueError, match="^NavimowSDK: the loop= given is closed$"):
+            NavimowSDK(broker="broker.example.invalid", port=1883, loop=closed)
+        mqtt = make(TCP_KWARGS)  # the client alone binds it; the drop is pinned above
+    finally:
+        asyncio.set_event_loop(None)
+    assert mqtt.loop is closed
+    assert fake_paho.instances == [mqtt.client]
+
+
 def test_a_connect_from_a_second_loop_in_another_thread_raises(fake_paho: type[FakeClient]) -> None:
     errors: list[BaseException] = []
 

@@ -28,6 +28,12 @@ keep the headings they were released with.
   coroutine, which is what the client has always required of them, and the
   paho callbacks carry paho's types.
 
+### Fixed
+
+- `NavimowSDK` constructed without `loop=` while the loop set as current for
+  the thread is closed raises `ValueError` saying that the current loop is
+  closed. It used to say that the `loop=` given was closed, although none was.
+
 ## [0.2.0a4] - 2026-10-01
 
 ### Changed

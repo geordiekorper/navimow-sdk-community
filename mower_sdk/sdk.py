@@ -162,14 +162,18 @@ class NavimowSDK:
 
         Raises:
             ValueError: The loop given, or the current loop found in its
-                place, is closed; or an extra topic is not a string that is a
-                valid MQTT topic filter.
+                place, is closed, and the message says which; or an extra
+                topic is not a string that is a valid MQTT topic filter.
         """
         self._allow_experimental_mqtt_commands = allow_experimental_mqtt_commands
         self._reject_late_state = reject_late_state
         # device id -> the newest accepted state timestamp (mower milliseconds), kept
         # only with reject_late_state.
         self._state_marks: dict[str, int] = {}
+        bound = _resolve_event_loop(loop)
+        if bound is not None and bound.is_closed():
+            which = "the loop= given" if loop is not None else "the loop set as current"
+            raise ValueError(f"NavimowSDK: {which} is closed")
         self._mqtt = NavimowMQTT(
             broker=broker,
             port=port,
@@ -178,7 +182,7 @@ class NavimowSDK:
             records=records or [],
             ws_path=ws_path,
             auth_headers=auth_headers,
-            loop=_resolve_event_loop(loop),
+            loop=bound,
             keepalive_seconds=keepalive_seconds,
             reconnect_min_delay=reconnect_min_delay,
             reconnect_max_delay=reconnect_max_delay,
