@@ -146,6 +146,10 @@ pass, not only the last.
 
 ## Pull requests
 
+Every change reaches `main` through a pull request, the maintainer's own
+included, with one exception: the release commit, a version bump of two files,
+is pushed to `main` directly ([releasing.md](releasing.md)).
+
 Branch from `main` and open the pull request against it. The five CI jobs have
 to pass. Pull requests are merged with a merge commit, not squashed, so every
 commit in the branch stays in history as it was reviewed.

@@ -1,6 +1,8 @@
 # Releasing
 
 A release is a version bump on `main`, a tag on that commit and one approval.
+The bump is the one change that does not go through a pull request: the
+maintainer pushes it to `main` directly.
 The tag starts `.github/workflows/publish.yml`, which uploads to TestPyPI on
 its own and to PyPI once the owner approves. Both indexes trust this
 repository's workflow directly (trusted publishing), so no token is stored
