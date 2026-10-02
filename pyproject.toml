@@ -13,6 +13,9 @@ license-files = ["LICENSE"]
 authors = [
     {name = "Navimow R&D Team", email = "segwaynavimowapp@gmail.com"}
 ]
+maintainers = [
+    {name = "Geordie Korper"}
+]
 keywords = ["mower", "sdk", "home-assistant", "iot", "mqtt", "oauth2"]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -20,6 +23,8 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: Home Automation",
 ]
@@ -32,10 +37,9 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=7.0.0",
-    "pytest-asyncio>=0.21.0",
-    "black>=23.0.0",
-    "mypy>=1.0.0",
-    "ruff>=0.1.0",
+    "nox>=2025.5.1",
+    "pre-commit",
+    "ruff",
 ]
 
 [project.urls]
@@ -53,16 +57,6 @@ include = ["mower_sdk*"]
 [tool.pytest.ini_options]
 minversion = "7.0"
 testpaths = ["tests"]
-
-[tool.black]
-line-length = 100
-target-version = ["py311"]
-
-[tool.mypy]
-python_version = "3.11"
-warn_return_any = true
-warn_unused_configs = true
-disallow_untyped_defs = false
 
 [tool.ruff]
 line-length = 100

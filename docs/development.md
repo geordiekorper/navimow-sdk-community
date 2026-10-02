@@ -12,7 +12,7 @@ like. The other documents cover the rest and are linked where they apply:
 Python 3.11 or later; the checks run on 3.11 to 3.14.
 
 ```bash
-pip install -e . nox pytest pre-commit
+pip install -e ".[dev]"
 pre-commit install
 ```
 

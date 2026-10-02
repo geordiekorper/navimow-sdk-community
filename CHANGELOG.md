@@ -7,6 +7,14 @@ throughout.
 
 ## [Unreleased]
 
+### Changed
+
+- Package metadata. The classifiers list Python 3.13 and 3.14, which the
+  checks have covered all along. A maintainer is named beside upstream's
+  authors. The `dev` extra installs what the checks use (pytest, nox,
+  pre-commit and ruff) and no longer pytest-asyncio, black and mypy, which
+  nothing ran; the unused `[tool.black]` and `[tool.mypy]` sections are gone.
+
 ## [0.2.0a4] - 2026-10-01
 
 ### Changed
