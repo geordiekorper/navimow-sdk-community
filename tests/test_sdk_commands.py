@@ -26,54 +26,17 @@ from typing import Any
 import pytest
 
 import mower_sdk
-from mower_sdk import sdk as sdk_module
 from mower_sdk.errors import MowerUnsupportedOperationError
 from mower_sdk.models import DeviceAttributesMessage, DeviceEventMessage, DeviceStateMessage
 from mower_sdk.sdk import NavimowSDK
 
-DEVICE_ID = "dev-1"
-
-
-class FakeMQTT:
-    """Records what NavimowSDK asks of its MQTT client; connects to nothing."""
-
-    instances: list[FakeMQTT] = []
-
-    def __init__(self, **kwargs: Any) -> None:
-        self.kwargs = kwargs
-        self.on_message: Any = None
-        self.is_connected = False
-        self.calls: list[tuple[str, tuple[Any, ...]]] = []
-        FakeMQTT.instances.append(self)
-
-    def connect_async(self) -> None:
-        self.calls.append(("connect_async", ()))
-
-    def disconnect(self) -> None:
-        self.calls.append(("disconnect", ()))
-
-    def publish_command(self, device_id: str, payload: dict[str, Any]) -> None:
-        self.calls.append(("publish_command", (device_id, payload)))
-
-    def update_credentials(self, *args: Any, **kwargs: Any) -> None:
-        self.calls.append(("update_credentials", (args, kwargs)))
-
-
-@pytest.fixture
-def fake_mqtt(monkeypatch: pytest.MonkeyPatch) -> type[FakeMQTT]:
-    FakeMQTT.instances = []
-    monkeypatch.setattr(sdk_module, "NavimowMQTT", FakeMQTT)
-    return FakeMQTT
+from .fakes import DEVICE_ID, FakeMQTT, topic
 
 
 def make(**overrides: Any) -> tuple[NavimowSDK, FakeMQTT]:
     sdk = NavimowSDK(broker="broker.example.invalid", port=443, **overrides)
     (mqtt,) = FakeMQTT.instances
     return sdk, mqtt
-
-
-def topic(channel: str) -> str:
-    return f"/downlink/vehicle/{DEVICE_ID}/realtimeDate/{channel}"
 
 
 @pytest.mark.asyncio

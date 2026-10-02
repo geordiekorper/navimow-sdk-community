@@ -1,62 +1,27 @@
 """Tests for NavimowSDK's cache bookkeeping: ages and receipt times.
 
-A minimal fake stands in for ``NavimowMQTT`` (the facade only sets its
-``on_message``), and a fake clock is patched into the sdk module's namespace in
-place of ``time`` and ``datetime``, so the ages are exact. ``_on_mqtt_message``
-is driven directly.
+The shared fake stands in for ``NavimowMQTT``, and the shared clock replaces
+``time`` and ``datetime``, so the ages are exact. ``_on_mqtt_message`` is driven
+directly.
 """
 
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from typing import Any
 
 import pytest
 
-from mower_sdk import sdk as sdk_module
 from mower_sdk.sdk import NavimowSDK
 
-DEVICE_ID = "dev-1"
+from .fakes import DEVICE_ID, T0, FakeClock, topic
+
+pytestmark = pytest.mark.usefixtures("fake_mqtt")
+
 OTHER_ID = "dev-2"
-T0 = datetime(2026, 9, 27, 12, 0, tzinfo=UTC)
-
-
-class FakeMQTT:
-    def __init__(self, **kwargs: Any) -> None:
-        self.kwargs = kwargs
-        self.on_message: Any = None
-
-
-class FakeClock:
-    """``monotonic()`` and ``now(tz)`` read from settable values."""
-
-    def __init__(self) -> None:
-        self.monotonic_now = 100.0
-        self.wall_now = T0
-
-    def monotonic(self) -> float:
-        return self.monotonic_now
-
-    def now(self, tz: Any) -> datetime:
-        assert tz is UTC
-        return self.wall_now
-
-
-@pytest.fixture
-def clock(monkeypatch: pytest.MonkeyPatch) -> FakeClock:
-    fake = FakeClock()
-    monkeypatch.setattr(sdk_module, "NavimowMQTT", FakeMQTT)
-    monkeypatch.setattr(sdk_module, "time", fake)
-    monkeypatch.setattr(sdk_module, "datetime", fake)
-    return fake
-
-
-def topic(device_id: str, channel: str) -> str:
-    return f"/downlink/vehicle/{device_id}/realtimeDate/{channel}"
 
 
 async def deliver(sdk: NavimowSDK, device_id: str, channel: str, payload: bytes) -> None:
-    await sdk._on_mqtt_message(topic(device_id, channel), payload, device_id)
+    await sdk._on_mqtt_message(topic(channel, device_id), payload, device_id)
 
 
 def ages(sdk: NavimowSDK, device_id: str) -> tuple[float | None, float | None, datetime | None]:
@@ -116,9 +81,7 @@ async def test_a_newer_message_replaces_the_age_and_receipt_time_of_its_device_o
 
 
 @pytest.mark.asyncio
-async def test_the_real_clocks_are_used_when_nothing_is_patched(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(sdk_module, "NavimowMQTT", FakeMQTT)
-
+async def test_the_real_clocks_are_used_when_nothing_is_patched() -> None:
     sdk = NavimowSDK(broker="broker.example.invalid", port=443)
     before = datetime.now(UTC)
     await deliver(sdk, DEVICE_ID, "state", b'{"state": "isRunning"}')

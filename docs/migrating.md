@@ -78,7 +78,9 @@ SDK name in them is imported from `mower_sdk`. `session` is an
 [quick example](../README.md#quick-example). In the "after" fragments `api` is
 a `MowerAPI`, `devices` what its `async_get_devices()` returned, `info` what
 its `async_get_mqtt_connection_info()` returned and, unless the fragment
-builds it, `sdk` the `NavimowSDK` the quick example builds from them.
+builds it, `sdk` the `NavimowSDK` the quick example builds from them. The
+test suite runs each "after" fragment as printed
+(`tests/test_migration_guide.py`).
 
 ### MowerClient
 

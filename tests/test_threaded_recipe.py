@@ -14,11 +14,9 @@ application's thread, and the refusal to wait on the loop's own thread.
 from __future__ import annotations
 
 import asyncio
-import json
 import queue
 import re
 import threading
-import time
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +28,8 @@ from mower_sdk.api import MowerAPI
 from mower_sdk.errors import MowerAuthRequiredError
 from mower_sdk.models import DeviceStateMessage
 from mower_sdk.sdk import NavimowSDK
+
+from .fakes import SUCCESS, FakeClient, FakeMessage, FakeResponse, FakeSession
 
 README = Path(__file__).resolve().parent.parent / "README.md"
 if not README.exists():
@@ -74,82 +74,30 @@ def run_usage(wait: float = 120) -> dict[str, Any]:
     return namespace
 
 
-class FakeResponse:
-    def __init__(self, reply: dict[str, Any]) -> None:
-        self.status = 200
-        self._body = json.dumps(reply).encode()
-
-    async def __aenter__(self) -> FakeResponse:
-        return self
-
-    async def __aexit__(self, *_exc: Any) -> None:
-        return None
-
-    async def read(self) -> bytes:
-        return self._body
-
-
-class FakeSession:
-    """Records the thread each request is made on and answers in order."""
+class ThreadSession(FakeSession):
+    """Also records the thread each request is made on and the loop it was made on; it can be closed."""
 
     def __init__(self, *replies: dict[str, Any]) -> None:
-        self.replies = list(replies)
+        super().__init__(*(FakeResponse(reply) for reply in replies))
         self.request_threads: list[threading.Thread] = []
-        self.closed = False
         self.made_on_loop = asyncio.get_running_loop()
 
-    def request(self, *_args: Any, **_kwargs: Any) -> FakeResponse:
+    def request(self, *args: Any, **kwargs: Any) -> FakeResponse:
         self.request_threads.append(threading.current_thread())
-        return FakeResponse(self.replies.pop(0))
+        return super().request(*args, **kwargs)
 
     async def close(self) -> None:
         self.closed = True
 
 
-class FakePaho:
-    """A paho client that connects to nothing; subscribe answers like paho."""
+class FakePaho(FakeClient):
+    """A paho client that also hands itself, when it starts a connection, to the thread standing in for paho's."""
 
-    instances: list[FakePaho] = []
+    connecting: queue.Queue[FakePaho] = queue.Queue()
 
-    def __init__(self, *_args: Any, **_kwargs: Any) -> None:
-        self.calls: list[str] = []
-        self.connected = False
-        self.mid = 0
-        FakePaho.instances.append(self)
-
-    def __getattr__(self, name: str) -> Any:
-        if name.startswith("on_"):
-            raise AttributeError(name)
-
-        def record(*_args: Any, **_kwargs: Any) -> None:
-            self.calls.append(name)
-
-        return record
-
-    def subscribe(self, _topic: str) -> tuple[int, int]:
-        self.mid += 1
-        return 0, self.mid
-
-    def disconnect(self) -> None:
-        self.calls.append("disconnect")
-        self.connected = False
-
-    def is_connected(self) -> bool:
-        return self.connected
-
-
-class Success:
-    value = 0
-    is_failure = False
-
-    def __str__(self) -> str:
-        return "Success"
-
-
-class PahoMessage:
-    def __init__(self, topic: str, payload: bytes) -> None:
-        self.topic = topic
-        self.payload = payload
+    def connect_async(self, *args: Any, **kwargs: Any) -> None:
+        super().connect_async(*args, **kwargs)
+        FakePaho.connecting.put(self)
 
 
 def as_paho_thread(target: Any, *args: Any) -> None:
@@ -161,9 +109,11 @@ def as_paho_thread(target: Any, *args: Any) -> None:
 
 
 @pytest.fixture
-def fake_paho(monkeypatch: pytest.MonkeyPatch) -> None:
-    FakePaho.instances = []
+def fake_paho(fake_paho: type[FakeClient], monkeypatch: pytest.MonkeyPatch) -> type[FakeClient]:
+    """The shared fixture, with FakePaho as the client; the clients made are still FakeClient.instances."""
+    FakePaho.connecting = queue.Queue()
     monkeypatch.setattr(mqtt_module.mqtt_client, "Client", FakePaho)
+    return fake_paho
 
 
 DEVICES_REPLY = {"code": 1, "data": {"payload": {"devices": [{"id": DEVICE_ID, "name": "Lawn"}]}}}
@@ -173,12 +123,12 @@ BROKER_REPLY = {
 }
 
 
-def serve(monkeypatch: pytest.MonkeyPatch, *replies: dict[str, Any]) -> list[FakeSession]:
-    """Make aiohttp.ClientSession() build a FakeSession with these replies; the sessions made are returned."""
-    sessions: list[FakeSession] = []
+def serve(monkeypatch: pytest.MonkeyPatch, *replies: dict[str, Any]) -> list[ThreadSession]:
+    """Make aiohttp.ClientSession() build a ThreadSession with these replies; the sessions made are returned."""
+    sessions: list[ThreadSession] = []
 
-    def make_session() -> FakeSession:
-        sessions.append(FakeSession(*replies))
+    def make_session() -> ThreadSession:
+        sessions.append(ThreadSession(*replies))
         return sessions[-1]
 
     monkeypatch.setattr(aiohttp, "ClientSession", make_session)
@@ -189,13 +139,12 @@ def deliver_when_connected(payload: bytes) -> threading.Thread:
     """Stand in for paho's thread: once the facade's client has connected, deliver a message."""
 
     def paho() -> None:
-        for _ in range(500):
-            client = FakePaho.instances[-1] if FakePaho.instances else None
-            if client is not None and "connect_async" in client.calls:
-                client.on_connect(client, None, {}, Success(), None)
-                client.on_message(client, None, PahoMessage(STATE_TOPIC, payload))
-                return
-            time.sleep(0.01)
+        try:
+            client = FakePaho.connecting.get(timeout=5)
+        except queue.Empty:
+            return
+        client.on_connect(client, None, {}, SUCCESS, None)
+        client.on_message(client, None, FakeMessage(STATE_TOPIC, payload))
 
     thread = threading.Thread(target=paho)
     thread.start()
@@ -220,7 +169,7 @@ def test_the_usage_as_printed_delivers_a_state_message_and_releases_everything(
     message = namespace["message"]
     assert (message.device_id, message.state) == (DEVICE_ID, "docked")
     assert namespace["sdk"].loop is namespace["mowers"].loop
-    assert {"disconnect", "loop_stop"} <= set(FakePaho.instances[-1].calls)
+    assert FakeClient.instances[-1].named("disconnect") and FakeClient.instances[-1].named("loop_stop")
     assert_released(namespace)
 
 
@@ -230,7 +179,7 @@ def test_the_usage_releases_everything_when_a_rest_call_fails(monkeypatch: pytes
     namespace = run_usage()
     assert isinstance(namespace["raised"], MowerAuthRequiredError)
     assert namespace["sdk"] is None
-    assert FakePaho.instances == []
+    assert FakeClient.instances == []
     assert_released(namespace)
 
 
@@ -239,7 +188,7 @@ def test_the_usage_releases_everything_when_no_state_arrives(monkeypatch: pytest
     serve(monkeypatch, DEVICES_REPLY, BROKER_REPLY)
     namespace = run_usage(wait=0.1)
     assert isinstance(namespace["raised"], queue.Empty)
-    assert {"disconnect", "loop_stop"} <= set(FakePaho.instances[-1].calls)
+    assert FakeClient.instances[-1].named("disconnect") and FakeClient.instances[-1].named("loop_stop")
     assert_released(namespace)
 
 
@@ -252,7 +201,7 @@ def test_the_threaded_recipe_delivers_rest_and_mqtt_to_a_plain_thread() -> None:
             {"code": 1, "data": {"payload": {"devices": [{"id": DEVICE_ID, "name": "Lawn"}]}}},
             {"code": 1, "data": {"userName": "user", "pwdInfo": "secret"}},
         )
-        session = mowers.call(FakeSession, *replies)
+        session = mowers.call(ThreadSession, *replies)
         assert session.made_on_loop is mowers.loop
         api = MowerAPI(session, "token", "https://api.example.invalid")  # type: ignore[arg-type]
         devices = mowers.run(api.async_get_devices())
@@ -271,11 +220,11 @@ def test_the_threaded_recipe_delivers_rest_and_mqtt_to_a_plain_thread() -> None:
         sdk.on_state(states.put)
         sdk.connect()
         client = sdk.mqtt.client
-        assert "connect_async" in client.calls
+        assert client.named("connect_async")
 
-        as_paho_thread(sdk.mqtt._on_connect, client, None, {}, Success(), None)
+        as_paho_thread(sdk.mqtt._on_connect, client, None, {}, SUCCESS, None)
         client.connected = True
-        as_paho_thread(sdk.mqtt._on_message, client, None, PahoMessage(STATE_TOPIC, b'{"state":"isDocked"}'))
+        as_paho_thread(sdk.mqtt._on_message, client, None, FakeMessage(STATE_TOPIC, b'{"state":"isDocked"}'))
         message = states.get(timeout=5)
         assert (message.device_id, message.state) == (DEVICE_ID, "docked")
         assert callback_threads == [mowers._thread]

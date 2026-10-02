@@ -1,57 +1,27 @@
 """NavimowSDK's state checks: the opt-in late-state filter, unknown fields, malformed payloads, receipt times.
 
-A minimal fake stands in for NavimowMQTT, a fake clock is patched into the sdk
-module in place of time and datetime, and _on_mqtt_message is driven directly.
-Mower timestamps are milliseconds around T, the fake receipt time.
+The shared fake stands in for NavimowMQTT, the shared clock replaces time and
+datetime, and _on_mqtt_message is driven directly. Mower timestamps are
+milliseconds around T, the fake receipt time.
 """
 
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from typing import Any
 
 import pytest
 
-from mower_sdk import sdk as sdk_module
 from mower_sdk.models import DeviceAttributesMessage, DeviceEventMessage, DeviceStateMessage, RejectedMessage
 from mower_sdk.sdk import NavimowSDK
 
-DEVICE_ID = "dev-1"
-NOW = datetime(2026, 9, 28, 12, 0, tzinfo=UTC)
-T = int(NOW.timestamp() * 1000)
+from .fakes import DEVICE_ID, T0, FakeClock, topic
+
+T = int(T0.timestamp() * 1000)
 
 
-class FakeMQTT:
-    def __init__(self, **kwargs: Any) -> None:
-        self.kwargs = kwargs
-        self.on_message: Any = None
-        self.on_raw: Any = None
-
-
-class FakeClock:
-    def __init__(self) -> None:
-        self.monotonic_now = 100.0
-        self.wall_now = NOW
-
-    def monotonic(self) -> float:
-        return self.monotonic_now
-
-    def now(self, tz: Any) -> datetime:
-        assert tz is UTC
-        return self.wall_now
-
-
-@pytest.fixture
-def clock(monkeypatch: pytest.MonkeyPatch) -> FakeClock:
-    fake = FakeClock()
-    monkeypatch.setattr(sdk_module, "NavimowMQTT", FakeMQTT)
-    monkeypatch.setattr(sdk_module, "time", fake)
-    monkeypatch.setattr(sdk_module, "datetime", fake)
-    return fake
-
-
-pytestmark = pytest.mark.usefixtures("clock")
+pytestmark = pytest.mark.usefixtures("fake_mqtt", "clock")
 
 
 class Recorder:
@@ -69,10 +39,6 @@ class Recorder:
 def make(**options: Any) -> tuple[NavimowSDK, Recorder]:
     sdk = NavimowSDK(broker="broker.example.invalid", port=443, **options)
     return sdk, Recorder(sdk)
-
-
-def topic(channel: str) -> str:
-    return f"/downlink/vehicle/{DEVICE_ID}/realtimeDate/{channel}"
 
 
 async def deliver(sdk: NavimowSDK, channel: str, payload: Any) -> bytes:
@@ -113,7 +79,7 @@ async def test_accepted_messages_advance_the_mark_and_an_older_one_is_stale() ->
     assert sdk.get_cached_state(DEVICE_ID).timestamp == T - 30_000
     (rejection,) = seen.rejected
     assert (rejection.channel, rejection.reason, rejection.reasons, rejection.payload) == ("state", "stale", ("stale",), data)
-    assert rejection.received_at == NOW
+    assert rejection.received_at == T0
 
 
 @pytest.mark.asyncio
@@ -221,8 +187,8 @@ async def test_a_rejected_state_leaves_the_cache_and_its_times_untouched(clock: 
     await deliver(sdk, "state", state(T - 1000, state="isDocked"))
     assert sdk.get_cached_state(DEVICE_ID).state == "mowing"
     assert sdk.get_cached_state_age(DEVICE_ID) == 10.0
-    assert sdk.get_cached_state_received_at(DEVICE_ID) == NOW
-    assert seen.rejected[0].received_at == NOW + timedelta(seconds=10)
+    assert sdk.get_cached_state_received_at(DEVICE_ID) == T0
+    assert seen.rejected[0].received_at == T0 + timedelta(seconds=10)
 
 
 @pytest.mark.asyncio
@@ -234,7 +200,7 @@ async def test_every_delivered_message_carries_its_receipt_time_outside_equality
     clock.wall_now += timedelta(seconds=1)
     await deliver(sdk, "attributes", {"attributes": {"a": 1}})
     assert [seen.states[0].received_at, seen.events[0].received_at, seen.attributes[0].received_at] == [
-        NOW, NOW + timedelta(seconds=1), NOW + timedelta(seconds=2)
+        T0, T0 + timedelta(seconds=1), T0 + timedelta(seconds=2)
     ]
     assert seen.events[0] == DeviceEventMessage(device_id=DEVICE_ID, timestamp=None, type="system", event="started")
     for message in (seen.states[0], seen.events[0], seen.attributes[0]):

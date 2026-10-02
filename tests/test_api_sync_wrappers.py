@@ -9,51 +9,16 @@ what the async method returns.
 
 from __future__ import annotations
 
-import json
 import warnings
 from typing import Any
 
 import pytest
 
-from mower_sdk.api import MowerAPI
 from mower_sdk.models import Device, DeviceStatus, MowerCommand, MowerStatus
 
+from .fakes import FakeResponse, api_with, ok
+
 DEVICE_ID = "dev-1"
-
-
-class FakeResponse:
-    def __init__(self, body: Any) -> None:
-        self.status = 200
-        self._body = body
-
-    async def __aenter__(self) -> FakeResponse:
-        return self
-
-    async def __aexit__(self, *exc_info: object) -> bool:
-        return False
-
-    async def json(self) -> Any:
-        return self._body
-
-    async def read(self) -> bytes:
-        return json.dumps(self._body).encode()
-
-    async def text(self) -> str:
-        return ""
-
-
-class FakeSession:
-    def __init__(self, body: Any) -> None:
-        self.body = body
-        self.calls = 0
-
-    def request(self, *_args: Any, **_kwargs: Any) -> FakeResponse:
-        self.calls += 1
-        return FakeResponse(self.body)
-
-
-def ok(payload: Any) -> dict[str, Any]:
-    return {"code": 1, "desc": "success", "data": {"payload": payload}}
 
 
 WRAPPERS = [
@@ -112,14 +77,13 @@ WRAPPERS = [
 
 @pytest.mark.parametrize(("name", "args", "body", "expected"), WRAPPERS)
 def test_sync_wrapper_warns_and_delegates(name: str, args: tuple, body: Any, expected: Any) -> None:
-    session = FakeSession(body)
-    api = MowerAPI(session=session, token="token", base_url="https://api.example.invalid")  # type: ignore[arg-type]
+    api, session = api_with(FakeResponse(body))
 
     with pytest.warns(DeprecationWarning, match=rf"^MowerAPI\.{name} is deprecated: use MowerAPI\.async_{name}\.") as record:
         result = getattr(api, name)(*args)
 
     assert result == expected
-    assert session.calls == 1
+    assert len(session.requests) == 1
     (warning,) = record
     assert "cannot be used inside a running event loop" in str(warning.message)
     assert warning.filename == __file__  # attributed to the caller, not to api.py
@@ -127,7 +91,7 @@ def test_sync_wrapper_warns_and_delegates(name: str, args: tuple, body: Any, exp
 
 @pytest.mark.parametrize(("name", "args", "body", "expected"), WRAPPERS)
 def test_sync_wrapper_warns_on_every_call(name: str, args: tuple, body: Any, expected: Any) -> None:
-    api = MowerAPI(session=FakeSession(body), token="token", base_url="https://api.example.invalid")  # type: ignore[arg-type]
+    api, _ = api_with(FakeResponse(body), FakeResponse(body))
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         for _ in range(2):
@@ -138,7 +102,7 @@ def test_sync_wrapper_warns_on_every_call(name: str, args: tuple, body: Any, exp
 def test_async_methods_do_not_warn() -> None:
     import asyncio
 
-    api = MowerAPI(session=FakeSession(ok({"devices": []})), token="token", base_url="https://api.example.invalid")  # type: ignore[arg-type]
+    api, _ = api_with(FakeResponse(ok({"devices": []})))
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         assert asyncio.run(api.async_get_devices()) == []
