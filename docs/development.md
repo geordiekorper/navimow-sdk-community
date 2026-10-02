@@ -99,6 +99,54 @@ per clone:
 git config blame.ignoreRevsFile .git-blame-ignore-revs
 ```
 
+### Docstrings
+
+Every class, function and method of the package outside `mower_sdk/legacy/`
+has a docstring, private ones included, in the Google form:
+
+```python
+def get_cached_state_age(self, device_id: str) -> float | None:
+    """Seconds since the cached state message for device_id arrived.
+
+    With it a consumer can tell a stale cache from a fresh one.
+
+    Args:
+        device_id: The device.
+
+    Returns:
+        The age in seconds, measured on time.monotonic(), or None without
+        a cached state message.
+    """
+```
+
+- A one-line summary, then a description where the summary does not say it
+  all, then the sections that apply, in this order: `Args`, `Returns` (or
+  `Yields`), `Raises`.
+- `Args` names every argument; types stay in the signature. `Returns` says
+  what comes back, including what None means. `Raises` names each exception
+  the function raises and when, and may name one a callee raises that a caller
+  should know of.
+- A class docstring says what the class is and lists its public attributes,
+  or a dataclass's fields, under `Attributes`. The constructor's arguments are
+  on `__init__`.
+- A property is documented like an attribute: its summary describes the
+  value, and it has no `Returns` section.
+- A warning counts as an exception where a caller may meet it as one: a
+  function that issues a warning lists it under `Raises`, for the case that
+  the warnings filters turn it into an error.
+- A docstring says what the code does now. History belongs in
+  `CHANGELOG.md`.
+
+ruff checks the form (the `D` rules) and holds a docstring to the code (the
+`DOC` rules: a value returned or yielded and an exception raised are
+documented, and nothing is documented that the function does not take, return
+or yield). ruff still marks the `DOC` rules as preview, so `pyproject.toml`
+switches preview mode on for those rules by name and for no others; a ruff
+upgrade may change what they report. `tests/test_docstrings.py` adds the two
+checks ruff has no rule for: that a private function has a docstring, and
+that a function with arguments has an `Args` section at all. The tests and the
+tools keep only the rules for a docstring's form.
+
 ## The commit hooks
 
 | Hook | What it refuses |

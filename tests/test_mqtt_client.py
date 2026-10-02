@@ -166,7 +166,6 @@ async def test_init_setup_calls_for_plain_tcp(fake_paho: type[FakeClient]) -> No
 @pytest.mark.asyncio
 async def test_init_setup_calls_for_wss_scheme_without_ws_path(fake_paho: type[FakeClient]) -> None:
     """A wss:// broker turns TLS on, but without ws_path the transport stays tcp."""
-
     mqtt = make(WSS_NO_PATH_KWARGS)
     assert mqtt.port == 443
     assert mqtt._use_tls is True
@@ -381,7 +380,6 @@ async def test_a_location_message_is_passed_on_like_any_other_channel(
     fake_paho: type[FakeClient],
 ) -> None:
     """An array arrives as the original bytes; an object is re-encoded with device_id."""
-
     received, handler = recording_handler()
     mqtt = make(TCP_KWARGS)
     mqtt.on_message = handler
@@ -691,7 +689,6 @@ async def test_update_credentials_partial_update_while_connected(
     untouched values must survive the merge and the setters must receive the
     merged pair, not the arguments.
     """
-
     mqtt = make(WS_KWARGS)
     client = mqtt.client
     client.connected = True
@@ -728,7 +725,6 @@ async def test_update_credentials_while_connected_calls_only_the_setters_that_ap
     new_calls: list[Call],
 ) -> None:
     """username_pw_set needs a username and a password; ws_set_options needs a WebSocket path."""
-
     mqtt = make(kwargs)
     client = mqtt.client
     client.connected = True
@@ -1051,7 +1047,6 @@ async def test_a_refusal_from_paho_is_logged_with_its_reason_text_and_value(
     fake_paho: type[FakeClient], caplog: pytest.LogCaptureFixture
 ) -> None:
     """Paho's own ReasonCode, as a CONNACK refusal carries it."""
-
     mqtt = make(TCP_KWARGS)
     with caplog.at_level(logging.ERROR, logger="mower_sdk.mqtt"):
         mqtt._on_connect(
@@ -1218,7 +1213,6 @@ async def test_the_newest_message_time_is_read_safely_while_paho_adds_a_channel(
     The comparison of the first two times delivers an event message, the way paho's
     thread could between two steps of the read; the read must not walk the live map.
     """
-
     mqtt = make(TCP_KWARGS)
     mqtt._on_message(mqtt.client, None, FakeMessage(STATE_TOPIC, b"{}"))
     clock.advance(1)
@@ -2194,7 +2188,6 @@ async def test_an_acknowledgement_racing_the_subscribe_call_is_not_lost() -> Non
     returning; the acknowledgement must wait for the id to be recorded rather
     than find nothing pending and be dropped.
     """
-
     mqtt = make(TCP_KWARGS, records=[device("dev-1")])
     seen: list[tuple[str, bool, tuple[int, ...]]] = []
 
@@ -2342,7 +2335,6 @@ async def test_each_connection_change_is_an_event_with_its_client_id_and_reason(
 @pytest.mark.asyncio
 async def test_an_event_delivered_after_a_rebuild_names_the_client_it_came_from() -> None:
     """The zero-argument hook can only read the attributes, which the rebuild has changed."""
-
     mqtt = make(TCP_KWARGS)
     events = recording_events(mqtt)
     read_by_plain_hook: list[tuple[str, str | None]] = []

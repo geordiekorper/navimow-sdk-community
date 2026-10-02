@@ -263,18 +263,18 @@ From here on, nothing.
 
 @pytest.fixture
 def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """A small repository shaped like upstream's history, with the tool pointed at it.
+    r"""A small repository shaped like upstream's history, with the tool pointed at it.
 
     base ---- core-edit ---- clean-merge ---- evil-merge ---- ours-merge   (main)
-       \\-- side-edit --/           /                /
-       \\-- utils-edit ------------/                /
-       \\-- discarded-edit -------------------------/
-       \\-- dup-base -- dup-a ---- dup-merge   (dup-a and dup-b insert the same block)
-                  \\-- dup-b --/
-       \\-- dup-b --/
-       \\-- crlf-edit   (a CRLF file)
-       \\-- quoted-edit  (a commit whose message looks like a patch)
-       \\-- fork: client.py moved to legacy/client.py with a shim, as this repository did
+       \-- side-edit --/           /                /
+       \-- utils-edit ------------/                /
+       \-- discarded-edit -------------------------/
+       \-- dup-base -- dup-a ---- dup-merge   (dup-a and dup-b insert the same block)
+                  \-- dup-b --/
+       \-- dup-b --/
+       \-- crlf-edit   (a CRLF file)
+       \-- quoted-edit  (a commit whose message looks like a patch)
+       \-- fork: client.py moved to legacy/client.py with a shim, as this repository did
     """
     # A git hook or alias exports GIT_DIR, GIT_INDEX_FILE and the like; left in
     # place they would point every command below at the caller's repository.

@@ -1,4 +1,4 @@
-"""Shared helpers for the commit checks in tools/check_*.py.
+r"""Shared helpers for the commit checks in tools/check_*.py.
 
 The checks run in three modes, chosen from the environment:
 
@@ -13,7 +13,7 @@ An optional pattern file adds project-specific rules. It lives outside the
 repository, at ``$COMMIT_GATE_PATTERNS`` or
 ``<git common dir>/commit-gate/patterns.txt``; without it the checks apply the
 generic rules only. Each non-comment line is tab-separated:
-``<scope>\\t<name>\\t<flags>\\t<regex>`` with scope ``files``, ``message`` or
+``<scope>\t<name>\t<flags>\t<regex>`` with scope ``files``, ``message`` or
 ``both`` and flags ``-`` or ``notrailers`` (not applied to trailer lines of a
 message).
 """
