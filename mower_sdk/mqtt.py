@@ -12,13 +12,16 @@ import threading
 import time
 import uuid
 import weakref
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 from paho.mqtt import client as mqtt_client
+from paho.mqtt.enums import CallbackAPIVersion
+from paho.mqtt.properties import Properties
+from paho.mqtt.reasoncodes import ReasonCode
 
 from mower_sdk._deprecation import warn_legacy
 from mower_sdk.errors import ERROR_MESSAGES, MowerMQTTError
@@ -47,6 +50,10 @@ __all__ = [
 ]
 
 _LOGGER = logging.getLogger(__name__)
+
+# What a hook returns: the coroutine of an async function, which the client
+# runs as a task on the bound loop.
+_HookResult = Coroutine[Any, Any, None]
 
 
 @dataclass(frozen=True)
@@ -575,15 +582,15 @@ class NavimowMQTT:
         self.subscribe_location = subscribe_location
         self.extra_topics = [_valid_topic(topic) for topic in extra_topics or []]
 
-        self.on_connected: Callable[[], Awaitable[None]] | None = None
-        self.on_ready: Callable[[], Awaitable[None]] | None = None
-        self.on_message: Callable[[str, bytes, str], Awaitable[None]] | None = None
-        self.on_disconnected: Callable[[], Awaitable[None]] | None = None
-        self.on_connect_fail: Callable[[str], Awaitable[None]] | None = None
-        self.on_raw: Callable[[str, bytes], Awaitable[None]] | None = None
-        self.on_subscribe: Callable[[str, bool, tuple[int, ...]], Awaitable[None]] | None = None
-        self.on_connection_event: Callable[[ConnectionEvent], Awaitable[None]] | None = None
-        self.on_message_seen: Callable[[str, str, datetime], Awaitable[None]] | None = None
+        self.on_connected: Callable[[], _HookResult] | None = None
+        self.on_ready: Callable[[], _HookResult] | None = None
+        self.on_message: Callable[[str, bytes, str], _HookResult] | None = None
+        self.on_disconnected: Callable[[], _HookResult] | None = None
+        self.on_connect_fail: Callable[[str], _HookResult] | None = None
+        self.on_raw: Callable[[str, bytes], _HookResult] | None = None
+        self.on_subscribe: Callable[[str, bool, tuple[int, ...]], _HookResult] | None = None
+        self.on_connection_event: Callable[[ConnectionEvent], _HookResult] | None = None
+        self.on_message_seen: Callable[[str, str, datetime], _HookResult] | None = None
 
         self.last_connect_fail_reason: str | None = None
         self.last_disconnect_reason: str | None = None
@@ -710,7 +717,7 @@ class NavimowMQTT:
             WebSocket path decides: WebSockets with one, TCP without.
         """
         return mqtt_client.Client(
-            callback_api_version=mqtt_client.CallbackAPIVersion.VERSION2,
+            callback_api_version=CallbackAPIVersion.VERSION2,
             client_id=self._client_id,
             transport="websockets" if self.ws_path else "tcp",
         )
@@ -1220,7 +1227,7 @@ class NavimowMQTT:
         for topic in topics:
             self.client.unsubscribe(topic)
 
-    def _schedule(self, coro: Awaitable[None]) -> None:
+    def _schedule(self, coro: _HookResult) -> None:
         """Run the callback coroutine on the bound loop, else drop it, closed.
 
         On a bound, running loop the coroutine is handed over with
@@ -1296,7 +1303,14 @@ class NavimowMQTT:
             self._schedule(self.on_connect_fail(reason))
         self._connection_event(client, "connect_failed", reason, self.last_connect_failed_at)
 
-    def _on_connect(self, client, _userdata, _flags, reason_code, _properties=None) -> None:
+    def _on_connect(
+        self,
+        client: mqtt_client.Client,
+        _userdata: Any,
+        _flags: mqtt_client.ConnectFlags,
+        reason_code: ReasonCode,
+        _properties: Properties | None = None,
+    ) -> None:
         """Handle paho's on_connect, callback API version 2: the broker answered a connect.
 
         A refusal is logged as an error and recorded as a connect failure with
@@ -1347,7 +1361,7 @@ class NavimowMQTT:
             self._schedule(self.on_ready())
         self._connection_event(client, "connected", None, self.last_connected_at)
 
-    def _on_connect_fail(self, client, _userdata) -> None:
+    def _on_connect_fail(self, client: mqtt_client.Client, _userdata: Any) -> None:
         """Handle paho's on_connect_fail: no CONNACK at all.
 
         A network failure, or a bearer token refused at the WebSocket upgrade,
@@ -1369,7 +1383,14 @@ class NavimowMQTT:
         )
         self._connect_failed(client, "connection failed before CONNACK")
 
-    def _on_disconnect(self, client, _userdata, _flags, reason_code, _properties=None) -> None:
+    def _on_disconnect(
+        self,
+        client: mqtt_client.Client,
+        _userdata: Any,
+        _flags: mqtt_client.DisconnectFlags,
+        reason_code: ReasonCode,
+        _properties: Properties | None = None,
+    ) -> None:
         """Handle paho's on_disconnect, callback API version 2.
 
         The disconnect is counted in disconnects and its reason and time kept
@@ -1406,7 +1427,14 @@ class NavimowMQTT:
             client, "disconnected", self.last_disconnect_reason, self.last_disconnected_at
         )
 
-    def _on_subscribe(self, client, _userdata, mid, reason_code_list, _properties=None) -> None:
+    def _on_subscribe(
+        self,
+        client: mqtt_client.Client,
+        _userdata: Any,
+        mid: int,
+        reason_code_list: list[ReasonCode],
+        _properties: Properties | None = None,
+    ) -> None:
         """Handle paho's on_subscribe, callback API version 2: one reason code per topic sent.
 
         subscribe_all sends one topic per request, so one code is expected. A
@@ -1451,7 +1479,9 @@ class NavimowMQTT:
     # Kept for subclasses and callers that used the method before parse_topic was public.
     _parse_topic = staticmethod(parse_topic)
 
-    def _on_message(self, client, _userdata, msg) -> None:
+    def _on_message(
+        self, client: mqtt_client.Client, _userdata: Any, msg: mqtt_client.MQTTMessage
+    ) -> None:
         """Handle paho's on_message: record the message and pass it to the hooks.
 
         A message whose topic names both a device and a channel has its receipt

@@ -787,7 +787,7 @@ class DeviceStatus:
         # A new dict: the caller's extra, every payload key no field reads, and the
         # raw status keys. The caller's dict is never written to.
         caller_extra = data.get("extra")
-        extra = dict(caller_extra) if isinstance(caller_extra, dict) else {}
+        extra: dict[str, Any] = dict(caller_extra) if isinstance(caller_extra, dict) else {}
         for key, value in data.items():
             if key not in _DEVICE_STATUS_READ_KEYS:
                 extra[key] = value
@@ -797,8 +797,6 @@ class DeviceStatus:
             extra["descriptiveCapacityRemaining"] = data.get("descriptiveCapacityRemaining")
         if "capacityRemaining" in data:
             extra["capacityRemaining"] = data.get("capacityRemaining")
-        if not extra:
-            extra = None
 
         return cls(
             device_id=data.get("device_id") or data.get("id", ""),
@@ -811,7 +809,7 @@ class DeviceStatus:
             total_mowing_time=data.get("total_mowing_time"),
             signal_strength=data.get("signal_strength"),
             timestamp=data.get("timestamp"),
-            extra=extra,
+            extra=extra or None,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -824,7 +822,7 @@ class DeviceStatus:
             hold a truthy value; mowing_time, total_mowing_time,
             signal_strength and timestamp only when they are not None.
         """
-        result = {
+        result: dict[str, Any] = {
             "device_id": self.device_id,
             "status": self.status.value,
             "battery": self.battery,
