@@ -29,7 +29,18 @@ CORE_ON_VERSION_2 = "Callback API version"
 
 
 async def main() -> None:
-    # MowerMQTT builds its paho client lazily; NavimowMQTT builds it in __init__.
+    """Build the legacy client, then run the core checks with paho's warning as an error.
+
+    MowerMQTT builds its paho client lazily, so the client is built by hand
+    here; NavimowMQTT builds its own in __init__. The legacy client is built
+    outside the filter that turns paho's "Callback API version" warning into
+    an error, and core() runs inside it.
+
+    Raises:
+        AssertionError: A check in core() fails.
+        DeprecationWarning: A core class builds a paho client on callback API
+            version 1.
+    """
     MowerMQTT("broker.invalid")._build_client()
     with warnings.catch_warnings():
         warnings.filterwarnings("error", message=CORE_ON_VERSION_2)
@@ -37,6 +48,22 @@ async def main() -> None:
 
 
 async def core() -> None:
+    """Construct the core classes inside a running loop and update credentials both ways.
+
+    A NavimowMQTT, a client from its _build_new_client and a NavimowSDK are
+    constructed. A second NavimowMQTT must have set paho's connect-failure
+    and subscribe-acknowledgement callbacks on its client. Its
+    update_credentials is then called while the paho client reports that it
+    is connected, which must keep the client and set the merged username,
+    password, WebSocket path and headers on it, and again while it reports
+    that it is not, which must rebuild the client under a new client id with
+    the merged values. The NavimowMQTT must have bound the running loop. One
+    line with the Python, aiohttp and paho-mqtt versions is printed when
+    everything holds.
+
+    Raises:
+        AssertionError: A check fails; the message says which.
+    """
     NavimowMQTT("broker.invalid", 8883, None, None, records=[])._build_new_client()
     NavimowSDK("broker.invalid", 8883)
 

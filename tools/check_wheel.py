@@ -16,6 +16,23 @@ from importlib.metadata import distribution
 
 
 def contents(dist_dir: str) -> None:
+    """Check what the wheel in a directory ships, and print the names of its files.
+
+    Every file must be under mower_sdk/ or in a .dist-info directory, and
+    the wheel must hold mower_sdk/__init__.py, mower_sdk/py.typed,
+    mower_sdk/legacy/__init__.py and these modules of mower_sdk/legacy/:
+    client, cloud, device, errors, event, mqtt_v1, navimow, state_manager,
+    thing_models and utils.
+
+    Args:
+        dist_dir: The directory the build wrote to; it holds one wheel.
+
+    Raises:
+        SystemExit: The wheel ships a file from elsewhere, or lacks a
+            required file; the message names the files, and the exit status
+            is 1.
+        ValueError: The directory does not hold exactly one .whl file.
+    """
     (wheel,) = glob.glob(f"{dist_dir}/*.whl")
     names = zipfile.ZipFile(wheel).namelist()
     print("\n".join(names))
@@ -43,6 +60,22 @@ def contents(dist_dir: str) -> None:
 
 
 def metadata() -> None:
+    """Check the metadata of the installed distribution, and print a line of it.
+
+    Run with the Python of the environment the wheel was installed into. The
+    distribution navimow-sdk-community must carry that name, the version
+    that mower_sdk.__version__ gives and the licence expression GPL-3.0-only,
+    and must package a LICENSE file in its dist-info licenses directory that
+    is on disk and names the GNU General Public License in its first 200
+    characters. The line printed gives the name, the version and the licence
+    expression, whether or not the checks hold.
+
+    Raises:
+        SystemExit: A check fails; the message lists every failure, and the
+            exit status is 1.
+        importlib.metadata.PackageNotFoundError: The distribution is not
+            installed.
+    """
     import mower_sdk
 
     dist = distribution("navimow-sdk-community")
