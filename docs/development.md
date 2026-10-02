@@ -100,7 +100,11 @@ them together:
 
 Committed text has to stand on its own. A document, comment or commit message
 does not refer to a file that is not in the repository, to a path on someone's
-machine, or to a plan or tracker the reader cannot see.
+machine, or to a plan or tracker the reader cannot see. The two leak checks
+know a file as untracked only from the untracked and ignored files on the
+machine they run on: the names they refuse differ from one machine to the
+next, and CI, whose checkout has no such files, refuses none. They are a local
+guard for this rule, not a guarantee.
 
 ## Commit messages
 
