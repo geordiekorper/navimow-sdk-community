@@ -45,8 +45,8 @@ gives its location and format.
 ## Jobs done by hand
 
 **Porting upstream commits.**
-[UPSTREAM.md](../UPSTREAM.md#porting-upstream-commits) describes when and how;
-the tool's own tests are `tests/test_port_upstream.py`.
+[UPSTREAM.md](../docs/UPSTREAM.md#porting-upstream-commits) describes when and
+how; the tool's own tests are `tests/test_port_upstream.py`.
 
 ```bash
 python tools/port_upstream.py --dry-run 6596aa0..upstream/main

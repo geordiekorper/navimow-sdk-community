@@ -340,7 +340,7 @@ For someone working on it:
   the scripts behind the checks.
 - [mower_sdk/legacy/README.md](https://github.com/geordiekorper/navimow-sdk-community/blob/main/mower_sdk/legacy/README.md): the code kept from upstream and
   what replaces it.
-- [UPSTREAM.md](https://github.com/geordiekorper/navimow-sdk-community/blob/main/UPSTREAM.md): where the code came from, and what a merge back to upstream needs.
+- [docs/UPSTREAM.md](https://github.com/geordiekorper/navimow-sdk-community/blob/main/docs/UPSTREAM.md): where the code came from, and what a merge back to upstream needs.
 - [docs/releasing.md](https://github.com/geordiekorper/navimow-sdk-community/blob/main/docs/releasing.md): making a release.
 
 ## Development

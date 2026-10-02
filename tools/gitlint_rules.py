@@ -142,16 +142,16 @@ class VersionInRelease(CommitRule):
 
 
 class ForkAuthorProvenance(CommitRule):
-    """Crediting a fork author means recording the origin in UPSTREAM.md."""
+    """Crediting a fork author means recording the origin in docs/UPSTREAM.md."""
 
     name = "fork-author-provenance"
     id = "UC6"
 
     def validate(self, commit):
         credited = [line for line in _trailers(commit) if _CO_AUTHOR.match(line) and not _ASSISTANT.match(line)]
-        if credited and "UPSTREAM.md" not in _changed_paths(commit):
+        if credited and "docs/UPSTREAM.md" not in _changed_paths(commit):
             return [RuleViolation(
-                self.id, "a fork author is credited but UPSTREAM.md does not record the origin", credited[0],
+                self.id, "a fork author is credited but docs/UPSTREAM.md does not record the origin", credited[0],
             )]
         return []
 

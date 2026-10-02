@@ -4,7 +4,7 @@ This is the community edition of [segwaynavimow/navimow-sdk](https://github.com/
 This file is the map for a merge-back: where the fork left upstream, what came
 from other forks and who wrote it, and what has moved. Update it in the same
 commit as the change it records. Why the fork exists is in
-[docs/why-this-fork.md](docs/why-this-fork.md).
+[why-this-fork.md](why-this-fork.md).
 
 ## Fork point
 
@@ -122,7 +122,7 @@ Everything outside the live path was moved into `mower_sdk.legacy` with
 `git mv`, so the history of every moved line can still be traced:
 `git log --follow` on a new path finds the commit that moved or extracted it.
 
-Every old import still works. [`mower_sdk/legacy/README.md`](mower_sdk/legacy/README.md)
+Every old import still works. [`mower_sdk/legacy/README.md`](../mower_sdk/legacy/README.md)
 says how the old paths resolve and when they warn, what replaces each module,
 how the files differ from upstream's text and why the folder is frozen. This
 section records only where each piece came from.
@@ -212,7 +212,7 @@ The map must be extended in the same commit as any later move.
 - Files move with `git mv`, never by copy and delete, so the history of
   moved lines stays traceable ("Moved files" says how).
 - Code in `mower_sdk/legacy/` is not edited; the folder's
-  [README](mower_sdk/legacy/README.md) says what enforces that and how an
+  [README](../mower_sdk/legacy/README.md) says what enforces that and how an
   exception is made.
 - Changes that do not depend on the fork identity are written so they can be
   offered upstream as they are.

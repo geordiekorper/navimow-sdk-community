@@ -73,7 +73,7 @@ def lint(repo: Path, message: str) -> list[str]:
 def code(repo: Path) -> Path:
     """A staged change to the package and its provenance record."""
     stage(repo, "mower_sdk/sdk.py", "X = 1\n")
-    stage(repo, "UPSTREAM.md", "# Provenance\n")
+    stage(repo, "docs/UPSTREAM.md", "# Provenance\n")
     return repo
 
 
@@ -146,7 +146,7 @@ def test_a_cherry_pick_line_keeps_the_trailer_block(code: Path, repo: Path) -> N
     # git cherry-pick -x appends this line to the last paragraph.
     picked = GOOD + "(cherry picked from commit 0123456789abcdef0123456789abcdef01234567)\n"
     assert lint(code, picked) == []
-    run("git", "reset", "-q", "UPSTREAM.md", cwd=repo)
+    run("git", "reset", "-q", "docs/UPSTREAM.md", cwd=repo)
     assert lint(code, picked) == ["UC6"]  # the fork credit is still read as a trailer
 
 
@@ -159,7 +159,10 @@ def test_the_version_changes_only_in_a_release_commit(repo: Path) -> None:
 
 
 def test_crediting_a_fork_author_needs_the_provenance_record(code: Path, repo: Path) -> None:
-    run("git", "reset", "-q", "UPSTREAM.md", cwd=repo)
+    run("git", "reset", "-q", "docs/UPSTREAM.md", cwd=repo)
+    assert "UC6" in lint(code, GOOD)
+    # The record is docs/UPSTREAM.md: a file of that name anywhere else does not count.
+    stage(repo, "UPSTREAM.md", "# Provenance\n")
     assert "UC6" in lint(code, GOOD)
 
 
@@ -217,10 +220,10 @@ def test_the_range_form_applies_every_rule_to_each_commit(repo: Path) -> None:
     commit("c.txt", "c\n", f"docs(c): order\n\n{body}\n\nCo-Authored-By: Claude X <x@example.com>\n"
                             "Co-authored-by: Fork Author <fork@example.com>")
     commit("d.txt", "d\n", f"docs(d): credit\n\n{body}\n\nCo-authored-by: Fork Author <fork@example.com>")
-    commit("UPSTREAM.md", "# Provenance\n", f"docs(e): provenance elsewhere\n\n{body}")
+    commit("docs/UPSTREAM.md", "# Provenance\n", f"docs(e): provenance elsewhere\n\n{body}")
     report = run_gitlint(repo, "--commits", f"{base}..HEAD")
     found = per_commit(report)
-    # A fork credit in one commit is not satisfied by UPSTREAM.md in another.
+    # A fork credit in one commit is not satisfied by docs/UPSTREAM.md in another.
     assert found == {
         commits["docs(a): tracker"]: ["UC1"],
         commits["docs(b): labelled (" + "Q5)"]: ["UC2"],

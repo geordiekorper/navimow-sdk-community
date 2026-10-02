@@ -3,7 +3,7 @@
 This is the community edition of
 [segwaynavimow/navimow-sdk](https://github.com/segwaynavimow/navimow-sdk).
 This document gives the reasons for it and points elsewhere for the facts:
-[UPSTREAM.md](../UPSTREAM.md) is the map of the fork (where it left upstream,
+[UPSTREAM.md](UPSTREAM.md) is the map of the fork (where it left upstream,
 what came from other forks and who wrote it, what moved), and
 [CHANGELOG.md](../CHANGELOG.md) says what changed in each version.
 
@@ -11,14 +11,14 @@ what came from other forks and who wrote it, what moved), and
 
 Upstream published three releases in March and April 2026, and its `main`
 branch has not changed since the last of them; UPSTREAM.md's
-[fork point](../UPSTREAM.md#fork-point) table has the dates. The repository's
+[fork point](UPSTREAM.md#fork-point) table has the dates. The repository's
 issue tracker stayed in use. On 2026-10-01 it showed 20 open issues, 11 of
 them opened after the last commit, and one open pull request, opened on
 2026-03-28 and not yet reviewed; the owner's latest reply in any of them was
 dated 2026-04-09.
 
 Users fixed what they met in forks of their own. UPSTREAM.md lists
-[the forks that were reviewed](../UPSTREAM.md#commits-taken-from-elsewhere),
+[the forks that were reviewed](UPSTREAM.md#commits-taken-from-elsewhere),
 their authors and what was taken from each. The fixes were spread across
 those forks and no one of them had them all, so a consumer could have one
 fork's fixes or another's, not both.
@@ -82,7 +82,7 @@ rename the package and delete what it does not use. This one does neither.
   where there is a sensible way back.
 
 UPSTREAM.md states these as
-[rules](../UPSTREAM.md#rules-that-keep-a-merge-back-possible).
+[rules](UPSTREAM.md#rules-that-keep-a-merge-back-possible).
 
 ## What the fork is not
 
@@ -101,7 +101,7 @@ UPSTREAM.md states these as
 
 The fork is built for that case. Upstream's new commits are ported in with
 their authorship, as UPSTREAM.md's
-[porting](../UPSTREAM.md#porting-upstream-commits) section describes. The
+[porting](UPSTREAM.md#porting-upstream-commits) section describes. The
 fork's changes go the other way as pull requests. What upstream takes is
 upstream's decision; UPSTREAM.md marks the changes that are community-only.
 Once upstream carries what a consumer uses, that consumer goes back by

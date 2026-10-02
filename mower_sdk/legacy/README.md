@@ -69,8 +69,8 @@ The fork is meant to stay mergeable with upstream in both directions:
 upstream's commits are ported into this folder, and the fork's changes are
 meant to be offered back. The closer these files stay to upstream's text, the
 fewer ports conflict and the smaller the diff a merge-back has to explain.
-[UPSTREAM.md](../../UPSTREAM.md) has the map: where each file came from, how
-upstream commits are ported, and the rules a merge-back depends on.
+[UPSTREAM.md](../../docs/UPSTREAM.md) has the map: where each file came from,
+how upstream commits are ported, and the rules a merge-back depends on.
 
 The files differ from upstream's at the fork point in four ways only:
 
@@ -106,8 +106,8 @@ that removes it, or let its code be fixed like any other.
 ## Changing something here
 
 The change this folder expects is an upstream commit, ported as
-[UPSTREAM.md](../../UPSTREAM.md#porting-upstream-commits) describes. A fix or
-a feature of this project's own goes to the live path, even when the same
+[UPSTREAM.md](../../docs/UPSTREAM.md#porting-upstream-commits) describes. A fix
+or a feature of this project's own goes to the live path, even when the same
 defect exists in a legacy class: the legacy classes stay as upstream shipped
 them.
 

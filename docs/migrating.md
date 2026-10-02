@@ -14,7 +14,7 @@ Every public name 0.1.2 exported still imports from the path it had, and the
 import name is still `mower_sdk`. The
 [legacy README](../mower_sdk/legacy/README.md#how-the-old-names-still-work)
 says how the names that moved resolve, and
-[UPSTREAM.md](../UPSTREAM.md#rules-that-keep-a-merge-back-possible) names the
+[UPSTREAM.md](UPSTREAM.md#rules-that-keep-a-merge-back-possible) names the
 inventory and the test that hold this in place.
 
 ### What behaves differently

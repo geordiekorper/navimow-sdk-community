@@ -279,7 +279,7 @@ legacy class.
 ## Design constraints
 
 - **Upstream's public surface stays.** The rule is in
-  [UPSTREAM.md](../UPSTREAM.md#rules-that-keep-a-merge-back-possible) and its
+  [UPSTREAM.md](UPSTREAM.md#rules-that-keep-a-merge-back-possible) and its
   reason in [why-this-fork.md](why-this-fork.md). In the live path it shows
   as additions beside what exists, not changes to it: the receipt is a second
   method, the new errors are subclasses, `subscribe_all()` keeps two

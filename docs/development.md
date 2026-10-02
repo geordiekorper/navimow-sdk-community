@@ -123,7 +123,7 @@ pass, not only the last.
 - `Co-authored-by:` lines sit in the trailer block at the end. An assistant's
   attribution line comes after every human co-author.
 - A `Co-authored-by:` for the author of another fork needs the origin recorded
-  in `UPSTREAM.md` in the same commit.
+  in `docs/UPSTREAM.md` in the same commit.
 - `__version__` changes only in a `chore(release)` commit that also changes
   `CHANGELOG.md`: see [releasing.md](releasing.md).
 - A change to a protected path needs a `Legacy-edit: <reason>` trailer: see
@@ -135,7 +135,7 @@ pass, not only the last.
   and a new public name is registered with the compatibility tests:
   [tests/README.md](../tests/README.md#the-compatibility-tests).
 - **The merge-back rules** in
-  [UPSTREAM.md](../UPSTREAM.md#rules-that-keep-a-merge-back-possible).
+  [UPSTREAM.md](UPSTREAM.md#rules-that-keep-a-merge-back-possible).
 - **Both dependency bounds.** A commit leaves the suite passing on
   `bounds(oldest)` and `bounds(newest)`.
 - **The record.** A change a consumer can see gets an entry under
