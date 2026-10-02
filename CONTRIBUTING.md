@@ -44,11 +44,12 @@ and firmware it came from, is a contribution.
 For anything larger than a small fix, open an issue first so the approach can
 be agreed before the work is done.
 
-A pull request needs tests for the change, an entry in `CHANGELOG.md` when a
-consumer can see it, and commits that pass the checks.
-[docs/development.md](docs/development.md) has the setup, the checks, the
-commit rules and what a change has to keep; [tests/README.md](tests/README.md)
-has the style the tests are written in.
+A pull request needs tests for the change and an entry in `CHANGELOG.md` when
+a consumer can see it. [docs/development.md](docs/development.md) has the
+setup, the checks and what a change has to keep;
+[tests/README.md](tests/README.md) has the style the tests are written in.
+You do not have to learn the commit-message rules to contribute: the
+maintainer may squash a contribution into one commit and write its message.
 
 ## Licence
 

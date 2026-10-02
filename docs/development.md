@@ -151,6 +151,9 @@ included, with one exception: the release commit, a version bump of two files,
 is pushed to `main` directly ([releasing.md](releasing.md)).
 
 Branch from `main` and open the pull request against it. The five CI jobs have
-to pass. Pull requests are merged with a merge commit, not squashed, so every
-commit in the branch stays in history as it was reviewed.
+to pass. The maintainer's own branches are merged with a merge commit, so
+every commit stays in history as it was reviewed. A pull request from an
+outside contributor may be squashed instead: the maintainer makes it one
+commit and writes its message, so the contributor's commits do not have to
+follow the commit rules above.
 [CONTRIBUTING.md](../CONTRIBUTING.md) says what a pull request should contain.
