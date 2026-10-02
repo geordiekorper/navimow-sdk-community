@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 
@@ -158,17 +158,19 @@ def test_a_startup_call_binds_the_callers_loop_before_the_executor() -> None:
     assert sdk.loop is None
     delivered: list[asyncio.AbstractEventLoop] = []
 
-    async def on_disconnected() -> None:
-        delivered.append(asyncio.get_running_loop())
-
     async def test() -> None:
+        called = asyncio.Event()
+
+        async def on_disconnected() -> None:
+            delivered.append(asyncio.get_running_loop())
+            called.set()
+
         await sdk.async_refresh_broker_credentials(FakeAPI(reply()))  # changed while disconnected: a rebuild
         assert sdk.loop is asyncio.get_running_loop()
         sdk.mqtt.on_disconnected = on_disconnected
         sdk.connect()
         sdk.mqtt._on_disconnect(sdk.mqtt.client, None, {}, _Success(), None)
-        for _ in range(3):
-            await asyncio.sleep(0)
+        await asyncio.wait_for(called.wait(), 5)
         assert delivered == [asyncio.get_running_loop()]
 
     asyncio.run(test())
@@ -204,30 +206,45 @@ async def test_a_reply_without_credentials_is_an_api_error_and_counts_for_the_co
 
 
 class GatedAPI(FakeAPI):
-    """The first request waits until released."""
+    """The first request says it has been made, then waits until released."""
 
     def __init__(self, *replies: Any) -> None:
         super().__init__(*replies)
+        self.requested = asyncio.Event()
         self.release = asyncio.Event()
 
     async def async_get_mqtt_user_info(self) -> Any:
         if self.calls == 0:
             self.calls += 1
+            self.requested.set()
             await self.release.wait()
             return self.replies.pop(0)
         return await super().async_get_mqtt_user_info()
 
 
+class WatchedLock(asyncio.Lock):
+    """Stands in for the facade's credentials lock; ``contended`` is set when a call has to wait for it."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.contended = asyncio.Event()
+
+    async def acquire(self) -> Literal[True]:
+        if self.locked():
+            self.contended.set()
+        return await super().acquire()
+
+
 @pytest.mark.asyncio
 async def test_a_second_call_waits_for_the_first_to_finish_even_past_the_cooldown(clock: FakeClock) -> None:
     sdk = facade()
+    sdk._credentials_lock = lock = WatchedLock()
     api = GatedAPI(reply("u1"), reply("u2"))
     first = asyncio.create_task(sdk.async_refresh_broker_credentials(api))
-    await asyncio.sleep(0)
+    await asyncio.wait_for(api.requested.wait(), 5)
     clock.now += 100  # the cooldown has passed, but the first call still holds the lock
     second = asyncio.create_task(sdk.async_refresh_broker_credentials(api))
-    for _ in range(5):
-        await asyncio.sleep(0)
+    await asyncio.wait_for(lock.contended.wait(), 5)  # the second call has reached the lock
     assert api.calls == 1
     api.release.set()
     assert await first is True

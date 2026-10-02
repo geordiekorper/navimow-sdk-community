@@ -30,6 +30,13 @@ loop set as current and not running, a connect from another thread's loop,
 `MowerAPI`'s synchronous wrappers, which start a loop themselves, and the
 README's threaded recipe, which runs its loop on a thread of its own.
 
+A test that has to wait waits for the thing itself, with a timeout only as the
+bound on a failure: an event the callback sets, `drain()` in
+`test_mqtt_client.py` for callbacks handed to the loop, a lock that reports
+that a second caller has reached it. It does not sleep for a fixed time or
+yield to the loop a fixed number of times, either of which ties the result to
+the machine's speed or to how many turns of the loop a delivery takes.
+
 What a test replaces (an aiohttp session, paho's client, the MQTT client
 under the facade) is replaced by a recording fake, not by a `Mock` object. A
 fake is a small class in the test module with real methods: it records what

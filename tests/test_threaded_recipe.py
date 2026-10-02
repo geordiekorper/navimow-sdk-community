@@ -18,7 +18,6 @@ import json
 import queue
 import re
 import threading
-import time
 from pathlib import Path
 from typing import Any
 
@@ -110,6 +109,8 @@ class FakePaho:
     """A paho client that connects to nothing; subscribe answers like paho."""
 
     instances: list[FakePaho] = []
+    # Each client that starts a connection, for the thread standing in for paho's.
+    connecting: queue.Queue[FakePaho] = queue.Queue()
 
     def __init__(self, *_args: Any, **_kwargs: Any) -> None:
         self.calls: list[str] = []
@@ -129,6 +130,10 @@ class FakePaho:
     def subscribe(self, _topic: str) -> tuple[int, int]:
         self.mid += 1
         return 0, self.mid
+
+    def connect_async(self, *_args: Any, **_kwargs: Any) -> None:
+        self.calls.append("connect_async")
+        FakePaho.connecting.put(self)
 
     def disconnect(self) -> None:
         self.calls.append("disconnect")
@@ -163,6 +168,7 @@ def as_paho_thread(target: Any, *args: Any) -> None:
 @pytest.fixture
 def fake_paho(monkeypatch: pytest.MonkeyPatch) -> None:
     FakePaho.instances = []
+    FakePaho.connecting = queue.Queue()
     monkeypatch.setattr(mqtt_module.mqtt_client, "Client", FakePaho)
 
 
@@ -189,13 +195,12 @@ def deliver_when_connected(payload: bytes) -> threading.Thread:
     """Stand in for paho's thread: once the facade's client has connected, deliver a message."""
 
     def paho() -> None:
-        for _ in range(500):
-            client = FakePaho.instances[-1] if FakePaho.instances else None
-            if client is not None and "connect_async" in client.calls:
-                client.on_connect(client, None, {}, Success(), None)
-                client.on_message(client, None, PahoMessage(STATE_TOPIC, payload))
-                return
-            time.sleep(0.01)
+        try:
+            client = FakePaho.connecting.get(timeout=5)
+        except queue.Empty:
+            return
+        client.on_connect(client, None, {}, Success(), None)
+        client.on_message(client, None, PahoMessage(STATE_TOPIC, payload))
 
     thread = threading.Thread(target=paho)
     thread.start()

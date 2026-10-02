@@ -27,7 +27,6 @@ import json
 import logging
 import pickle
 import threading
-import time
 import warnings
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
@@ -152,9 +151,43 @@ def run(test: Callable[[], Awaitable[None]]) -> None:
 
 
 async def drain() -> None:
-    """Let call_soon_threadsafe callbacks and the tasks they create run."""
-    for _ in range(3):
-        await asyncio.sleep(0)
+    """Let call_soon_threadsafe callbacks and the tasks they create run to their end.
+
+    A marker queued on the loop runs after every callback queued before it, so
+    once it has run the tasks those callbacks created exist; they are awaited,
+    and the round repeats until no task is left. Nothing here counts turns of
+    the loop, so a delivery may take as many as it needs.
+    """
+    loop = asyncio.get_running_loop()
+    async with asyncio.timeout(5):
+        while True:
+            marker = loop.create_future()
+            loop.call_soon(marker.set_result, None)
+            await marker
+            tasks = asyncio.all_tasks() - {asyncio.current_task()}
+            if not tasks:
+                return
+            await asyncio.wait(tasks)
+
+
+class WatchedLock:
+    """Stands in for the lifecycle lock; ``contended`` is set when a thread has to wait for it.
+
+    A test that holds one call inside the lock waits for ``contended`` to know
+    that the other thread's call has arrived, whatever the machine's speed.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self.contended = threading.Event()
+
+    def __enter__(self) -> None:
+        if not self._lock.acquire(blocking=False):
+            self.contended.set()
+            self._lock.acquire()
+
+    def __exit__(self, *_exc: object) -> None:
+        self._lock.release()
 
 
 def device(device_id: str) -> Device:
@@ -1579,8 +1612,10 @@ async def test_empty_credentials_at_construction(
 
 def test_rebuilds_from_two_threads_leave_exactly_one_running_client(fake_paho: type[FakeClient]) -> None:
     mqtt = make(TCP_KWARGS)
+    mqtt._lifecycle_lock = lock = WatchedLock()  # type: ignore[assignment]
     original_build = mqtt._build_new_client
     second: list[threading.Thread] = []
+    arrived: list[bool] = []
 
     def slow_build() -> Any:
         client = original_build()
@@ -1588,7 +1623,7 @@ def test_rebuilds_from_two_threads_leave_exactly_one_running_client(fake_paho: t
             thread = threading.Thread(target=mqtt.rebuild, kwargs={"reason": "second"})
             second.append(thread)
             thread.start()
-            time.sleep(0.2)
+            arrived.append(lock.contended.wait(5))
         return client
 
     mqtt._build_new_client = slow_build  # type: ignore[method-assign]
@@ -1597,6 +1632,7 @@ def test_rebuilds_from_two_threads_leave_exactly_one_running_client(fake_paho: t
     first.join(5)
     second[0].join(5)
 
+    assert arrived == [True]  # the second rebuild asked for the lock while the first held it
     original, *replacements = fake_paho.instances
     assert len(replacements) == 2 and mqtt.client is replacements[-1]
     for retired in (original, replacements[0]):
@@ -1607,6 +1643,7 @@ def test_rebuilds_from_two_threads_leave_exactly_one_running_client(fake_paho: t
 
 def test_a_disconnect_during_a_rebuild_waits_and_then_disconnects_the_new_client(fake_paho: type[FakeClient]) -> None:
     mqtt = make(TCP_KWARGS)
+    mqtt._lifecycle_lock = lock = WatchedLock()  # type: ignore[assignment]
     old = mqtt.client
     entered, release = threading.Event(), threading.Event()
 
@@ -1620,7 +1657,7 @@ def test_a_disconnect_during_a_rebuild_waits_and_then_disconnects_the_new_client
     assert entered.wait(5)
     disconnecting = threading.Thread(target=mqtt.disconnect)
     disconnecting.start()
-    time.sleep(0.1)
+    assert lock.contended.wait(5)
     release.set()
     rebuilding.join(5)
     disconnecting.join(5)
@@ -1636,6 +1673,7 @@ def test_a_disconnect_during_a_rebuild_waits_and_then_disconnects_the_new_client
 
 def test_a_connect_during_a_rebuild_waits_until_the_old_client_is_disconnected(fake_paho: type[FakeClient]) -> None:
     mqtt = make(TCP_KWARGS)
+    mqtt._lifecycle_lock = lock = WatchedLock()  # type: ignore[assignment]
     old = mqtt.client
     entered, release = threading.Event(), threading.Event()
     original_disconnect = old.disconnect
@@ -1651,7 +1689,7 @@ def test_a_connect_during_a_rebuild_waits_until_the_old_client_is_disconnected(f
     assert entered.wait(5)
     connecting = threading.Thread(target=mqtt.connect_async)
     connecting.start()
-    time.sleep(0.1)
+    assert lock.contended.wait(5)
     release.set()
     rebuilding.join(5)
     connecting.join(5)
@@ -1664,6 +1702,7 @@ def test_a_connect_during_a_rebuild_waits_until_the_old_client_is_disconnected(f
 
 def test_a_credential_update_during_a_rebuild_reaches_the_new_client(fake_paho: type[FakeClient]) -> None:
     mqtt = make(WS_KWARGS)
+    mqtt._lifecycle_lock = lock = WatchedLock()  # type: ignore[assignment]
     mqtt.client.connected = True
     original_build = mqtt._build_new_client
     built, release = threading.Event(), threading.Event()
@@ -1680,7 +1719,7 @@ def test_a_credential_update_during_a_rebuild_reaches_the_new_client(fake_paho: 
     assert built.wait(5)
     updating = threading.Thread(target=mqtt.update_credentials, kwargs={"password": "rotated"})
     updating.start()
-    time.sleep(0.1)
+    assert lock.contended.wait(5)
     release.set()
     rebuilding.join(5)
     updating.join(5)
