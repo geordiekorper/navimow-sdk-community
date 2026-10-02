@@ -118,3 +118,6 @@ Every commit that changes a file here other than this README carries a
 ```bash
 SKIP=no-protected-changes git commit
 ```
+
+An exception is the maintainer's to grant. The maintainer commits it, or
+approves that one change for someone else to commit.
