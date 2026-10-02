@@ -12,17 +12,17 @@ import threading
 import time
 import uuid
 import weakref
-from urllib.parse import urlparse
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlparse
 
 from paho.mqtt import client as mqtt_client
 
 from mower_sdk._deprecation import warn_legacy
-from mower_sdk.errors import MowerMQTTError, ERROR_MESSAGES  # noqa: F401
-from mower_sdk.models import Device, DeviceStatus  # noqa: F401
+from mower_sdk.errors import ERROR_MESSAGES, MowerMQTTError
+from mower_sdk.models import Device, DeviceStatus
 
 if TYPE_CHECKING:
     from mower_sdk.legacy.mqtt_v1 import MowerMQTT as MowerMQTT
@@ -92,7 +92,9 @@ class ReceivedPayload(bytes):
         instance.original = original
         return instance
 
-    def __reduce_ex__(self, protocol: object) -> tuple[type["ReceivedPayload"], tuple[bytes, bytes]]:
+    def __reduce_ex__(
+        self, protocol: object
+    ) -> tuple[type["ReceivedPayload"], tuple[bytes, bytes]]:
         """Rebuild from both byte forms, so copy, deepcopy and pickle keep original."""
         return type(self), (bytes(self), self.original)
 
@@ -201,7 +203,9 @@ def _valid_topic(topic: Any) -> str:
     except UnicodeEncodeError as exc:
         raise ValueError(f"extra topic is not encodable as UTF-8: {topic!r}") from exc
     if len(encoded) > _MAX_TOPIC_BYTES:
-        raise ValueError(f"extra topic is {len(encoded)} bytes encoded, more than MQTT's {_MAX_TOPIC_BYTES}")
+        raise ValueError(
+            f"extra topic is {len(encoded)} bytes encoded, more than MQTT's {_MAX_TOPIC_BYTES}"
+        )
     levels = topic.split("/")
     for index, level in enumerate(levels):
         if "#" in level and (level != "#" or index != len(levels) - 1):
@@ -277,8 +281,9 @@ class NavimowMQTT:
     with a ConnectionEvent for each connect, disconnect and connect failure,
     carrying the client id and reason as they were at that moment (the
     zero-argument ``on_connected`` and ``on_disconnected`` carry neither, and the
-    attributes they would read may have changed by a rebuild before they run); ``last_connect_fail_reason``,
-    ``last_disconnect_reason`` and ``last_connected_at`` keep the latest of
+    attributes they would read may have changed by a rebuild before they run);
+    ``last_connect_fail_reason``, ``last_disconnect_reason`` and
+    ``last_connected_at`` keep the latest of
     each, and ``last_connect_failed_at`` and ``last_disconnected_at`` the UTC
     time of the failure and the disconnect the reasons belong to;
     ``last_connected_monotonic`` is ``last_connected_at`` on
@@ -304,8 +309,8 @@ class NavimowMQTT:
     connect, for trying topics the protocol reference does not list (such as
     the subTopics names the credential reply advertises); an extra topic that
     overlaps a built-in one can make the broker deliver a message more than
-    once (MQTT allows a copy per matching subscription), and a device-scoped wildcard was refused by the
-    broker on an X430 in September 2026.
+    once (MQTT allows a copy per matching subscription), and a device-scoped
+    wildcard was refused by the broker on an X430 in September 2026.
 
     ``subscription_results`` says what the broker answered for each topic
     subscribed since the latest connect: ``"pending"`` until its
@@ -413,7 +418,9 @@ class NavimowMQTT:
         # recorded when it is installed, so a connection event is attributed to the
         # client it came from even while rebuild() is building the next one (the
         # client id changes first, self.client last).
-        self._client_context: weakref.WeakKeyDictionary[Any, tuple[str, int]] = weakref.WeakKeyDictionary()
+        self._client_context: weakref.WeakKeyDictionary[Any, tuple[str, int]] = (
+            weakref.WeakKeyDictionary()
+        )
 
         # self.client is assigned before it is configured: the callback lookups
         # in _configure_client may read it, and a subclass can rely on that.
@@ -438,7 +445,9 @@ class NavimowMQTT:
         """The MQTT client id the paho client was built with."""
         return self._client_id
 
-    def _last_message_stamp(self, device_id: str, channel: str | None) -> tuple[datetime, float] | None:
+    def _last_message_stamp(
+        self, device_id: str, channel: str | None
+    ) -> tuple[datetime, float] | None:
         channels = self._last_message.get(device_id, {})
         if channel is not None:
             return channels.get(channel)
@@ -465,7 +474,10 @@ class NavimowMQTT:
         return None if stamp is None else time.monotonic() - stamp[1]
 
     def _new_paho_client(self) -> mqtt_client.Client:
-        """An unconfigured paho client on callback API version 2, with the current client id and transport."""
+        """An unconfigured paho client on callback API version 2.
+
+        It has the current client id and transport.
+        """
         return mqtt_client.Client(
             callback_api_version=mqtt_client.CallbackAPIVersion.VERSION2,
             client_id=self._client_id,
@@ -473,7 +485,7 @@ class NavimowMQTT:
         )
 
     def _apply_credentials(self, client: mqtt_client.Client) -> None:
-        """Set the current username and password and WebSocket options on client, where they apply."""
+        """Set the current credentials and WebSocket options on client, where they apply."""
         if self._credentials_set():
             client.username_pw_set(self.username, self.password)
         if self.ws_path:
@@ -588,7 +600,13 @@ class NavimowMQTT:
                 # client left on a host the cloud no longer names can never reconnect.
                 # A live connection to the old address is dropped.
                 self.rebuild(
-                    username, password, auth_headers, broker=broker, port=port, ws_path=ws_path, reason="broker changed"
+                    username,
+                    password,
+                    auth_headers,
+                    broker=broker,
+                    port=port,
+                    ws_path=ws_path,
+                    reason="broker changed",
                 )
                 return
             changed = False
@@ -617,15 +635,16 @@ class NavimowMQTT:
                 # then without a rebuild.
                 self._apply_credentials(self.client)
                 _LOGGER.info(
-                    "NavimowMQTT credentials updated while connected: set on the client, used at the "
-                    "next reconnect: broker=%s port=%s",
+                    "NavimowMQTT credentials updated while connected: set on the client, "
+                    "used at the next reconnect: broker=%s port=%s",
                     self.broker,
                     self.port,
                 )
                 return
 
             _LOGGER.info(
-                "NavimowMQTT credentials updated while disconnected, rebuilding and reconnecting: broker=%s port=%s",
+                "NavimowMQTT credentials updated while disconnected, "
+                "rebuilding and reconnecting: broker=%s port=%s",
                 self.broker,
                 self.port,
             )
@@ -648,8 +667,9 @@ class NavimowMQTT:
         update_credentials). broker is read as the constructor reads it (a URL's
         host, and its port when it has one); a change of broker, port or ws_path
         is logged with the old and the new address, the path redacted, and TLS
-        follows the new values as at construction. The new client is built through _build_new_client with
-        a fresh random suffix in its client id and installed as self.client before
+        follows the new values as at construction. The new client is built
+        through _build_new_client with a fresh random suffix in its client id
+        and installed as self.client before
         the old one is torn down, so the SDK's own callbacks (on_connect,
         on_disconnect, on_connect_fail, on_message, on_subscribe) from the old
         client, including the disconnect paho reports while disconnect() runs, are
@@ -681,10 +701,13 @@ class NavimowMQTT:
                 self.auth_headers = auth_headers
             if self._endpoint_differs(broker, port, ws_path):
                 old_address = (self.broker, self.port, _redact_ws_path(self.ws_path))
-                self.broker, self.port, self.ws_path, self._wss_scheme = self._endpoint_after(broker, port, ws_path)
+                self.broker, self.port, self.ws_path, self._wss_scheme = self._endpoint_after(
+                    broker, port, ws_path
+                )
                 self._use_tls = bool(self.ws_path) or self._wss_scheme
                 _LOGGER.info(
-                    "NavimowMQTT broker changed: from broker=%s port=%s ws_path=%s to broker=%s port=%s ws_path=%s tls=%s",
+                    "NavimowMQTT broker changed: from broker=%s port=%s ws_path=%s "
+                    "to broker=%s port=%s ws_path=%s tls=%s",
                     *old_address,
                     self.broker,
                     self.port,
@@ -739,11 +762,14 @@ class NavimowMQTT:
                 # paho's thread is running for this client: connected, connecting, or
                 # waiting to retry. Calling paho's connect_async again would reset the
                 # attempt in progress.
-                _LOGGER.debug("NavimowMQTT connect already started: broker=%s port=%s", self.broker, self.port)
+                _LOGGER.debug(
+                    "NavimowMQTT connect already started: broker=%s port=%s", self.broker, self.port
+                )
                 return
             if not self.is_connected:
                 _LOGGER.info(
-                    "NavimowMQTT connect details: transport=%s broker=%s port=%s ws_path=%s tls=%s username=%s auth_headers=%s",
+                    "NavimowMQTT connect details: transport=%s broker=%s port=%s ws_path=%s "
+                    "tls=%s username=%s auth_headers=%s",
                     "websockets" if self.ws_path else "tcp",
                     self.broker,
                     self.port,
@@ -789,7 +815,10 @@ class NavimowMQTT:
         return device_ids
 
     def _topics(self) -> tuple[list[str], list[str]]:
-        """The topics subscribe_all subscribes, and the device ids they were built from (none: the wildcard)."""
+        """The topics subscribe_all subscribes, and the device ids they were built from.
+
+        No device ids means the wildcard topics.
+        """
         channels = ["state", "event", "attributes"]
         if self.subscribe_location:
             channels.append("location")
@@ -818,9 +847,7 @@ class NavimowMQTT:
                 "NavimowMQTT subscribing cloud topics with wildcard: no device ids available"
             )
         else:
-            _LOGGER.info(
-                "NavimowMQTT subscribing cloud topics for %d device(s)", len(device_ids)
-            )
+            _LOGGER.info("NavimowMQTT subscribing cloud topics for %d device(s)", len(device_ids))
         for topic in topics:
             with self._subscribe_lock:
                 result, mid = self.client.subscribe(topic)
@@ -828,7 +855,9 @@ class NavimowMQTT:
                     self._pending_subscribes[mid] = topic
                     self.subscription_results[topic] = "pending"
                 else:
-                    self.subscription_results[topic] = f"not sent: {mqtt_client.error_string(result)}"
+                    self.subscription_results[topic] = (
+                        f"not sent: {mqtt_client.error_string(result)}"
+                    )
 
     def unsubscribe_all(self, product_key: str = "", device_name: str = "") -> None:  # noqa: ARG002
         """Unsubscribe from the topics subscribe_all subscribed to.
@@ -839,9 +868,7 @@ class NavimowMQTT:
         if not device_ids:
             _LOGGER.info("NavimowMQTT unsubscribing cloud topics (wildcard)")
         else:
-            _LOGGER.info(
-                "NavimowMQTT unsubscribing cloud topics for %d device(s)", len(device_ids)
-            )
+            _LOGGER.info("NavimowMQTT unsubscribing cloud topics for %d device(s)", len(device_ids))
         for topic in topics:
             self.client.unsubscribe(topic)
 
@@ -900,7 +927,7 @@ class NavimowMQTT:
         self._connection_event(client, "connect_failed", reason, self.last_connect_failed_at)
 
     def _on_connect(self, client, _userdata, _flags, reason_code, _properties=None) -> None:
-        """paho's on_connect, callback API version 2: reason_code is a paho ReasonCode."""
+        """Paho's on_connect, callback API version 2: reason_code is a paho ReasonCode."""
         if client is not self.client:
             return  # a client replaced by rebuild()
         if reason_code.is_failure:
@@ -932,7 +959,7 @@ class NavimowMQTT:
         self._connection_event(client, "connected", None, self.last_connected_at)
 
     def _on_connect_fail(self, client, _userdata) -> None:
-        """paho's on_connect_fail: no CONNACK at all.
+        """Paho's on_connect_fail: no CONNACK at all.
 
         A network failure, or a bearer token refused at the WebSocket upgrade,
         shows this way. paho keeps retrying with the reconnect delays.
@@ -947,11 +974,13 @@ class NavimowMQTT:
         self._connect_failed(client, "connection failed before CONNACK")
 
     def _on_disconnect(self, client, _userdata, _flags, reason_code, _properties=None) -> None:
-        """paho's on_disconnect, callback API version 2."""
+        """Paho's on_disconnect, callback API version 2."""
         if client is not self.client:
             return
         self.disconnects += 1
-        self.last_disconnect_reason = "requested" if not reason_code.is_failure else str(reason_code)
+        self.last_disconnect_reason = (
+            "requested" if not reason_code.is_failure else str(reason_code)
+        )
         self.last_disconnected_at = datetime.now(UTC)
         _LOGGER.debug(
             "NavimowMQTT disconnected: broker=%s port=%s client_id=%s rc=%s",
@@ -962,10 +991,12 @@ class NavimowMQTT:
         )
         if self.on_disconnected is not None:
             self._schedule(self.on_disconnected())
-        self._connection_event(client, "disconnected", self.last_disconnect_reason, self.last_disconnected_at)
+        self._connection_event(
+            client, "disconnected", self.last_disconnect_reason, self.last_disconnected_at
+        )
 
     def _on_subscribe(self, client, _userdata, mid, reason_code_list, _properties=None) -> None:
-        """paho's on_subscribe, callback API version 2: one reason code per topic sent.
+        """Paho's on_subscribe, callback API version 2: one reason code per topic sent.
 
         subscribe_all sends one topic per request, so the first code decides. A
         code of 0x80 or more is a refusal.
@@ -995,7 +1026,7 @@ class NavimowMQTT:
     _parse_topic = staticmethod(parse_topic)
 
     def _on_message(self, client, _userdata, msg) -> None:
-        """paho's on_message.
+        """Paho's on_message.
 
         The payload debug line logs every payload whole. With the location
         channel subscribed that is a movement trace of the mower: keep this
@@ -1022,7 +1053,8 @@ class NavimowMQTT:
             # before device_id is added, so an extra topic or an unknown one is seen too.
             self._schedule(self.on_raw(topic, payload_bytes))
         if _LOGGER.isEnabledFor(logging.DEBUG):
-            # Decoding the whole payload for the line is the cost: skipped when it would not be logged.
+            # Decoding the whole payload for the line is the cost: skipped when it
+            # would not be logged.
             _LOGGER.debug(
                 "NavimowMQTT payload: topic=%s payload=%s",
                 topic,

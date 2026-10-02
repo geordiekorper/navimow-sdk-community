@@ -137,7 +137,10 @@ async def test_receipt_request_is_the_send_commands_request() -> None:
         "commands": [
             {
                 "devices": [{"id": DEVICE_ID}],
-                "execution": {"command": "action.devices.commands.PauseUnpause", "params": {"on": False}},
+                "execution": {
+                    "command": "action.devices.commands.PauseUnpause",
+                    "params": {"on": False},
+                },
             }
         ]
     }
@@ -171,7 +174,9 @@ async def test_an_unknown_command_is_rejected_before_any_request() -> None:
     ids=["client_error", "timeout"],
 )
 @pytest.mark.asyncio
-async def test_a_transport_error_raises_with_its_cause_and_returns_no_receipt(cause: Exception) -> None:
+async def test_a_transport_error_raises_with_its_cause_and_returns_no_receipt(
+    cause: Exception,
+) -> None:
     api, _ = api_with(FakeResponse(error=cause))
     with pytest.raises(MowerAPIError) as info:
         await api.async_send_command_receipt(DEVICE_ID, MowerCommand.START)

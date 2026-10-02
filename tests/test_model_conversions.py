@@ -30,7 +30,16 @@ FULL_STATUS = DeviceStatus(
     timestamp=1790000000,
     extra={"vehicleState": "isDocked"},
 )
-SHARED = ("device_id", "status", "battery", "position", "error_code", "error_message", "signal_strength", "timestamp")
+SHARED = (
+    "device_id",
+    "status",
+    "battery",
+    "position",
+    "error_code",
+    "error_message",
+    "signal_strength",
+    "timestamp",
+)
 NOT_CARRIED = ("mowing_time", "total_mowing_time", "extra")
 
 
@@ -51,20 +60,32 @@ def test_from_status_carries_the_shared_fields_and_normalises_the_time() -> None
 
 
 def test_from_status_from_a_sparse_status() -> None:
-    message = DeviceStateMessage.from_status(DeviceStatus(device_id="d", status=MowerStatus.UNKNOWN, battery=None))
+    message = DeviceStateMessage.from_status(
+        DeviceStatus(device_id="d", status=MowerStatus.UNKNOWN, battery=None)
+    )
     assert message == DeviceStateMessage(device_id="d", timestamp=None, state="unknown")
     assert (message.error, message.received_at) == (None, None)
-    assert DeviceStateMessage.from_status(replace(FULL_STATUS, timestamp=1790000000123)).timestamp == 1790000000123
+    assert (
+        DeviceStateMessage.from_status(replace(FULL_STATUS, timestamp=1790000000123)).timestamp
+        == 1790000000123
+    )
 
 
 def test_from_state_message_from_a_full_message() -> None:
     payload = {
-        "device_id": "dev-1", "state": "isRunning", "battery": 55, "timestamp": 1790000000,
-        "signal_strength": -70, "position": {"lat": 3.0, "lng": 4.0}, "error": {"code": "lifted", "message": "up"},
+        "device_id": "dev-1",
+        "state": "isRunning",
+        "battery": 55,
+        "timestamp": 1790000000,
+        "signal_strength": -70,
+        "position": {"lat": 3.0, "lng": 4.0},
+        "error": {"code": "lifted", "message": "up"},
     }
     message = DeviceStateMessage.from_dict(payload)
     before = copy.deepcopy(message)
-    status = DeviceStatus.from_state_message(message, fallback_status=MowerStatus.DOCKED, fallback_battery=10)
+    status = DeviceStatus.from_state_message(
+        message, fallback_status=MowerStatus.DOCKED, fallback_battery=10
+    )
     assert status == DeviceStatus(
         device_id="dev-1",
         status=MowerStatus.MOWING,
@@ -89,9 +110,15 @@ def test_from_state_message_from_a_sparse_message() -> None:
     [
         ({"device_id": "d", "battery": 5}, MowerStatus.DOCKED),  # no state at all: the fallback
         ({"device_id": "d", "state": None}, MowerStatus.DOCKED),  # a null state is no state
-        ({"device_id": "d", "state": "unknown"}, MowerStatus.UNKNOWN),  # an explicit unknown is kept
+        (
+            {"device_id": "d", "state": "unknown"},
+            MowerStatus.UNKNOWN,
+        ),  # an explicit unknown is kept
         ({"device_id": "d", "vehicleState": "isPaused"}, MowerStatus.PAUSED),
-        ({"device_id": "d", "state": "somethingNew"}, MowerStatus.UNKNOWN),  # a value the enum lacks
+        (
+            {"device_id": "d", "state": "somethingNew"},
+            MowerStatus.UNKNOWN,
+        ),  # a value the enum lacks
         ({"device_id": "d", "state": "Offline"}, MowerStatus.OFFLINE),
     ],
     ids=["absent", "null", "explicit_unknown", "vehicle_state", "unrecognised", "offline"],
@@ -100,7 +127,10 @@ def test_the_state_fallback_applies_only_when_the_payload_carries_no_state(
     payload: dict[str, object], expected: MowerStatus
 ) -> None:
     message = DeviceStateMessage.from_dict(payload)
-    assert DeviceStatus.from_state_message(message, fallback_status=MowerStatus.DOCKED).status is expected
+    assert (
+        DeviceStatus.from_state_message(message, fallback_status=MowerStatus.DOCKED).status
+        is expected
+    )
 
 
 @pytest.mark.parametrize(
@@ -110,15 +140,24 @@ def test_the_state_fallback_applies_only_when_the_payload_carries_no_state(
 )
 def test_a_message_built_by_hand_falls_back_on_unknown(state: str, expected: MowerStatus) -> None:
     message = DeviceStateMessage(device_id="d", timestamp=None, state=state)
-    assert DeviceStatus.from_state_message(message, fallback_status=MowerStatus.DOCKED).status is expected
+    assert (
+        DeviceStatus.from_state_message(message, fallback_status=MowerStatus.DOCKED).status
+        is expected
+    )
 
 
 @pytest.mark.parametrize(
     ("payload", "expected"),
-    [({"device_id": "d"}, 40), ({"device_id": "d", "battery": "n/a"}, 40), ({"device_id": "d", "battery": 0}, 0)],
+    [
+        ({"device_id": "d"}, 40),
+        ({"device_id": "d", "battery": "n/a"}, 40),
+        ({"device_id": "d", "battery": 0}, 0),
+    ],
     ids=["absent", "unreadable", "zero"],
 )
-def test_the_battery_fallback_applies_only_without_a_readable_battery(payload: dict[str, object], expected: int) -> None:
+def test_the_battery_fallback_applies_only_without_a_readable_battery(
+    payload: dict[str, object], expected: int
+) -> None:
     message = DeviceStateMessage.from_dict(payload)
     assert DeviceStatus.from_state_message(message, fallback_battery=40).battery == expected
 
@@ -139,14 +178,25 @@ def test_without_fallbacks_nothing_is_invented() -> None:
     ],
     ids=["code", "error_code_key", "unrecognised", "empty", "not_a_dict"],
 )
-def test_the_error_dict_becomes_the_error_code_and_message(error: object, code: MowerError, message: str | None) -> None:
-    status = DeviceStatus.from_state_message(DeviceStateMessage(device_id="d", timestamp=None, state="error", error=error))  # type: ignore[arg-type]
+def test_the_error_dict_becomes_the_error_code_and_message(
+    error: object, code: MowerError, message: str | None
+) -> None:
+    state = DeviceStateMessage(device_id="d", timestamp=None, state="error", error=error)  # type: ignore[arg-type]
+    status = DeviceStatus.from_state_message(state)
     assert (status.error_code, status.error_message) == (code, message)
 
 
-@pytest.mark.parametrize(("timestamp", "expected"), [(1790000000, 1790000000000), (1790000000000, 1790000000000), (None, None), (0, None)])
-def test_times_are_normalised_to_milliseconds_in_both_directions(timestamp: int | None, expected: int | None) -> None:
-    assert DeviceStateMessage.from_status(replace(FULL_STATUS, timestamp=timestamp)).timestamp == expected
+@pytest.mark.parametrize(
+    ("timestamp", "expected"),
+    [(1790000000, 1790000000000), (1790000000000, 1790000000000), (None, None), (0, None)],
+)
+def test_times_are_normalised_to_milliseconds_in_both_directions(
+    timestamp: int | None, expected: int | None
+) -> None:
+    assert (
+        DeviceStateMessage.from_status(replace(FULL_STATUS, timestamp=timestamp)).timestamp
+        == expected
+    )
     message = DeviceStateMessage(device_id="d", timestamp=timestamp, state="docked")
     assert DeviceStatus.from_state_message(message).timestamp == expected
 

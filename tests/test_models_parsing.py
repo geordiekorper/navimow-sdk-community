@@ -61,7 +61,13 @@ def test_the_public_raw_state_table_is_the_models_table_read_only() -> None:
 
 @pytest.mark.parametrize(
     ("raw", "expected"),
-    [*RAW_STATE_TABLE, ("isSomethingNew", "isSomethingNew"), (MowerStatus.DOCKED, "docked"), (None, "unknown"), (3, "unknown")],
+    [
+        *RAW_STATE_TABLE,
+        ("isSomethingNew", "isSomethingNew"),
+        (MowerStatus.DOCKED, "docked"),
+        (None, "unknown"),
+        (3, "unknown"),
+    ],
 )
 def test_canonical_state_is_what_a_state_message_holds(raw: Any, expected: str) -> None:
     assert mower_sdk.canonical_state(raw) == expected
@@ -82,7 +88,12 @@ def test_mower_status_from_raw_is_what_a_rest_status_holds(raw: Any) -> None:
 @pytest.mark.parametrize(
     "payload",
     [
-        {"capacityRemaining": [{"rawValue": "40", "unit": "MAH"}, {"rawValue": "88", "unit": "percentage"}]},
+        {
+            "capacityRemaining": [
+                {"rawValue": "40", "unit": "MAH"},
+                {"rawValue": "88", "unit": "percentage"},
+            ]
+        },
         {"capacityRemaining": [{"rawValue": "x"}, {"rawValue": 55}], "battery": 10},
         {"battery": "73"},
         {"battery": True},
@@ -109,8 +120,17 @@ def test_the_private_reader_names_still_resolve() -> None:
 
 def test_mower_status_members() -> None:
     assert [status.value for status in MowerStatus] == [
-        "idle", "mowing", "paused", "docked", "charging", "error", "returning",
-        "mapping", "updating", "offline", "unknown",
+        "idle",
+        "mowing",
+        "paused",
+        "docked",
+        "charging",
+        "error",
+        "returning",
+        "mapping",
+        "updating",
+        "offline",
+        "unknown",
     ]
 
 
@@ -170,13 +190,28 @@ def test_none_values() -> None:
     ("payload", "status", "extra"),
     [
         ({"status": "", "state": "isRunning"}, MowerStatus.MOWING, None),
-        ({"status": 0, "state": "", "vehicleState": "isDocked"}, MowerStatus.DOCKED, {"vehicleState": "isDocked"}),
-        ({"status": "", "state": "", "vehicleState": ""}, MowerStatus.UNKNOWN, {"vehicleState": ""}),
+        (
+            {"status": 0, "state": "", "vehicleState": "isDocked"},
+            MowerStatus.DOCKED,
+            {"vehicleState": "isDocked"},
+        ),
+        (
+            {"status": "", "state": "", "vehicleState": ""},
+            MowerStatus.UNKNOWN,
+            {"vehicleState": ""},
+        ),
         ({"status": False}, MowerStatus.UNKNOWN, None),
         ({"vehicleState": False}, MowerStatus.UNKNOWN, {"vehicleState": False}),
         ({"status": 0}, MowerStatus.UNKNOWN, None),
     ],
-    ids=["empty_status", "zero_then_empty", "all_empty", "false_status", "false_vehicle_state", "zero_status"],
+    ids=[
+        "empty_status",
+        "zero_then_empty",
+        "all_empty",
+        "false_status",
+        "false_vehicle_state",
+        "zero_status",
+    ],
 )
 def test_device_status_falsy_fallbacks(
     payload: dict[str, Any], status: MowerStatus, extra: dict[str, Any] | None
@@ -190,14 +225,26 @@ def test_device_status_falsy_fallbacks(
     ("payload", "state", "metrics"),
     [
         ({"state": "", "status": "isDocked"}, "docked", {"raw_state": "isDocked"}),
-        ({"state": 0, "status": None, "vehicleState": "isRunning"}, "mowing", {"raw_state": "isRunning"}),
+        (
+            {"state": 0, "status": None, "vehicleState": "isRunning"},
+            "mowing",
+            {"raw_state": "isRunning"},
+        ),
         ({"state": "", "status": "", "vehicleState": ""}, "", None),
         ({"vehicleState": False}, "unknown", {"raw_state": False}),
         ({"state": 0}, "unknown", None),
         ({"state": 0, "vehicleState": 0}, "unknown", {"raw_state": 0}),
         ({"state": False, "status": 0, "vehicleState": None}, "unknown", None),
     ],
-    ids=["empty_state", "zero_then_none", "all_empty", "false_vehicle_state", "zero_state", "zero_last", "none_last"],
+    ids=[
+        "empty_state",
+        "zero_then_none",
+        "all_empty",
+        "false_vehicle_state",
+        "zero_state",
+        "zero_last",
+        "none_last",
+    ],
 )
 def test_state_message_falsy_fallbacks(
     payload: dict[str, Any], state: str, metrics: dict[str, Any] | None
@@ -244,18 +291,37 @@ BATTERY_CASES = [
         id="capacity_percentage_case_insensitive",
     ),
     pytest.param(
-        {"capacityRemaining": [{"unit": "WH", "rawValue": 500}, {"unit": "PERCENTAGE", "rawValue": 64}]},
+        {
+            "capacityRemaining": [
+                {"unit": "WH", "rawValue": 500},
+                {"unit": "PERCENTAGE", "rawValue": 64},
+            ]
+        },
         64,
         id="capacity_percentage_after_other_unit",
     ),
-    pytest.param({"capacityRemaining": [{"unit": "WH", "rawValue": 500}]}, 500, id="capacity_first_item_fallback"),
     pytest.param(
-        {"capacityRemaining": [{"unit": "WH", "rawValue": "x"}, {"unit": "MINUTES", "rawValue": 45}]},
+        {"capacityRemaining": [{"unit": "WH", "rawValue": 500}]},
+        500,
+        id="capacity_first_item_fallback",
+    ),
+    pytest.param(
+        {
+            "capacityRemaining": [
+                {"unit": "WH", "rawValue": "x"},
+                {"unit": "MINUTES", "rawValue": 45},
+            ]
+        },
         45,
         id="capacity_fallback_scans_past_the_first_entry",  # was 0: only the first entry was tried
     ),
     pytest.param(
-        {"capacityRemaining": [{"unit": "PERCENTAGE", "rawValue": True}, {"unit": "WH", "rawValue": 7}]},
+        {
+            "capacityRemaining": [
+                {"unit": "PERCENTAGE", "rawValue": True},
+                {"unit": "WH", "rawValue": 7},
+            ]
+        },
         7,
         id="capacity_bool_skipped",  # was 1
     ),
@@ -271,7 +337,11 @@ BATTERY_CASES = [
     ),
     pytest.param({"capacityRemaining": ["nope"]}, None, id="capacity_only_non_dict"),  # was 0
     pytest.param({"capacityRemaining": []}, None, id="capacity_empty"),  # was 0
-    pytest.param({"capacityRemaining": {"unit": "PERCENTAGE", "rawValue": 12}}, None, id="capacity_not_a_list"),  # was 0
+    pytest.param(
+        {"capacityRemaining": {"unit": "PERCENTAGE", "rawValue": 12}},
+        None,
+        id="capacity_not_a_list",
+    ),  # was 0
     pytest.param(
         {"battery": "abc", "capacityRemaining": [{"unit": "PERCENTAGE", "rawValue": 5}]},
         5,
@@ -318,8 +388,13 @@ def test_device_status_extra_merges_the_raw_status_keys() -> None:
         "descriptiveCapacityRemaining": "HIGH",
     }
     assert DeviceStatus.from_dict({"extra": {}}).extra is None
-    assert DeviceStatus.from_dict({"extra": None, "vehicleState": "x"}).extra == {"vehicleState": "x"}
-    assert DeviceStatus.from_dict({"vehicleState": "x", "zone": 2}).extra == {"zone": 2, "vehicleState": "x"}
+    assert DeviceStatus.from_dict({"extra": None, "vehicleState": "x"}).extra == {
+        "vehicleState": "x"
+    }
+    assert DeviceStatus.from_dict({"vehicleState": "x", "zone": 2}).extra == {
+        "zone": 2,
+        "vehicleState": "x",
+    }
 
 
 def test_device_status_never_writes_to_the_callers_extra_dict() -> None:
@@ -331,21 +406,41 @@ def test_device_status_never_writes_to_the_callers_extra_dict() -> None:
 
 
 def test_device_status_keeps_a_rest_key_the_model_does_not_read_in_extra() -> None:
-    status = DeviceStatus.from_dict({"id": "d", "vehicleState": "isDocked", "mowingZone": "front", "deviceId": "d"})
+    status = DeviceStatus.from_dict(
+        {"id": "d", "vehicleState": "isDocked", "mowingZone": "front", "deviceId": "d"}
+    )
     assert status.extra == {"mowingZone": "front", "deviceId": "d", "vehicleState": "isDocked"}
     assert status.to_dict()["extra"] == status.extra
 
 
 def test_the_known_field_sets() -> None:
     assert {
-        "state", "vehicleState", "status", "battery", "capacityRemaining", "timestamp", "device_id",
+        "state",
+        "vehicleState",
+        "status",
+        "battery",
+        "capacityRemaining",
+        "timestamp",
+        "device_id",
     } == models.STATE_KNOWN_FIELDS
     assert {
-        "id", "device_id", "deviceId", "vehicleState", "capacityRemaining", "descriptiveCapacityRemaining", "battery",
+        "id",
+        "device_id",
+        "deviceId",
+        "vehicleState",
+        "capacityRemaining",
+        "descriptiveCapacityRemaining",
+        "battery",
     } == models.REST_STATUS_KNOWN_FIELDS
 
 
-STATE_PAYLOAD = {"device_id": "d", "state": "isDocked", "battery": 50, "speed": 1, "metrics": {"rpm": 3}}
+STATE_PAYLOAD = {
+    "device_id": "d",
+    "state": "isDocked",
+    "battery": 50,
+    "speed": 1,
+    "metrics": {"rpm": 3},
+}
 EVENT_PAYLOAD = {"device_id": "d", "type": "system", "event": "started", "extra": True}
 ATTRIBUTES_PAYLOAD = {"device_id": "d", "attributes": {"a": 1}, "other": 2}
 
@@ -357,11 +452,23 @@ ATTRIBUTES_PAYLOAD = {"device_id": "d", "attributes": {"a": 1}, "other": 2}
             DeviceStateMessage,
             STATE_PAYLOAD,
             DeviceStateMessage(
-                device_id="d", timestamp=None, state="docked", battery=50, metrics={"rpm": 3, "raw_state": "isDocked"}
+                device_id="d",
+                timestamp=None,
+                state="docked",
+                battery=50,
+                metrics={"rpm": 3, "raw_state": "isDocked"},
             ),
         ),
-        (DeviceEventMessage, EVENT_PAYLOAD, DeviceEventMessage(device_id="d", timestamp=None, type="system", event="started")),
-        (DeviceAttributesMessage, ATTRIBUTES_PAYLOAD, DeviceAttributesMessage(device_id="d", attributes={"a": 1})),
+        (
+            DeviceEventMessage,
+            EVENT_PAYLOAD,
+            DeviceEventMessage(device_id="d", timestamp=None, type="system", event="started"),
+        ),
+        (
+            DeviceAttributesMessage,
+            ATTRIBUTES_PAYLOAD,
+            DeviceAttributesMessage(device_id="d", attributes={"a": 1}),
+        ),
     ],
     ids=["state", "event", "attributes"],
 )
@@ -426,7 +533,9 @@ def test_state_message_metrics_handling() -> None:
     assert metrics == {"speed": 1}  # the caller's dict is left as it was
     assert payload == {"metrics": {"speed": 1}, "state": "isDocked"}
     assert message.raw == {"metrics": {"speed": 1}, "state": "isDocked"}
-    assert DeviceStateMessage.from_dict({"metrics": [("a", 1)], "state": "docked"}).metrics == {"a": 1}
+    assert DeviceStateMessage.from_dict({"metrics": [("a", 1)], "state": "docked"}).metrics == {
+        "a": 1
+    }
     assert DeviceStateMessage.from_dict({"metrics": None, "state": "docked"}).metrics is None
 
 

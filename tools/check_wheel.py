@@ -25,8 +25,16 @@ def contents(dist_dir: str) -> None:
     required = ["mower_sdk/__init__.py", "mower_sdk/legacy/__init__.py"] + [
         f"mower_sdk/legacy/{module}.py"
         for module in (
-            "client", "cloud", "device", "errors", "event", "mqtt_v1",
-            "navimow", "state_manager", "thing_models", "utils",
+            "client",
+            "cloud",
+            "device",
+            "errors",
+            "event",
+            "mqtt_v1",
+            "navimow",
+            "state_manager",
+            "thing_models",
+            "utils",
         )
     ]
     missing = [n for n in required if n not in names]
@@ -42,7 +50,9 @@ def metadata() -> None:
     if dist.metadata["Name"] != "navimow-sdk-community":
         problems.append(f"Name is {dist.metadata['Name']!r}")
     if dist.version != mower_sdk.__version__:
-        problems.append(f"version {dist.version!r} != mower_sdk.__version__ {mower_sdk.__version__!r}")
+        problems.append(
+            f"version {dist.version!r} != mower_sdk.__version__ {mower_sdk.__version__!r}"
+        )
     if dist.metadata["License-Expression"] != "GPL-3.0-only":
         problems.append(f"License-Expression is {dist.metadata['License-Expression']!r}")
     licenses = [

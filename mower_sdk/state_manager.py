@@ -4,4 +4,4 @@ from mower_sdk._deprecation import warn_legacy as _warn_legacy
 
 _warn_legacy("state_manager", __name__)
 
-from mower_sdk.legacy.state_manager import *  # noqa: E402, F403
+from mower_sdk.legacy.state_manager import *  # noqa: F403

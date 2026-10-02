@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 from mower_sdk.errors import ERROR_MESSAGES, MowerAPIError, MowerUnsupportedOperationError
 from mower_sdk.location import REASON_PRIORITY, LocationDecoder, _plausible
 from mower_sdk.models import (
+    STATE_KNOWN_FIELDS,
     DeviceAttributesMessage,
     DeviceCommandMessage,
     DeviceEventMessage,
@@ -22,13 +23,18 @@ from mower_sdk.models import (
     DeviceStateMessage,
     MqttConnectionInfo,
     RejectedMessage,
-    STATE_KNOWN_FIELDS,
     SkippedLocationEntry,
     _broker_endpoint,
     _credential,
     mower_time_ms,
 )
-from mower_sdk.mqtt import NavimowMQTT, _decode_json, _original_payload, _resolve_event_loop, parse_topic
+from mower_sdk.mqtt import (
+    NavimowMQTT,
+    _decode_json,
+    _original_payload,
+    _resolve_event_loop,
+    parse_topic,
+)
 
 if TYPE_CHECKING:
     from mower_sdk.api import MowerAPI
@@ -44,7 +50,9 @@ _REST_ALTERNATIVES: dict[str, str] = {
 }
 # What the refusal says when there is no REST alternative.
 _NO_ALTERNATIVE: dict[str, str] = {
-    "set_blade_height": "No supported call sets the blade height (the REST API has no such command);",
+    "set_blade_height": (
+        "No supported call sets the blade height (the REST API has no such command);"
+    ),
 }
 _NO_ALTERNATIVE_KNOWN = "No supported alternative is known;"
 # The constructor arguments NavimowSDK.from_connection_info takes from the connection info.
@@ -188,8 +196,8 @@ class NavimowSDK:
         owned = [name for name in _CONNECTION_INFO_ARGUMENTS if name in options]
         if owned:
             raise TypeError(
-                f"NavimowSDK.from_connection_info() takes {', '.join(owned)} from the connection info; "
-                "use the constructor to choose them"
+                f"NavimowSDK.from_connection_info() takes {', '.join(owned)} "
+                "from the connection info; use the constructor to choose them"
             )
         # Decision: the factory builds the one connection the cloud has been seen to
         # serve, TLS over WebSocket on the reply's port (443 unless named) with the
@@ -199,8 +207,8 @@ class NavimowSDK:
         # broker, port, ws_path and TLS are unchanged.
         if not info.ws_path:
             raise ValueError(
-                "NavimowSDK.from_connection_info(): the connection info names no WebSocket path (mqttUrl); "
-                "use the constructor to choose one"
+                "NavimowSDK.from_connection_info(): the connection info names no "
+                "WebSocket path (mqttUrl); use the constructor to choose one"
             )
         headers = {
             key: value
@@ -306,8 +314,9 @@ class NavimowSDK:
         client's, they are applied too, and the client is rebuilt on the new
         address whether or not it is connected; a value the reply does not name
         is kept, and a broker the reply names but that cannot be read is logged
-        and kept while the credentials are still applied. It does not start a connection of its own: unchanged
-        values without force_reconnect leave the client alone. Changed values
+        and kept while the credentials are still applied. It does not start a
+        connection of its own: unchanged values without force_reconnect leave
+        the client alone. Changed values
         on a client that is not connected go through a rebuild, which connects,
         as update_mqtt_credentials always has; a connect() after it is then a
         no-op.
@@ -332,7 +341,10 @@ class NavimowSDK:
             )
         async with self._credentials_lock:
             now = time.monotonic()
-            if self._credentials_attempted_at is not None and now - self._credentials_attempted_at < cooldown:
+            if (
+                self._credentials_attempted_at is not None
+                and now - self._credentials_attempted_at < cooldown
+            ):
                 return False
             self._credentials_attempted_at = now
             info = await api.async_get_mqtt_user_info()
@@ -342,12 +354,17 @@ class NavimowSDK:
             username = _credential(info.get("userName")) if isinstance(info, dict) else None
             password = _credential(info.get("pwdInfo")) if isinstance(info, dict) else None
             if username is None and password is None:
-                raise MowerAPIError(f"{ERROR_MESSAGES['API_REQUEST_FAILED']}: no broker credentials in the reply")
+                raise MowerAPIError(
+                    f"{ERROR_MESSAGES['API_REQUEST_FAILED']}: no broker credentials in the reply"
+                )
             broker = port = ws_path = None
             try:
                 broker, port, ws_path = _broker_endpoint(info)
             except MowerAPIError as exc:
-                _LOGGER.warning("Navimow credential reply: broker address kept, the reply's cannot be read: %s", exc)
+                _LOGGER.warning(
+                    "Navimow credential reply: broker address kept, the reply's cannot be read: %s",
+                    exc,
+                )
             # Decision: the reply is authoritative for the broker. A host, port or path
             # it names that differs from the client's rebuilds the client on the new
             # address, dropping a live connection; this helper runs after a failed
@@ -389,13 +406,18 @@ class NavimowSDK:
         self._location_callbacks.append(callback)
 
     def on_rejected(self, callback: Callable[[RejectedMessage], None]) -> None:
-        """Call callback once for each message that was not applied, or was applied with
-        something unknown in it, after whatever was applied has been delivered."""
+        """Call callback once for each message that was not applied cleanly.
+
+        That is a message that was not applied, or was applied with something
+        unknown in it. The callback runs after whatever was applied has been
+        delivered.
+        """
         self._rejected_callbacks.append(callback)
 
     def on_raw(self, callback: Callable[[str, bytes], None]) -> None:
-        """Call callback(topic, payload) for every MQTT message, on any topic, with the bytes as received.
+        """Call callback(topic, payload) for every MQTT message, on any topic.
 
+        The payload is the bytes as received.
         Nothing extra runs per message until the first raw callback is registered.
         """
         self._raw_callbacks.append(callback)
@@ -413,7 +435,10 @@ class NavimowSDK:
         self._mqtt.on_message_seen = self._on_mqtt_message_seen
 
     def get_cached_location(self, device_id: str) -> DeviceLocation | None:
-        """The merged location record for device_id, or None before any location entry or restore."""
+        """The merged location record for device_id.
+
+        None before any location entry or restore.
+        """
         return self._location.get(device_id)
 
     def restore_location(self, device_id: str, location: DeviceLocation) -> None:
@@ -436,7 +461,10 @@ class NavimowSDK:
         return None if updated_at is None else time.monotonic() - updated_at
 
     def get_cached_attributes_age(self, device_id: str) -> float | None:
-        """Seconds since the cached attributes message for device_id arrived, or None without one."""
+        """Seconds since the cached attributes message for device_id arrived.
+
+        None without one.
+        """
         updated_at = self._attributes_cache_updated_at.get(device_id)
         return None if updated_at is None else time.monotonic() - updated_at
 
@@ -445,26 +473,32 @@ class NavimowSDK:
         return self._state_cache_received_at.get(device_id)
 
     async def _on_mqtt_raw(self, topic: str, payload: bytes) -> None:
-        """Call each raw callback with the topic and bytes; one that raises is logged and the rest still run."""
+        """Call each raw callback with the topic and bytes.
+
+        One that raises is logged and the rest still run.
+        """
         for callback in list(self._raw_callbacks):
             try:
                 callback(topic, payload)
             except Exception:
                 _LOGGER.exception("Navimow raw callback %r failed for topic %s", callback, topic)
 
-    async def _on_mqtt_message_seen(self, device_id: str, channel: str, received_at: datetime) -> None:
+    async def _on_mqtt_message_seen(
+        self, device_id: str, channel: str, received_at: datetime
+    ) -> None:
         """Call each message-seen callback; one that raises is logged and the rest still run."""
         for callback in list(self._seen_callbacks):
             try:
                 callback(device_id, channel, received_at)
             except Exception:
                 _LOGGER.exception(
-                    "Navimow message-seen callback %r failed for device %s channel %s", callback, device_id, channel
+                    "Navimow message-seen callback %r failed for device %s channel %s",
+                    callback,
+                    device_id,
+                    channel,
                 )
 
-    async def _on_mqtt_message(
-        self, topic: str, payload: bytes, device_id: str
-    ) -> None:
+    async def _on_mqtt_message(self, topic: str, payload: bytes, device_id: str) -> None:
         _, channel = parse_topic(topic)
         if channel == "location":
             self._on_location_message(topic, payload, device_id)
@@ -476,7 +510,9 @@ class NavimowSDK:
         received_at = datetime.now(UTC)
         payload_dict = _decode_json(payload)
         if not isinstance(payload_dict, dict):
-            self._reject(channel, topic, device_id, "unparsable", ["unparsable"], payload, received_at)
+            self._reject(
+                channel, topic, device_id, "unparsable", ["unparsable"], payload, received_at
+            )
             return
 
         payload_dict.setdefault("device_id", device_id)
@@ -517,7 +553,15 @@ class NavimowSDK:
             msg = DeviceStateMessage.from_dict(payload_dict)
         except (TypeError, ValueError):
             ordered = [reason for reason in REASON_PRIORITY if reason in ("unparsable", *reasons)]
-            self._reject("state", topic, payload_dict["device_id"], "unparsable", ordered, payload, received_at)
+            self._reject(
+                "state",
+                topic,
+                payload_dict["device_id"],
+                "unparsable",
+                ordered,
+                payload,
+                received_at,
+            )
             return
         msg.received_at = received_at
         msg.original = _original_payload(payload)
@@ -543,7 +587,9 @@ class NavimowSDK:
             # A message that was not applied names the reason that blocked it; one that
             # was applied names unknown_field.
             ordered = [reason for reason in REASON_PRIORITY if reason in reasons]
-            self._reject("state", topic, msg.device_id, blocked or ordered[0], ordered, payload, received_at)
+            self._reject(
+                "state", topic, msg.device_id, blocked or ordered[0], ordered, payload, received_at
+            )
 
     def _on_location_message(self, topic: str, payload: bytes, device_id: str) -> None:
         received_at = datetime.now(UTC)
@@ -557,7 +603,13 @@ class NavimowSDK:
             self._dispatch(self._location_callbacks, message, "location")
         if parsed.reasons:
             self._reject(
-                "location", topic, device_id, parsed.reason, parsed.reasons, payload, received_at,
+                "location",
+                topic,
+                device_id,
+                parsed.reason,
+                parsed.reasons,
+                payload,
+                received_at,
                 skipped=tuple(parsed.skipped),
             )
 

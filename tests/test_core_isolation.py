@@ -153,7 +153,8 @@ assert DeviceStateMessage.from_dict({"state": "isRunning"}).state == "mowing"
 assert Device.from_dict({"id": "d"}).id == "d"
 assert MowerCommand.START.value == "start" and MowerError.NONE.value == "none"
 assert DeviceEventMessage and DeviceAttributesMessage and DeviceCommandMessage
-assert set(mower_sdk.__all__) <= set(dir(mower_sdk))  # dir() lists the lazy names without loading them
+# dir() lists the lazy names without loading them
+assert set(mower_sdk.__all__) <= set(dir(mower_sdk))
 
 print(json.dumps({
     "legacy": sorted(m for m in sys.modules if m.startswith("mower_sdk.legacy")),
@@ -211,7 +212,11 @@ print(json.dumps({{
             "ThingStatusMessage",
             "thing_models",
         ),
-        (["mower_sdk.NavimowCloud", "import mower_sdk.cloud", "mower_sdk.cloud.NavimowCloud"], "NavimowCloud", "cloud"),
+        (
+            ["mower_sdk.NavimowCloud", "import mower_sdk.cloud", "mower_sdk.cloud.NavimowCloud"],
+            "NavimowCloud",
+            "cloud",
+        ),
     ],
     ids=["errors", "thing_models", "name_then_shim"],
 )

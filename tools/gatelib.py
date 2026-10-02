@@ -30,8 +30,9 @@ from pathlib import Path
 SCISSORS = "------------------------ >8 ------------------------"
 
 
-def git(*args: str, cwd: str | Path | None = None, check: bool = True,
-        env: dict[str, str] | None = None) -> str:
+def git(
+    *args: str, cwd: str | Path | None = None, check: bool = True, env: dict[str, str] | None = None
+) -> str:
     return subprocess.run(
         ["git", *args], cwd=cwd, check=check, capture_output=True, text=True, env=env
     ).stdout
@@ -131,11 +132,25 @@ def load_local_rules() -> list[LocalPattern]:
 # --- names of files git does not track ---------------------------------------
 
 _NOISE_PARTS = {
-    "__pycache__", ".venv", "venv", ".pytest_cache", ".ruff_cache", ".mypy_cache",
-    "node_modules", "build", "dist", "htmlcov", ".git", ".idea", ".vscode", ".nox", ".tox",
+    "__pycache__",
+    ".venv",
+    "venv",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".mypy_cache",
+    "node_modules",
+    "build",
+    "dist",
+    "htmlcov",
+    ".git",
+    ".idea",
+    ".vscode",
+    ".nox",
+    ".tox",
     # The issue tracker's and its database's directories, spelt in pieces so
     # the names are not in the text this checker reads.
-    "." + "beads", "." + "dolt",
+    "." + "beads",
+    "." + "dolt",
 }
 _NOISE_SUFFIXES = (".pyc", ".pyo", ".egg-info", ".DS_Store", ".coverage", ".db")
 _WALK_LIMIT = 5000
@@ -159,7 +174,7 @@ def _worktrees() -> list[Path]:
     paths = []
     for line in git("worktree", "list", "--porcelain").splitlines():
         if line.startswith("worktree "):
-            path = Path(line[len("worktree "):])
+            path = Path(line[len("worktree ") :])
             if path.is_dir():
                 paths.append(path)
     return paths
@@ -191,7 +206,8 @@ def _untracked_in(worktree: Path, own: bool) -> set[str]:
             count = 0
             for dirpath, dirnames, filenames in os.walk(worktree / entry):
                 dirnames[:] = [
-                    d for d in dirnames
+                    d
+                    for d in dirnames
                     if not _noise(os.path.relpath(os.path.join(dirpath, d), worktree))
                 ]
                 for filename in filenames:
@@ -247,7 +263,8 @@ def untracked_name_regex() -> re.Pattern[str] | None:
                 if not _word_like(name):
                     candidates.add(name)
     candidates = {
-        c for c in candidates
+        c
+        for c in candidates
         if c and c not in tracked and c not in tracked_basenames and len(c) >= 3
     }
     if not candidates:
@@ -352,7 +369,14 @@ def lines_to_check(files: list[str]) -> dict[str, list[tuple[int, str]]]:
             result[name] = list(enumerate(text.splitlines(), 1))
         return result
     diff = git_bytes(
-        *_diff_args(), "-U0", "--no-color", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/", "--", *files
+        *_diff_args(),
+        "-U0",
+        "--no-color",
+        "--no-ext-diff",
+        "--src-prefix=a/",
+        "--dst-prefix=b/",
+        "--",
+        *files,
     )
     return _parse_added(diff.decode("utf-8", "replace"))
 
@@ -365,7 +389,7 @@ def changed_files() -> list[tuple[str, str]]:
 
 
 def comment_char() -> str:
-    """git's comment character for messages (core.commentChar; "auto" reads as "#")."""
+    """Git's comment character for messages (core.commentChar; "auto" reads as "#")."""
     configured = git("config", "--get", "core.commentChar", check=False).strip()
     return configured if configured and configured != "auto" else "#"
 
@@ -406,11 +430,15 @@ def trailer_start(lines: list[str]) -> int:
     while start and lines[start - 1].strip():
         start -= 1
     block = lines[start:end]
-    if start and block and all(_TRAILER.match(line) or _CHERRY_PICKED.match(line) for line in block):
+    if (
+        start
+        and block
+        and all(_TRAILER.match(line) or _CHERRY_PICKED.match(line) for line in block)
+    ):
         return start
     return len(lines)
 
 
 def trailer_block(lines: list[str]) -> list[str]:
     """The trailer lines at the end of a message (see ``trailer_start``)."""
-    return [line for line in lines[trailer_start(lines):] if line.strip()]
+    return [line for line in lines[trailer_start(lines) :] if line.strip()]

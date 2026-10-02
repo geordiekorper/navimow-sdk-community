@@ -12,7 +12,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import gatelib  # noqa: E402
+import gatelib
 
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG = ROOT / ".pre-commit-config.yaml"
@@ -36,7 +36,11 @@ def _isolated_env(global_config: Path) -> dict[str, str]:
     global hooks path, a commit template, another comment character) must
     not reach the throwaway repositories.
     """
-    return {**gatelib.foreign_env(), "GIT_CONFIG_GLOBAL": str(global_config), "GIT_CONFIG_NOSYSTEM": "1"}
+    return {
+        **gatelib.foreign_env(),
+        "GIT_CONFIG_GLOBAL": str(global_config),
+        "GIT_CONFIG_NOSYSTEM": "1",
+    }
 
 
 @pytest.fixture(scope="session")
@@ -63,8 +67,9 @@ def template(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 @pytest.fixture
 def repo(template: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """A git repository with one commit (and this repository's pre-commit
-    configuration), as the current directory.
+    """A git repository with one commit, as the current directory.
+
+    It holds this repository's pre-commit configuration.
 
     The checks read the environment, so the caller's git state and git
     configuration, a Claude session, a pre-commit range and a pattern file

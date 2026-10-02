@@ -66,8 +66,12 @@ def top_level_node(tree: ast.Module, name: str, where: str) -> ast.AST:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--base", default="HEAD", help="commit holding the pre-extraction core modules")
-    parser.add_argument("--target", help="commit holding the extracted files (default: working tree)")
+    parser.add_argument(
+        "--base", default="HEAD", help="commit holding the pre-extraction core modules"
+    )
+    parser.add_argument(
+        "--target", help="commit holding the extracted files (default: working tree)"
+    )
     args = parser.parse_args(argv)
 
     failures = 0
@@ -76,7 +80,9 @@ def main(argv: list[str] | None = None) -> int:
         core_tree = ast.parse(source_at(args.base, core_path), filename=f"{args.base}:{core_path}")
         for name in names:
             extracted = ast.dump(top_level_node(legacy_tree, name, legacy_path), indent=1)
-            original = ast.dump(top_level_node(core_tree, name, f"{args.base}:{core_path}"), indent=1)
+            original = ast.dump(
+                top_level_node(core_tree, name, f"{args.base}:{core_path}"), indent=1
+            )
             if extracted == original:
                 print(f"ok    {name}: {core_path}@{args.base} == {legacy_path}")
                 continue

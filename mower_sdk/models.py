@@ -18,8 +18,14 @@ from mower_sdk.errors import ERROR_MESSAGES, MowerAPIError
 if TYPE_CHECKING:
     from mower_sdk.legacy.thing_models import (
         ThingEventMessage as ThingEventMessage,
+    )
+    from mower_sdk.legacy.thing_models import (
         ThingParams as ThingParams,
+    )
+    from mower_sdk.legacy.thing_models import (
         ThingPropertiesMessage as ThingPropertiesMessage,
+    )
+    from mower_sdk.legacy.thing_models import (
         ThingStatusMessage as ThingStatusMessage,
     )
 
@@ -347,7 +353,9 @@ def _endpoint(value: Any, key: str) -> tuple[str | None, int | None, str | None]
 
 
 def _broker_endpoint(data: dict[str, Any]) -> tuple[str | None, int | None, str | None]:
-    """The broker host, port and WebSocket path a credential reply names, each None when it names none.
+    """The broker host, port and WebSocket path a credential reply names.
+
+    Each is None when the reply names none.
 
     The host is mqttHost's, else a full mqttUrl's. The port is a full
     mqttUrl's, else mqttHost's: mqttUrl is the address the connection is made
@@ -398,10 +406,15 @@ class MqttConnectionInfo:
                 port that is not a number.
         """
         if not isinstance(data, dict):
-            raise MowerAPIError(f"{ERROR_MESSAGES['API_REQUEST_FAILED']}: the credential reply is not an object")
+            raise MowerAPIError(
+                f"{ERROR_MESSAGES['API_REQUEST_FAILED']}: the credential reply is not an object"
+            )
         host, port, ws_path = _broker_endpoint(data)
         if host is None:
-            raise MowerAPIError(f"{ERROR_MESSAGES['API_REQUEST_FAILED']}: no broker (mqttHost) in the credential reply")
+            raise MowerAPIError(
+                f"{ERROR_MESSAGES['API_REQUEST_FAILED']}: "
+                "no broker (mqttHost) in the credential reply"
+            )
         return cls(
             broker=host,
             port=443 if port is None else port,
@@ -512,22 +525,51 @@ class Device:
 # the readers accept: DeviceStateMessage.from_dict also reads position, error,
 # metrics and signal_strength, which no mower has been seen to send, so a state
 # message carrying one of them is reported as a new field.
-STATE_KNOWN_FIELDS = frozenset({
-    "state", "vehicleState", "status", "battery", "capacityRemaining",
-    "timestamp", "device_id",
-})
-REST_STATUS_KNOWN_FIELDS = frozenset({
-    "id", "device_id", "deviceId", "vehicleState", "capacityRemaining",
-    "descriptiveCapacityRemaining", "battery",
-})
+STATE_KNOWN_FIELDS = frozenset(
+    {
+        "state",
+        "vehicleState",
+        "status",
+        "battery",
+        "capacityRemaining",
+        "timestamp",
+        "device_id",
+    }
+)
+REST_STATUS_KNOWN_FIELDS = frozenset(
+    {
+        "id",
+        "device_id",
+        "deviceId",
+        "vehicleState",
+        "capacityRemaining",
+        "descriptiveCapacityRemaining",
+        "battery",
+    }
+)
 
 # The payload keys DeviceStatus.from_dict reads into a field; every other key is
 # kept in extra.
-_DEVICE_STATUS_READ_KEYS = frozenset({
-    "status", "state", "vehicleState", "error_code", "capacityRemaining", "battery",
-    "descriptiveCapacityRemaining", "extra", "device_id", "id", "position",
-    "error_message", "mowing_time", "total_mowing_time", "signal_strength", "timestamp",
-})
+_DEVICE_STATUS_READ_KEYS = frozenset(
+    {
+        "status",
+        "state",
+        "vehicleState",
+        "error_code",
+        "capacityRemaining",
+        "battery",
+        "descriptiveCapacityRemaining",
+        "extra",
+        "device_id",
+        "id",
+        "position",
+        "error_message",
+        "mowing_time",
+        "total_mowing_time",
+        "signal_strength",
+        "timestamp",
+    }
+)
 
 
 def _mower_status(value: Any) -> MowerStatus:
@@ -604,9 +646,7 @@ class DeviceStatus:
         if "vehicleState" in data:
             extra["vehicleState"] = data.get("vehicleState")
         if "descriptiveCapacityRemaining" in data:
-            extra["descriptiveCapacityRemaining"] = data.get(
-                "descriptiveCapacityRemaining"
-            )
+            extra["descriptiveCapacityRemaining"] = data.get("descriptiveCapacityRemaining")
         if "capacityRemaining" in data:
             extra["capacityRemaining"] = data.get("capacityRemaining")
         if not extra:
@@ -676,7 +716,9 @@ class DeviceStatus:
         """
         status = _mower_status(message.state)
         if message.raw is not None:
-            carries_state = any(message.raw.get(key) is not None for key in ("state", "status", "vehicleState"))
+            carries_state = any(
+                message.raw.get(key) is not None for key in ("state", "status", "vehicleState")
+            )
         else:
             carries_state = message.state != MowerStatus.UNKNOWN.value
         if not carries_state and fallback_status is not None:
@@ -752,7 +794,9 @@ class DeviceStateMessage:
         )
 
     @classmethod
-    def from_status(cls, status: "DeviceStatus", received_at: datetime | None = None) -> "DeviceStateMessage":
+    def from_status(
+        cls, status: "DeviceStatus", received_at: datetime | None = None
+    ) -> "DeviceStateMessage":
         """A new state message from a REST DeviceStatus; the status is not changed.
 
         state is the status's enum value; battery, signal_strength and position
@@ -910,8 +954,10 @@ _MILLISECONDS_ABOVE = 100_000_000_000
 
 
 def _number(value: Any) -> float | None:
-    """A vendor number (often a string such as "100.00") as a float; None for a bool,
-    a non-finite value or anything float() cannot read."""
+    """A vendor number (often a string such as "100.00") as a float.
+
+    None for a bool, a non-finite value or anything float() cannot read.
+    """
     if isinstance(value, bool):
         return None
     try:
@@ -961,11 +1007,30 @@ def _from_iso(value: Any) -> datetime | None:
 
 
 _LOCATION_WHOLE_FIELDS = (
-    "vehicle_state", "pose_at", "current_zone", "zone_at", "route_progress", "progress_at",
-    "action", "sub_action", "mow_start_type", "task_at", "target_at", "target_last_at", "dock_at",
+    "vehicle_state",
+    "pose_at",
+    "current_zone",
+    "zone_at",
+    "route_progress",
+    "progress_at",
+    "action",
+    "sub_action",
+    "mow_start_type",
+    "task_at",
+    "target_at",
+    "target_last_at",
+    "dock_at",
 )
 _LOCATION_NUMBER_FIELDS = (
-    "x", "y", "theta", "mowing_percentage", "area_m2", "week_area_m2", "dock_x", "dock_y", "dock_theta",
+    "x",
+    "y",
+    "theta",
+    "mowing_percentage",
+    "area_m2",
+    "week_area_m2",
+    "dock_x",
+    "dock_y",
+    "dock_theta",
 )
 
 
@@ -1008,8 +1073,9 @@ class DeviceLocation:
     the same grid as the pose, None until the first such pose; ``dock_theta``,
     the heading of the latest pose in the estimate (the previous one's when a
     pose omits it; after a detected move, the latest heading among the poses
-    that showed it, never the old dock's); ``dock_at``, that pose's mower time, None when it was sent
-    without one; ``dock_samples``, how many poses the estimate holds, capped
+    that showed it, never the old dock's); ``dock_at``, that pose's mower
+    time, None when it was sent without one; ``dock_samples``, how many poses
+    the estimate holds, capped
     (200 by default), 0 without an estimate. The estimate is a capped mean: once
     the cap is reached each docked pose moves it by one over the cap of the way,
     so a dock moved by less than the move distance (1 m by default) is followed
@@ -1065,7 +1131,11 @@ class DeviceLocation:
 
     @property
     def progress_percent(self) -> float | None:
-        """The route reading as a percentage, else the latest task entry's mowingPercentage, else None."""
+        """The mowing progress as a percentage, or None.
+
+        The route reading when there is one, else the latest task entry's
+        mowingPercentage.
+        """
         if self.route_progress is not None:
             return self.route_progress / 100
         return self.mowing_percentage
@@ -1080,7 +1150,10 @@ class DeviceLocation:
         return "none"
 
     def to_dict(self) -> dict[str, Any]:
-        """The record as JSON-ready values: times as ISO 8601, partition ids as a list, marks keyed by type."""
+        """The record as JSON-ready values.
+
+        Times are ISO 8601 strings, partition ids a list, marks keyed by type.
+        """
         data: dict[str, Any] = {}
         for item in fields(self):
             value = getattr(self, item.name)
@@ -1095,7 +1168,9 @@ class DeviceLocation:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "DeviceLocation":
-        """The record from to_dict()'s output; absent or unreadable values are None, absent marks empty.
+        """The record from to_dict()'s output.
+
+        Absent or unreadable values are None, absent marks empty.
 
         dock_samples is 0 when absent, unreadable or negative.
         """
@@ -1120,7 +1195,8 @@ class DeviceLocation:
         values["marks"] = {
             entry_type: mark
             for entry_type, mark in (
-                (_whole(key), _whole(value)) for key, value in (marks.items() if isinstance(marks, dict) else ())
+                (_whole(key), _whole(value))
+                for key, value in (marks.items() if isinstance(marks, dict) else ())
             )
             if entry_type is not None and mark is not None
         }

@@ -13,7 +13,8 @@
 #   wheel   nox -s wheel: build, check that mower_sdk and mower_sdk.legacy
 #           ship, install into a fresh venv, test from another directory, so
 #           a wheel that omits a package fails here and nowhere else
-#   ruff    nox -s lint: blocking; legacy code keeps only the F rules
+#   ruff    nox -s lint: the rules and the formatting, blocking; legacy code
+#           keeps only the F rules and is not formatted
 #           (pyproject.toml)
 #   hygiene the pre-commit hooks over every file; gitlint and the message
 #           leak check over the commit messages of the pull request (or push)
@@ -109,8 +110,9 @@ jobs:
           cache-dependency-path: noxfile.py
       - run: python -m pip install "$NOX"
       # Rule set: [tool.ruff.lint] in pyproject.toml; mower_sdk/legacy/ keeps
-      # only the F rules through per-file-ignores. Any finding fails the job.
-      - name: ruff check
+      # only the F rules through per-file-ignores. Any finding fails the job,
+      # and so does a file that ruff format would change.
+      - name: ruff check and ruff format --check
         run: nox -s lint -- --output-format github .
 
   hygiene:
@@ -150,8 +152,8 @@ jobs:
       - name: Every hook over every file
         env:
           GATE_MODE: content
-          # ruff-check: the ruff job checks the tree already.
-          SKIP: ruff-check
+          # ruff-check, ruff-format: the ruff job checks the tree already.
+          SKIP: ruff-check,ruff-format
         run: pre-commit run --all-files --show-diff-on-failure
       - name: The range's commit messages
         if: env.BASE != ''

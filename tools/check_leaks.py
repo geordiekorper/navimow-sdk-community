@@ -22,7 +22,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import gatelib  # noqa: E402
+import gatelib
+
 
 def _local_pattern_hits(
     patterns: list[gatelib.LocalPattern], text: str, scope: str, is_trailer: bool
@@ -52,7 +53,9 @@ def check_texts(items: list[tuple[str, int, str, bool]], scope: str) -> list[str
         if local_paths is not None:
             hits += [f"local path: {m.group(0)}" for m in local_paths.finditer(text)]
         if untracked is not None:
-            hits += [f"names a file git does not track: {m.group(0)}" for m in untracked.finditer(text)]
+            hits += [
+                f"names a file git does not track: {m.group(0)}" for m in untracked.finditer(text)
+            ]
         hits += _local_pattern_hits(patterns, text, scope, is_trailer)
         findings += [f"{path}:{number}: {hit}" for hit in hits]
     return findings

@@ -90,7 +90,9 @@ def git(*args: str, check: bool = True, **kwargs: object) -> subprocess.Complete
     )
 
 
-def git_bytes(*args: str, check: bool = True, **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+def git_bytes(
+    *args: str, check: bool = True, **kwargs: object
+) -> subprocess.CompletedProcess[bytes]:
     """Run git and capture its output as bytes; for anything that carries file content."""
     return subprocess.run(
         ["git", "-C", str(REPO_ROOT), *args], capture_output=True, check=check, **kwargs
@@ -150,7 +152,9 @@ def split_lines(data: bytes) -> list[bytes]:
     return lines
 
 
-def rewrite_path_line(line: bytes, patterns: list[re.Pattern[bytes]], moved: dict[bytes, bytes]) -> bytes:
+def rewrite_path_line(
+    line: bytes, patterns: list[re.Pattern[bytes]], moved: dict[bytes, bytes]
+) -> bytes:
     body = line.rstrip(b"\r\n")
     ending = line[len(body) :]
     for pattern in patterns:
@@ -218,7 +222,7 @@ def rewrite_diff(diff: bytes, moved: dict[bytes, bytes]) -> bytes:
 
 
 def mail_for(commit: str) -> bytes:
-    """git's own mbox entry for the commit: the From line, the headers and the message.
+    """Git's own mbox entry for the commit: the From line, the headers and the message.
 
     The mboxrd form quotes message lines that start with "From ", so the entry
     splits correctly whatever the message holds; git am --patch-format=mboxrd
@@ -239,7 +243,9 @@ def with_trailer(mail: bytes, commit: str) -> bytes:
     headers, _, body = mail.partition(b"\n\n")
     body = body.rstrip(b"\n")
     last_paragraph = body.rsplit(b"\n\n", 1)[-1].split(b"\n") if body else []
-    in_trailer_block = bool(last_paragraph) and all(TRAILER_LINE.match(line) for line in last_paragraph)
+    in_trailer_block = bool(last_paragraph) and all(
+        TRAILER_LINE.match(line) for line in last_paragraph
+    )
     gap = b"" if not body else b"\n" if in_trailer_block else b"\n\n"
     return headers + b"\n\n" + body + gap + TRAILER + b": " + commit.encode("ascii") + b"\n"
 
@@ -253,7 +259,11 @@ def diff_for(commit: str, parents: list[str]) -> bytes:
 
 def patch_for(commit: str, parents: list[str], moved: dict[bytes, bytes]) -> bytes:
     """One mbox entry: the mail with its trailer, a separator, and the rewritten diff."""
-    return with_trailer(mail_for(commit), commit) + b"---\n\n" + rewrite_diff(diff_for(commit, parents), moved)
+    return (
+        with_trailer(mail_for(commit), commit)
+        + b"---\n\n"
+        + rewrite_diff(diff_for(commit, parents), moved)
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -325,14 +335,19 @@ def main(argv: list[str] | None = None) -> int:
 
     dirty = git("status", "--porcelain", "--untracked-files=no").stdout.strip()
     if dirty:
-        print("refused: the working tree has uncommitted changes; git am needs a clean index", file=sys.stderr)
+        print(
+            "refused: the working tree has uncommitted changes; git am needs a clean index",
+            file=sys.stderr,
+        )
         print(dirty, file=sys.stderr)
         return 3
 
     # 3. Apply with the three-way fallback; git am reads the mbox from stdin. --keep-cr
     # stops git mailsplit from stripping the CR of CRLF line ends, which here can only
     # be file content, because the mbox itself is written with LF ends.
-    result = git_bytes("am", "-3", "--keep-cr", "--patch-format=mboxrd", input=rewritten, check=False)
+    result = git_bytes(
+        "am", "-3", "--keep-cr", "--patch-format=mboxrd", input=rewritten, check=False
+    )
     sys.stdout.flush()
     sys.stdout.buffer.write(result.stdout)
     sys.stdout.buffer.flush()

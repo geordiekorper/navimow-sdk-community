@@ -79,7 +79,9 @@ WRAPPERS = [
 def test_sync_wrapper_warns_and_delegates(name: str, args: tuple, body: Any, expected: Any) -> None:
     api, session = api_with(FakeResponse(body))
 
-    with pytest.warns(DeprecationWarning, match=rf"^MowerAPI\.{name} is deprecated: use MowerAPI\.async_{name}\.") as record:
+    with pytest.warns(
+        DeprecationWarning, match=rf"^MowerAPI\.{name} is deprecated: use MowerAPI\.async_{name}\."
+    ) as record:
         result = getattr(api, name)(*args)
 
     assert result == expected

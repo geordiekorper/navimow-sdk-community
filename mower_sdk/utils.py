@@ -4,4 +4,4 @@ from mower_sdk._deprecation import warn_legacy as _warn_legacy
 
 _warn_legacy("utils", __name__)
 
-from mower_sdk.legacy.utils import *  # noqa: E402, F403
+from mower_sdk.legacy.utils import *  # noqa: F403

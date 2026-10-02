@@ -9,8 +9,8 @@ picked up, and the names the community edition has added to that module, which
 ``COMMUNITY_ADDITIONS`` records. The imported helpers that a bare star import
 used to leak (``json``, ``asyncio``, ``dataclass`` and the like) no longer
 arrive; plain attribute access to them is unchanged. A module the community
-edition added (``mower_sdk.location``, ``mower_sdk.watchdog``) has no inventory entry: its ``__all__``
-is exactly what ``COMMUNITY_ADDITIONS`` records for it.
+edition added (``mower_sdk.location``, ``mower_sdk.watchdog``) has no inventory
+entry: its ``__all__`` is exactly what ``COMMUNITY_ADDITIONS`` records for it.
 """
 
 from __future__ import annotations
@@ -25,7 +25,13 @@ import pytest
 INVENTORY = json.loads(
     Path(__file__).with_name("upstream_exports.json").read_text(encoding="utf-8")
 )
-MODULES = ["mower_sdk.mqtt", "mower_sdk.models", "mower_sdk.errors", "mower_sdk.location", "mower_sdk.watchdog"]
+MODULES = [
+    "mower_sdk.mqtt",
+    "mower_sdk.models",
+    "mower_sdk.errors",
+    "mower_sdk.location",
+    "mower_sdk.watchdog",
+]
 
 # Public names the community edition adds to a module's ``__all__`` beyond the
 # inventory: module name -> the names added. Each addition is listed here in the
@@ -116,7 +122,9 @@ def test_star_import_carries_the_module_attributes(module: str) -> None:
     arrived = star_import(module)
     loaded = importlib.import_module(module)
     for name, value in arrived.items():
-        assert value is getattr(loaded, name), f"{module}.{name} differs from the star-imported object"
+        assert value is getattr(loaded, name), (
+            f"{module}.{name} differs from the star-imported object"
+        )
 
 
 @pytest.mark.parametrize("module", MODULES)

@@ -13,11 +13,11 @@ from typing import Any
 import aiohttp
 
 from mower_sdk.errors import (
+    ERROR_MESSAGES,
     MowerAPIError,
     MowerAuthRequiredError,
     MowerRateLimitedError,
     MowerTransportError,
-    ERROR_MESSAGES,
 )
 from mower_sdk.models import (
     CommandReceipt,
@@ -41,6 +41,7 @@ def _error_body(body: bytes) -> str:
     if len(text) <= _ERROR_BODY_LIMIT:
         return text
     return f"{text[:_ERROR_BODY_LIMIT]}… [truncated, {len(text)} characters]"
+
 
 # The spellings under which a reply might carry its command number.
 _COMMAND_NUMBER_KEYS = (
@@ -323,7 +324,11 @@ class MowerAPI:
         """
         payload = data.get("payload") if isinstance(data, dict) else None
         devices = payload.get("devices") if isinstance(payload, dict) else None
-        return [entry for entry in devices if isinstance(entry, dict)] if isinstance(devices, list) else []
+        return (
+            [entry for entry in devices if isinstance(entry, dict)]
+            if isinstance(devices, list)
+            else []
+        )
 
     async def async_get_devices_raw(self) -> list[dict[str, Any]]:
         """Fetch the device list as the cloud sent it.
@@ -423,8 +428,9 @@ class MowerAPI:
         One getVehicleStatus request; returns the dict entries of the reply's
         data.payload.devices unchanged, an empty list for a successful reply
         without entries (data, payload or devices missing or null), and an empty
-        list, without a request, for no ids. An X430's entry carried id, capacityRemaining, vehicleState and
-        descriptiveCapacityRemaining; a field the cloud starts sending reaches the
+        list, without a request, for no ids. An X430's entry carried id,
+        capacityRemaining, vehicleState and descriptiveCapacityRemaining; a field
+        the cloud starts sending reaches the
         caller here first. async_get_device_statuses reads the same entries into
         DeviceStatus.
 
@@ -446,9 +452,7 @@ class MowerAPI:
         )
         return self._device_entries(self._unwrap(response))
 
-    async def async_get_device_statuses(
-        self, device_ids: list[str]
-    ) -> dict[str, DeviceStatus]:
+    async def async_get_device_statuses(self, device_ids: list[str]) -> dict[str, DeviceStatus]:
         """Fetch the status of several devices asynchronously.
 
         Args:
@@ -566,18 +570,15 @@ class MowerAPI:
         response = await self._async_request(
             "POST",
             "/openapi/smarthome/sendCommands",
-            data={
-                "commands": [
-                    {"devices": [{"id": device_id}], "execution": execution}
-                ]
-            },
+            data={"commands": [{"devices": [{"id": device_id}], "execution": execution}]},
         )
         data = self._unwrap(response)
         command_results = _command_results(data)
         for result in command_results:
             if result.get("status") == "ERROR":
                 error_code = result.get("errorCode") or "COMMAND_FAILED"
-                # Treat as success when the device is already in the target state, so a repeated tap or a stale state view does not raise
+                # Treat as success when the device is already in the target state,
+                # so a repeated tap or a stale state view does not raise
                 if error_code == "alreadyInState":
                     continue
                 raise MowerAPIError(
@@ -586,9 +587,7 @@ class MowerAPI:
                 )
         return data, command_results
 
-    async def async_send_command(
-        self, device_id: str, command: MowerCommand
-    ) -> dict[str, Any]:
+    async def async_send_command(self, device_id: str, command: MowerCommand) -> dict[str, Any]:
         """Send a control command asynchronously.
 
         Args:
@@ -643,9 +642,7 @@ class MowerAPI:
             results=tuple(results),
         )
 
-    def send_command(
-        self, device_id: str, command: MowerCommand
-    ) -> dict[str, Any]:
+    def send_command(self, device_id: str, command: MowerCommand) -> dict[str, Any]:
         """Send a control command synchronously.
 
         Deprecated: use async_send_command. This wrapper calls asyncio.run and

@@ -33,11 +33,13 @@ repos:
       - id: actionlint
         language_version: 1.25.5
 
-  # The same ruff version as the CI ruff job; the rule set is in pyproject.toml.
+  # The same ruff version as the CI ruff job; the rule set and what the
+  # formatter leaves alone are in pyproject.toml.
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.16.9
     hooks:
       - id: ruff-check
+      - id: ruff-format
 
   # Commit-message rules: .gitlint, and the repository's own in
   # tools/gitlint_rules.py.

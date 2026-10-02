@@ -59,12 +59,27 @@ __all__ = [
 # Every entry field the decoder knows. An entry with another field still applies
 # what it knows, and the message is marked unknown_field, so a field the mower
 # starts sending is noticed.
-LOCATION_KNOWN_FIELDS = frozenset({
-    "type", "time", "postureX", "postureY", "postureTheta", "vehicleState",
-    "currentMowBoundary", "currentMowProgress", "mowingPercentage",
-    "subtotalArea", "mowingWeekArea", "partitionIds", "taskDelay", "action",
-    "subAction", "mowStartType", "mapWorkPosition",
-})
+LOCATION_KNOWN_FIELDS = frozenset(
+    {
+        "type",
+        "time",
+        "postureX",
+        "postureY",
+        "postureTheta",
+        "vehicleState",
+        "currentMowBoundary",
+        "currentMowProgress",
+        "mowingPercentage",
+        "subtotalArea",
+        "mowingWeekArea",
+        "partitionIds",
+        "taskDelay",
+        "action",
+        "subAction",
+        "mowStartType",
+        "mapWorkPosition",
+    }
+)
 LOCATION_ENTRY_TYPES = frozenset({1, 2, 3, 4})
 
 # Entry times outside this window are not believed: before 2020, or more than five
@@ -75,8 +90,12 @@ TIME_AHEAD_MAX_MS = 5 * 60 * 1000
 # When a message earns several reasons, ParsedLocation.reason is the first of
 # these present; all of them are in ParsedLocation.reasons.
 REASON_PRIORITY = (
-    "unparsable", "implausible_time", "unknown_type", "unknown_field",
-    "stale", "placeholder",
+    "unparsable",
+    "implausible_time",
+    "unknown_type",
+    "unknown_field",
+    "stale",
+    "placeholder",
 )
 
 # The pose codes that mean the mower is on its dock: 1 docked, 2 charging.
@@ -134,7 +153,9 @@ class TargetZone(StrEnum):
 MOW_ALL_STATES = frozenset({"mowing", "paused"})
 
 
-def target_zone(location: DeviceLocation | None, status: str | MowerStatus | None) -> int | TargetZone | None:
+def target_zone(
+    location: DeviceLocation | None, status: str | MowerStatus | None
+) -> int | TargetZone | None:
     """The zone the mower is targeting, as far as the target report and the mower's state tell.
 
     None before any target report (location is None, or its partition_ids is
@@ -177,8 +198,11 @@ def _in_time_order(entries: list[Any]) -> list[Any]:
     is stable, so equal times keep their order.
     """
     timed = [
-        (i, entry_time) for i, item in enumerate(entries)
-        if isinstance(item, dict) and type(item.get("type")) is int and item["type"] in _OBSERVED_AT
+        (i, entry_time)
+        for i, item in enumerate(entries)
+        if isinstance(item, dict)
+        and type(item.get("type")) is int
+        and item["type"] in _OBSERVED_AT
         and (entry_time := _entry_time(item))
     ]
     ordered = sorted(timed, key=lambda slot: slot[1])
@@ -224,7 +248,9 @@ def _entry_fields(entry_type: int, item: dict[str, Any]) -> dict[str, Any]:
             action=_whole(item.get("action")),
             sub_action=_whole(item.get("subAction")),
             mow_start_type=_whole(item.get("mowStartType")),
-            map_work_position=None if item.get("mapWorkPosition") is None else str(item["mapWorkPosition"]),
+            map_work_position=None
+            if item.get("mapWorkPosition") is None
+            else str(item["mapWorkPosition"]),
         )
         return own
     if entry_type == 3:
@@ -263,9 +289,14 @@ class LocationDecoder:
         dock_move_distance_m: float = DOCK_MOVE_DISTANCE_M,
         dock_move_samples: int = DOCK_MOVE_SAMPLES,
     ) -> None:
-        for name, count in (("dock_max_samples", dock_max_samples), ("dock_move_samples", dock_move_samples)):
+        for name, count in (
+            ("dock_max_samples", dock_max_samples),
+            ("dock_move_samples", dock_move_samples),
+        ):
             if isinstance(count, bool) or not isinstance(count, int) or count < 1:
-                raise ValueError(f"LocationDecoder: {name} must be a whole number of at least 1, got {count!r}")
+                raise ValueError(
+                    f"LocationDecoder: {name} must be a whole number of at least 1, got {count!r}"
+                )
         if (
             isinstance(dock_move_distance_m, bool)
             or not isinstance(dock_move_distance_m, int | float)
@@ -273,7 +304,8 @@ class LocationDecoder:
             or dock_move_distance_m <= 0
         ):
             raise ValueError(
-                f"LocationDecoder: dock_move_distance_m must be a finite number above 0, got {dock_move_distance_m!r}"
+                "LocationDecoder: dock_move_distance_m must be a finite number above 0, "
+                f"got {dock_move_distance_m!r}"
             )
         self.dock_max_samples = dock_max_samples
         self.dock_move_distance_m = float(dock_move_distance_m)
@@ -347,7 +379,9 @@ class LocationDecoder:
         record["device_id"] = device_id
         record["marks"] = dict(current.marks)
 
-        def skip(reason: str, entry_type: int | None, entry_time: int | None, own: dict[str, Any]) -> None:
+        def skip(
+            reason: str, entry_type: int | None, entry_time: int | None, own: dict[str, Any]
+        ) -> None:
             result._reject(reason)
             result.skipped.append(
                 SkippedLocationEntry(
@@ -368,7 +402,12 @@ class LocationDecoder:
             if not item.keys() <= LOCATION_KNOWN_FIELDS:
                 result._reject("unknown_field")
             if type(entry_type) is not int or entry_type not in LOCATION_ENTRY_TYPES:
-                skip("unknown_type", entry_type if type(entry_type) is int else None, _whole(item.get("time")), {})
+                skip(
+                    "unknown_type",
+                    entry_type if type(entry_type) is int else None,
+                    _whole(item.get("time")),
+                    {},
+                )
                 continue
             if entry_type == 4 and "taskDelay" not in item:
                 continue  # the reconnect-time shape: no delay in it, the pose has the state
@@ -402,19 +441,27 @@ class LocationDecoder:
                 # never counted twice. An untimed docked pose is a sample too: the
                 # position is real, only its time is unknown, so dock_at becomes None.
                 if own["vehicle_state"] in DOCK_VEHICLE_STATES:
-                    self._dock_sample(device_id, record, own["x"], own["y"], own["theta"], entry_time)
+                    self._dock_sample(
+                        device_id, record, own["x"], own["y"], own["theta"], entry_time
+                    )
             elif entry_type == 2:
                 if "current_zone" in own:
                     record.update(current_zone=own["current_zone"], zone_at=entry_time)
                 if "route_progress" in own:
                     record.update(route_progress=own["route_progress"], progress_at=entry_time)
-                task = {key: value for key, value in own.items() if key not in ("current_zone", "route_progress")}
+                task = {
+                    key: value
+                    for key, value in own.items()
+                    if key not in ("current_zone", "route_progress")
+                }
                 record.update(task, task_at=entry_time)
             elif entry_type == 3:
                 ids = own["partition_ids"]
                 if record["partition_ids"] is None or set(ids) != set(record["partition_ids"]):
                     record.update(partition_ids=ids, target_at=entry_time)
-                record["target_last_at"] = entry_time  # a repeat of the same set, in any order, only advances this
+                record["target_last_at"] = (
+                    entry_time  # a repeat of the same set, in any order, only advances this
+                )
             else:
                 record.update(task_delay=own["task_delay"], delay_received_at=received_at)
 
@@ -437,7 +484,13 @@ class LocationDecoder:
         return result
 
     def _dock_sample(
-        self, device_id: str, record: dict[str, Any], x: float, y: float, theta: float | None, entry_time: int | None
+        self,
+        device_id: str,
+        record: dict[str, Any],
+        x: float,
+        y: float,
+        theta: float | None,
+        entry_time: int | None,
     ) -> None:
         """Fold one docked pose into the working record's dock fields."""
         latest = {
@@ -477,7 +530,10 @@ class LocationDecoder:
         # restart in the middle of a move starts the count again, and the move shows
         # at most one count later.
         candidate = self._dock_candidates.get(device_id)
-        if candidate is not None and math.hypot(x - candidate[0], y - candidate[1]) <= self.dock_move_distance_m:
+        if (
+            candidate is not None
+            and math.hypot(x - candidate[0], y - candidate[1]) <= self.dock_move_distance_m
+        ):
             count = candidate[2] + 1
             candidate = (
                 candidate[0] + (x - candidate[0]) / count,
@@ -501,7 +557,10 @@ class LocationDecoder:
 
     @staticmethod
     def _newest(record: dict[str, Any], entry_type: int) -> int | None:
-        """The newest applied time of entry_type: its mark or its observation time, whichever is newer."""
+        """The newest applied time of entry_type.
+
+        That is its mark or its observation time, whichever is newer.
+        """
         name = _OBSERVED_AT.get(entry_type)
         if name is None:
             return None

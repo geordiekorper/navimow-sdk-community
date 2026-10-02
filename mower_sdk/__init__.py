@@ -17,15 +17,28 @@ from typing import TYPE_CHECKING, Any
 from mower_sdk._deprecation import warn_legacy
 from mower_sdk.api import MowerAPI
 from mower_sdk.errors import (
+    ERROR_MESSAGES,
     MowerAPIError,
     MowerAuthRequiredError,
     MowerMQTTError,
     MowerRateLimitedError,
     MowerTransportError,
     MowerUnsupportedOperationError,
-    ERROR_MESSAGES,
+)
+from mower_sdk.location import (
+    DOCK_MAX_SAMPLES,
+    DOCK_MOVE_DISTANCE_M,
+    DOCK_MOVE_SAMPLES,
+    DOCK_VEHICLE_STATES,
+    MOW_ALL_STATES,
+    TargetZone,
+    target_zone,
 )
 from mower_sdk.models import (
+    RAW_STATE_TO_CANONICAL,
+    REST_STATUS_KNOWN_FIELDS,
+    STATE_KNOWN_FIELDS,
+    VEHICLE_STATE_TO_STATUS,
     CommandReceipt,
     CommandVerdict,
     Device,
@@ -40,25 +53,12 @@ from mower_sdk.models import (
     MowerError,
     MowerStatus,
     MqttConnectionInfo,
-    RAW_STATE_TO_CANONICAL,
-    REST_STATUS_KNOWN_FIELDS,
     RejectedMessage,
-    STATE_KNOWN_FIELDS,
     SkippedLocationEntry,
-    VEHICLE_STATE_TO_STATUS,
     battery_from_payload,
     canonical_state,
     mower_status_from_raw,
     mower_time_ms,
-)
-from mower_sdk.location import (
-    DOCK_MAX_SAMPLES,
-    DOCK_MOVE_DISTANCE_M,
-    DOCK_MOVE_SAMPLES,
-    DOCK_VEHICLE_STATES,
-    MOW_ALL_STATES,
-    TargetZone,
-    target_zone,
 )
 from mower_sdk.mqtt import ConnectionEvent, NavimowMQTT, ReceivedPayload, parse_topic
 from mower_sdk.sdk import NavimowSDK
@@ -76,14 +76,20 @@ if TYPE_CHECKING:
     from mower_sdk.legacy.state_manager import StateManager as StateManager
     from mower_sdk.legacy.thing_models import (
         ThingEventMessage as ThingEventMessage,
+    )
+    from mower_sdk.legacy.thing_models import (
         ThingPropertiesMessage as ThingPropertiesMessage,
+    )
+    from mower_sdk.legacy.thing_models import (
         ThingStatusMessage as ThingStatusMessage,
     )
 
 __version__ = "0.2.0a4"
 
 
-def _warn_if_upstream_installed(version_of: Callable[[str], str] = importlib.metadata.version) -> None:
+def _warn_if_upstream_installed(
+    version_of: Callable[[str], str] = importlib.metadata.version,
+) -> None:
     """Warn once when the upstream navimow-sdk distribution is listed beside this one.
 
     Both distributions install the mower_sdk package, so whichever was

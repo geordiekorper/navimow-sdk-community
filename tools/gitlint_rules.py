@@ -15,14 +15,16 @@ from gitlint.rules import CommitRule, ConfigurationRule, RuleViolation
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import gatelib  # noqa: E402  (the trailer-block rule is shared with the leak check)
+import gatelib
 
 _TYPE = re.compile(r"^(\w+)(?:\([^)]*\))?!?: ")
 _KIND = re.compile(r"^(?:Upstream-suitable\.|Community-only\.|Fork-only[.:])(?:\s|$)")
 _CO_AUTHOR = re.compile(r"^Co-authored-by: ", re.IGNORECASE)
 _ASSISTANT = re.compile(r"^Co-Authored-By: Claude\b", re.IGNORECASE)
 _PORTED = re.compile(r"^Upstream-commit: [0-9a-f]{40}$")
-_LABEL_SUFFIX = re.compile(r"\s\((?:[A-Z]{1,2}\d{1,2}(?:[-.]\d+)?|P\d+-C\d+|[A-Z]\d+(?:, ?[A-Z]\d+)+)\)$")
+_LABEL_SUFFIX = re.compile(
+    r"\s\((?:[A-Z]{1,2}\d{1,2}(?:[-.]\d+)?|P\d+-C\d+|[A-Z]\d+(?:, ?[A-Z]\d+)+)\)$"
+)
 
 
 def _trailers(commit) -> list[str]:
@@ -39,9 +41,14 @@ def _changed_paths(commit) -> list[str]:
     """
     paths = getattr(commit, "_gate_changed_paths", None)  # read once per commit, for every rule
     if paths is None:
-        args = (["diff-tree", "--no-commit-id", "-r", "--root", commit.sha] if commit.sha
-                else ["diff", "--cached"])
-        out = gatelib.git(*args, "--no-renames", "--name-only", "-z", cwd=commit.context.repository_path)
+        args = (
+            ["diff-tree", "--no-commit-id", "-r", "--root", commit.sha]
+            if commit.sha
+            else ["diff", "--cached"]
+        )
+        out = gatelib.git(
+            *args, "--no-renames", "--name-only", "-z", cwd=commit.context.repository_path
+        )
         paths = [path for path in out.split("\0") if path]
         commit._gate_changed_paths = paths
     return paths
@@ -66,11 +73,15 @@ def _outside_a_port(commit) -> list[str]:
     between the live path and legacy (the "mixed" files of
     tools/upstream_path_map.json), where upstream's hunks are applied by hand.
     """
-    path_map = json.loads((Path(__file__).resolve().parent / "upstream_path_map.json").read_text(encoding="utf-8"))
+    path_map = json.loads(
+        (Path(__file__).resolve().parent / "upstream_path_map.json").read_text(encoding="utf-8")
+    )
     mixed = set(path_map["mixed"])
     return [
-        path for path in _changed_paths(commit)
-        if not (path.startswith(gatelib.LEGACY_DIR) and gatelib.is_protected(path)) and path not in mixed
+        path
+        for path in _changed_paths(commit)
+        if not (path.startswith(gatelib.LEGACY_DIR) and gatelib.is_protected(path))
+        and path not in mixed
     ]
 
 
@@ -105,14 +116,22 @@ class PortedCommitScope(CommitRule):
             return []
         outside = _outside_a_port(commit)
         if outside:
-            return [RuleViolation(
-                self.id,
-                "an Upstream-commit trailer is for a commit that changes only code moved from upstream "
-                f"(mower_sdk/legacy/ and the mixed files), and this one changes {outside[0]}",
-                None, 1,
-            )]
+            return [
+                RuleViolation(
+                    self.id,
+                    "an Upstream-commit trailer is for a commit that changes only code moved from "
+                    "upstream (mower_sdk/legacy/ and the mixed files), "
+                    f"and this one changes {outside[0]}",
+                    None,
+                    1,
+                )
+            ]
         if not _changed_paths(commit):
-            return [RuleViolation(self.id, "an Upstream-commit trailer on a commit that changes nothing", None, 1)]
+            return [
+                RuleViolation(
+                    self.id, "an Upstream-commit trailer on a commit that changes nothing", None, 1
+                )
+            ]
         return []
 
 
@@ -124,7 +143,9 @@ class NoTrackerTrailer(CommitRule):
 
     def validate(self, commit):
         return [
-            RuleViolation(self.id, "commit messages carry no tracker ids (no Refs: trailer)", line, number)
+            RuleViolation(
+                self.id, "commit messages carry no tracker ids (no Refs: trailer)", line, number
+            )
             for number, line in enumerate(commit.message.body, 2)
             if re.match(r"^Refs?:", line, re.IGNORECASE)
         ]
@@ -138,7 +159,11 @@ class NoPlanningLabel(CommitRule):
 
     def validate(self, commit):
         if _LABEL_SUFFIX.search(commit.message.title):
-            return [RuleViolation(self.id, "subject ends with a parenthesised label", commit.message.title, 1)]
+            return [
+                RuleViolation(
+                    self.id, "subject ends with a parenthesised label", commit.message.title, 1
+                )
+            ]
         return []
 
 
@@ -156,10 +181,15 @@ class KindLine(CommitRule):
             return []
         if any(_KIND.match(line) for line in commit.message.body):
             return []
-        return [RuleViolation(
-            self.id, "a change to mower_sdk/ needs its kind sentence: 'Upstream-suitable.' or 'Community-only.'",
-            None, 1,
-        )]
+        return [
+            RuleViolation(
+                self.id,
+                "a change to mower_sdk/ needs its kind sentence: "
+                "'Upstream-suitable.' or 'Community-only.'",
+                None,
+                1,
+            )
+        ]
 
 
 class TrailerOrder(CommitRule):
@@ -176,14 +206,18 @@ class TrailerOrder(CommitRule):
         body = commit.message.body
         start = gatelib.trailer_start(body)
         violations = [
-            RuleViolation(self.id, "co-author lines belong in the trailer block at the end", line, number)
+            RuleViolation(
+                self.id, "co-author lines belong in the trailer block at the end", line, number
+            )
             for number, line in enumerate(body[:start], 2)
             if _CO_AUTHOR.match(line)
         ]
         trailers = [line for line in body[start:] if line.strip()]
         assistant = [i for i, line in enumerate(trailers) if _ASSISTANT.match(line)]
-        if assistant and any(_CO_AUTHOR.match(line) for line in trailers[assistant[-1] + 1:]):
-            violations.append(RuleViolation(self.id, "the assistant attribution must be the last co-author"))
+        if assistant and any(_CO_AUTHOR.match(line) for line in trailers[assistant[-1] + 1 :]):
+            violations.append(
+                RuleViolation(self.id, "the assistant attribution must be the last co-author")
+            )
         return violations
 
 
@@ -197,13 +231,22 @@ class VersionInRelease(CommitRule):
         changed = _changed_paths(commit)
         if "mower_sdk/__init__.py" not in changed:
             return []
-        if not any(line.startswith("+__version__") for line in _diff(commit, "mower_sdk/__init__.py").splitlines()):
+        if not any(
+            line.startswith("+__version__")
+            for line in _diff(commit, "mower_sdk/__init__.py").splitlines()
+        ):
             return []
         if commit.message.title.startswith("chore(release)") and "CHANGELOG.md" in changed:
             return []
-        return [RuleViolation(
-            self.id, "__version__ changes only in a chore(release) commit that also updates CHANGELOG.md", None, 1,
-        )]
+        return [
+            RuleViolation(
+                self.id,
+                "__version__ changes only in a chore(release) commit "
+                "that also updates CHANGELOG.md",
+                None,
+                1,
+            )
+        ]
 
 
 class ForkAuthorProvenance(CommitRule):
@@ -213,11 +256,19 @@ class ForkAuthorProvenance(CommitRule):
     id = "UC6"
 
     def validate(self, commit):
-        credited = [line for line in _trailers(commit) if _CO_AUTHOR.match(line) and not _ASSISTANT.match(line)]
+        credited = [
+            line
+            for line in _trailers(commit)
+            if _CO_AUTHOR.match(line) and not _ASSISTANT.match(line)
+        ]
         if credited and "docs/UPSTREAM.md" not in _changed_paths(commit):
-            return [RuleViolation(
-                self.id, "a fork author is credited but docs/UPSTREAM.md does not record the origin", credited[0],
-            )]
+            return [
+                RuleViolation(
+                    self.id,
+                    "a fork author is credited but docs/UPSTREAM.md does not record the origin",
+                    credited[0],
+                )
+            ]
         return []
 
 
@@ -239,15 +290,26 @@ class LegacyEditTrailer(CommitRule):
     id = "UC7"
 
     def validate(self, commit):
-        reasons = [m.group(1).strip() for line in _trailers(commit) if (m := _LEGACY_EDIT.match(line))]
+        reasons = [
+            m.group(1).strip() for line in _trailers(commit) if (m := _LEGACY_EDIT.match(line))
+        ]
         touched = [path for path in _changed_paths(commit) if gatelib.is_protected(path)]
         if touched and not reasons:
-            return [RuleViolation(
-                self.id, f"a change to a protected path ({touched[0]}) needs a 'Legacy-edit: <reason>' trailer",
-                None, 1,
-            )]
+            return [
+                RuleViolation(
+                    self.id,
+                    f"a change to a protected path ({touched[0]}) needs "
+                    "a 'Legacy-edit: <reason>' trailer",
+                    None,
+                    1,
+                )
+            ]
         if reasons and not touched:
-            return [RuleViolation(self.id, "a Legacy-edit trailer on a commit that changes no protected path")]
+            return [
+                RuleViolation(
+                    self.id, "a Legacy-edit trailer on a commit that changes no protected path"
+                )
+            ]
         if any(not reason for reason in reasons):
             return [RuleViolation(self.id, "the Legacy-edit trailer needs a reason")]
         return []

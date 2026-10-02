@@ -1,5 +1,6 @@
-"""Construct the MQTT classes outside and inside a running event loop, and
-update credentials in both connection states.
+"""Construct the MQTT classes outside and inside a running event loop.
+
+It also updates credentials in both connection states.
 
 The core classes use paho's callback API version 2, so building their clients
 must not raise paho's "Callback API version 1 is deprecated" warning; it is
@@ -19,10 +20,10 @@ import aiohttp
 import paho.mqtt
 
 from mower_sdk import NavimowMQTT, NavimowSDK
+
 # The legacy client is imported from its legacy path on purpose, so this
 # smoke test does not go through a deprecated path.
 from mower_sdk.legacy.mqtt_v1 import MowerMQTT
-
 
 CORE_ON_VERSION_2 = "Callback API version"
 
@@ -45,18 +46,27 @@ async def core() -> None:
     # between paho versions. Nothing connects: the paho client is told it is
     # connected through a stub, and the rebuilt client's connect is stubbed out.
     mqtt = NavimowMQTT(
-        "wss://broker.invalid", 443, "user", "secret", records=[],
-        ws_path="/mqtt", auth_headers={"Authorization": "Bearer old"},
+        "wss://broker.invalid",
+        443,
+        "user",
+        "secret",
+        records=[],
+        ws_path="/mqtt",
+        auth_headers={"Authorization": "Bearer old"},
     )
     live = mqtt.client
     assert live.on_connect_fail == mqtt._on_connect_fail, "paho's connect-failure callback is set"
-    assert live.on_subscribe == mqtt._on_subscribe, "paho's subscribe-acknowledgement callback is set"
+    assert live.on_subscribe == mqtt._on_subscribe, (
+        "paho's subscribe-acknowledgement callback is set"
+    )
     live.is_connected = lambda: True
     mqtt.update_credentials(password="rotated", auth_headers={"Authorization": "Bearer new"})
     assert mqtt.client is live, "connected: the live client is kept"
     assert (live._username, live._password) == (b"user", b"rotated"), "connected: merged pair set"
     assert live._websocket_path == "/mqtt", "connected: path set"
-    assert live._websocket_extra_headers == {"Authorization": "Bearer new"}, "connected: headers set"
+    assert live._websocket_extra_headers == {"Authorization": "Bearer new"}, (
+        "connected: headers set"
+    )
 
     live.is_connected = lambda: False
     mqtt.connect_async = lambda: None  # the rebuilt client would otherwise try to connect
@@ -64,10 +74,18 @@ async def core() -> None:
     rebuilt = mqtt.client
     assert rebuilt is not live, "disconnected: the client is rebuilt"
     assert rebuilt._client_id != live._client_id, "disconnected: a fresh client id suffix"
-    assert rebuilt._client_id.decode() == mqtt.client_id, "disconnected: client_id names the new client"
-    assert (rebuilt._username, rebuilt._password) == (b"user2", b"rotated"), "disconnected: rebuilt pair"
-    assert rebuilt._websocket_extra_headers == {"Authorization": "Bearer new"}, "disconnected: rebuilt headers"
-    assert mqtt.loop is asyncio.get_running_loop(), "constructed inside a loop: the running loop is bound"
+    assert rebuilt._client_id.decode() == mqtt.client_id, (
+        "disconnected: client_id names the new client"
+    )
+    assert (rebuilt._username, rebuilt._password) == (b"user2", b"rotated"), (
+        "disconnected: rebuilt pair"
+    )
+    assert rebuilt._websocket_extra_headers == {"Authorization": "Bearer new"}, (
+        "disconnected: rebuilt headers"
+    )
+    assert mqtt.loop is asyncio.get_running_loop(), (
+        "constructed inside a loop: the running loop is bound"
+    )
     print(
         f"constructed and updated credentials on Python {sys.version.split()[0]}, "
         f"aiohttp {aiohttp.__version__}, paho-mqtt {paho.mqtt.__version__}"
@@ -85,12 +103,18 @@ with warnings.catch_warnings():
     warnings.filterwarnings("error", message=CORE_ON_VERSION_2)
     outside = NavimowMQTT("broker.invalid", 8883, None, None, records=[])
     assert outside.loop is None, "constructed outside a loop: no loop bound"
-    assert NavimowSDK("broker.invalid", 8883)._mqtt.loop is None, "facade outside a loop: no loop bound"
+    assert NavimowSDK("broker.invalid", 8883)._mqtt.loop is None, (
+        "facade outside a loop: no loop bound"
+    )
     current = asyncio.new_event_loop()
     asyncio.set_event_loop(current)
     try:
-        assert NavimowMQTT("broker.invalid", 8883, None, None, records=[]).loop is current, "constructed under a current loop: it is bound"
-        assert NavimowSDK("broker.invalid", 8883)._mqtt.loop is current, "facade under a current loop: it is bound"
+        assert NavimowMQTT("broker.invalid", 8883, None, None, records=[]).loop is current, (
+            "constructed under a current loop: it is bound"
+        )
+        assert NavimowSDK("broker.invalid", 8883)._mqtt.loop is current, (
+            "facade under a current loop: it is bound"
+        )
     finally:
         asyncio.set_event_loop(None)
         current.close()

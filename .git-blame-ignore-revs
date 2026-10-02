@@ -1,0 +1,6 @@
+# Commits that changed layout only, for git blame to look past:
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+# GitHub's blame view reads this file by itself.
+
+# style: format the code outside legacy with ruff format
+f11054cbcf951228c0843dd79a5db97fc26c1030
