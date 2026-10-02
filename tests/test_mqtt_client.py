@@ -42,7 +42,7 @@ from mower_sdk.models import Device, RejectedMessage
 from mower_sdk.mqtt import NavimowMQTT
 from mower_sdk.sdk import NavimowSDK
 
-from .fakes import SUCCESS, Call, FakeClient, FakeMessage, FakeReasonCode
+from .fakes import SUCCESS, T0, Call, FakeClient, FakeClock, FakeMessage, FakeReasonCode
 
 VERSION2 = mqtt_module.mqtt_client.CallbackAPIVersion.VERSION2
 
@@ -981,36 +981,6 @@ async def test_a_refusal_from_paho_is_logged_with_its_reason_text_and_value(
 
 
 # ---- connection bookkeeping: hooks, reasons, counters, client id, message times -------------------
-
-T0 = datetime(2026, 9, 28, 12, 0, tzinfo=UTC)
-
-
-class FakeClock:
-    """``monotonic()`` and ``now(tz)`` read from settable values."""
-
-    def __init__(self) -> None:
-        self.monotonic_now = 100.0
-        self.wall_now = T0
-
-    def monotonic(self) -> float:
-        return self.monotonic_now
-
-    def now(self, tz: Any) -> datetime:
-        assert tz is UTC
-        return self.wall_now
-
-    def advance(self, seconds: float) -> None:
-        self.monotonic_now += seconds
-        self.wall_now += timedelta(seconds=seconds)
-
-
-@pytest.fixture
-def clock(monkeypatch: pytest.MonkeyPatch) -> FakeClock:
-    fake = FakeClock()
-    monkeypatch.setattr(mqtt_module, "time", fake)
-    monkeypatch.setattr(mqtt_module, "datetime", fake)
-    return fake
-
 
 @pytest.mark.asyncio
 async def test_the_counters_and_reasons_are_kept_with_no_hook_registered(

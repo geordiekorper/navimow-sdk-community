@@ -9,14 +9,12 @@ client, the facade and the watchdog together, so their ages agree.
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from typing import Any
 
 import pytest
 
 import mower_sdk
-from mower_sdk import mqtt as mqtt_module
-from mower_sdk import sdk as sdk_module
 from mower_sdk import watchdog as watchdog_module
 from mower_sdk.models import DeviceLocation, MowerStatus
 from mower_sdk.sdk import NavimowSDK
@@ -31,40 +29,12 @@ from mower_sdk.watchdog import (
     WatchInput,
 )
 
-from .fakes import SUCCESS, FakeMessage
+from .fakes import SUCCESS, T0, FakeClock, FakeMessage
 
 pytestmark = pytest.mark.usefixtures("fake_paho")
 
-T0 = datetime(2026, 9, 30, 12, 0, tzinfo=UTC)
 DEV = "dev-1"
 OTHER = "dev-2"
-
-
-class FakeClock:
-    def __init__(self) -> None:
-        self.mono = 1000.0
-        self.wall = T0
-
-    def monotonic(self) -> float:
-        return self.mono
-
-    def now(self, tz: Any = None) -> datetime:
-        assert tz is UTC
-        return self.wall
-
-    def advance(self, seconds: float) -> None:
-        self.mono += seconds
-        self.wall += timedelta(seconds=seconds)
-
-
-@pytest.fixture
-def clock(monkeypatch: pytest.MonkeyPatch) -> FakeClock:
-    fake = FakeClock()
-    for module in (mqtt_module, sdk_module):
-        monkeypatch.setattr(module, "time", fake)
-        monkeypatch.setattr(module, "datetime", fake)
-    monkeypatch.setattr(watchdog_module, "time", fake)
-    return fake
 
 
 @pytest.fixture
@@ -147,9 +117,9 @@ async def test_rest_disagreeing_with_an_old_enough_mqtt_report_asks_for_a_rebuil
     connect(sdk)
     await state(sdk, "isDocked")
     clock.advance(119)
-    assert dog.after_poll([watched("mowing", clock.mono)]) is None  # REST may not have caught up
+    assert dog.after_poll([watched("mowing", clock.monotonic_now)]) is None  # REST may not have caught up
     clock.advance(1)
-    request = dog.after_poll([watched(MowerStatus.MOWING, clock.mono)])
+    request = dog.after_poll([watched(MowerStatus.MOWING, clock.monotonic_now)])
     assert request == RebuildRequest(
         reason="missed a state change (REST says mowing but MQTT last said docked for Mower dev-1)",
         device_ids=(DEV,),
@@ -162,12 +132,12 @@ async def test_an_old_rest_reading_does_not_count_as_current(sdk: NavimowSDK, cl
     dog = MqttWatchdog(sdk)
     connect(sdk)
     await state(sdk, "isDocked")
-    reading_taken = clock.mono + 60  # 60 s after the report, whatever the time now
+    reading_taken = clock.monotonic_now + 60  # 60 s after the report, whatever the time now
     clock.advance(600)
     assert dog.after_poll([watched("mowing", reading_taken)]) is None
     assert dog.after_poll([watched("mowing", None)]) is None
     # A reading from the future counts as taken now.
-    assert dog.after_poll([watched("mowing", clock.mono + 1000)]) is not None
+    assert dog.after_poll([watched("mowing", clock.monotonic_now + 1000)]) is not None
 
 
 @pytest.mark.asyncio
@@ -176,9 +146,9 @@ async def test_a_future_reading_counts_as_taken_now_not_later(sdk: NavimowSDK, c
     connect(sdk)
     await state(sdk, "isDocked")
     clock.advance(60)  # the report is younger than the REST cache lag
-    assert dog.after_poll([watched("mowing", clock.mono + 1000)]) is None
+    assert dog.after_poll([watched("mowing", clock.monotonic_now + 1000)]) is None
     clock.advance(60)
-    assert dog.after_poll([watched("mowing", clock.mono + 1000)]) is not None
+    assert dog.after_poll([watched("mowing", clock.monotonic_now + 1000)]) is not None
 
 
 @pytest.mark.parametrize("rest", sorted(IGNORED_REST_STATES))
@@ -190,7 +160,7 @@ async def test_a_rest_state_the_state_channel_never_reports_is_ignored(
     connect(sdk)
     await state(sdk, "isDocked")
     clock.advance(600)
-    assert dog.after_poll([watched(rest, clock.mono)]) is None
+    assert dog.after_poll([watched(rest, clock.monotonic_now)]) is None
 
 
 @pytest.mark.asyncio
@@ -198,10 +168,10 @@ async def test_nothing_is_asked_without_an_mqtt_report_or_a_rest_state(sdk: Navi
     dog = MqttWatchdog(sdk)
     connect(sdk)
     clock.advance(600)
-    assert dog.after_poll([watched("mowing", clock.mono)]) is None  # no state message yet
+    assert dog.after_poll([watched("mowing", clock.monotonic_now)]) is None  # no state message yet
     await state(sdk, "isDocked")
     clock.advance(600)
-    assert dog.after_poll([watched(None, clock.mono)]) is None
+    assert dog.after_poll([watched(None, clock.monotonic_now)]) is None
 
 
 @pytest.mark.asyncio
@@ -209,9 +179,9 @@ async def test_nothing_is_asked_before_the_first_connect(sdk: NavimowSDK, clock:
     dog = MqttWatchdog(sdk)
     await state(sdk, "isDocked")
     clock.advance(600)
-    assert dog.after_poll([watched("mowing", clock.mono)]) is None
+    assert dog.after_poll([watched("mowing", clock.monotonic_now)]) is None
     connect(sdk)
-    assert dog.after_poll([watched("mowing", clock.mono)]) is not None
+    assert dog.after_poll([watched("mowing", clock.monotonic_now)]) is not None
 
 
 @pytest.mark.asyncio
@@ -220,16 +190,16 @@ async def test_a_report_is_acted_on_once_and_agreement_re_arms_the_device(sdk: N
     connect(sdk)
     await state(sdk, "isDocked")
     clock.advance(600)
-    request = dog.after_poll([watched("offline", clock.mono), watched("mowing", clock.mono)])
+    request = dog.after_poll([watched("offline", clock.monotonic_now), watched("mowing", clock.monotonic_now)])
     assert request is not None and request.reports == ((DEV, T0),)
     dog.acknowledge(request)
     clock.advance(600)
-    assert dog.after_poll([watched("mowing", clock.mono)]) is None  # the same report: acted on
+    assert dog.after_poll([watched("mowing", clock.monotonic_now)]) is None  # the same report: acted on
     # REST agrees with the same report: the device is re-armed, and the same report
     # can ask again when REST disagrees later.
-    assert dog.after_poll([watched("docked", clock.mono)]) is None
+    assert dog.after_poll([watched("docked", clock.monotonic_now)]) is None
     clock.advance(1)
-    again = dog.after_poll([watched("mowing", clock.mono)])
+    again = dog.after_poll([watched("mowing", clock.monotonic_now)])
     assert again is not None and again.reports == ((DEV, T0),)
 
 
@@ -239,12 +209,12 @@ async def test_a_new_report_that_disagrees_asks_again(sdk: NavimowSDK, clock: Fa
     connect(sdk)
     await state(sdk, "isDocked")
     clock.advance(600)
-    request = dog.after_poll([watched("mowing", clock.mono)])
+    request = dog.after_poll([watched("mowing", clock.monotonic_now)])
     assert request is not None
     dog.acknowledge(request)
     await state(sdk, "isPaused")  # a new report, still not REST's
     clock.advance(600)
-    again = dog.after_poll([watched("mowing", clock.mono)])
+    again = dog.after_poll([watched("mowing", clock.monotonic_now)])
     assert again is not None and again.reports == ((DEV, T0 + timedelta(seconds=600)),)
 
 
@@ -254,9 +224,9 @@ async def test_a_declined_request_leaves_the_mismatch_live(sdk: NavimowSDK, cloc
     connect(sdk)
     await state(sdk, "isDocked")
     clock.advance(600)
-    first = dog.after_poll([watched("mowing", clock.mono)])
+    first = dog.after_poll([watched("mowing", clock.monotonic_now)])
     clock.advance(120)
-    assert dog.after_poll([watched("mowing", clock.mono)]) == first  # not acknowledged: asked again
+    assert dog.after_poll([watched("mowing", clock.monotonic_now)]) == first  # not acknowledged: asked again
 
 
 @pytest.mark.asyncio
@@ -268,13 +238,13 @@ async def test_the_debounce_starts_on_acknowledge_and_a_mismatch_inside_it_stays
     await state(sdk, "isDocked", device_id=OTHER)
     await state(sdk, "isDocked")
     clock.advance(600)
-    request = dog.after_poll([watched("mowing", clock.mono, device_id=OTHER)])
+    request = dog.after_poll([watched("mowing", clock.monotonic_now, device_id=OTHER)])
     assert request is not None and request.device_ids == (OTHER,)
     dog.acknowledge(request)
     clock.advance(299)
-    assert dog.after_poll([watched("mowing", clock.mono)]) is None  # debounced, not marked
+    assert dog.after_poll([watched("mowing", clock.monotonic_now)]) is None  # debounced, not marked
     clock.advance(1)
-    later = dog.after_poll([watched("mowing", clock.mono)])
+    later = dog.after_poll([watched("mowing", clock.monotonic_now)])
     assert later is not None and later.device_ids == (DEV,)
 
 
@@ -287,10 +257,10 @@ async def test_every_mismatched_device_is_in_the_request_and_marked_on_acknowled
     await state(sdk, "isDocked")
     await state(sdk, "isRunning", device_id=OTHER)
     clock.advance(600)
-    request = dog.after_poll([watched("mowing", clock.mono), watched("docked", clock.mono, device_id=OTHER)])
+    request = dog.after_poll([watched("mowing", clock.monotonic_now), watched("docked", clock.monotonic_now, device_id=OTHER)])
     assert request is not None and request.device_ids == (DEV, OTHER)
     dog.acknowledge(request)
-    assert dog.after_poll([watched("mowing", clock.mono), watched("docked", clock.mono, device_id=OTHER)]) is None
+    assert dog.after_poll([watched("mowing", clock.monotonic_now), watched("docked", clock.monotonic_now, device_id=OTHER)]) is None
 
 
 @pytest.mark.asyncio
@@ -303,7 +273,7 @@ async def test_a_rejected_late_state_does_not_refresh_the_report(sdk: NavimowSDK
     await state(sdk, "isRunning", timestamp=stamp - 1000)  # older than the accepted one: rejected as stale
     assert sdk.mqtt.last_message_age(DEV, "state") == 0  # the raw traffic moved
     assert sdk.get_cached_state_age(DEV) == 600  # the accepted state did not
-    request = dog.after_poll([watched("mowing", clock.mono)])  # the accepted report is 600 s old
+    request = dog.after_poll([watched("mowing", clock.monotonic_now)])  # the accepted report is 600 s old
     assert request is not None and "MQTT last said docked" in request.reason
 
 
@@ -363,7 +333,7 @@ def test_only_a_moving_mower_is_watched_and_mapping_never_counts(
     with_pose(sdk)
     connect(sdk)
     clock.advance(600)
-    assert (dog.check_silence([watched(rest, clock.mono, shown=shown)]) is not None) is asks
+    assert (dog.check_silence([watched(rest, clock.monotonic_now, shown=shown)]) is not None) is asks
 
 
 def test_without_the_location_channel_subscribed_silence_is_expected(clock: FakeClock) -> None:
@@ -423,7 +393,7 @@ async def test_the_silence_rule_is_debounced_like_the_other(sdk: NavimowSDK, clo
     assert dog.check_silence([watched(None, None, shown="mowing")]) is None
     await state(sdk, "isDocked")
     clock.advance(299)
-    assert dog.after_poll([watched("mowing", clock.mono)]) is None  # the window covers both rules
+    assert dog.after_poll([watched("mowing", clock.monotonic_now)]) is None  # the window covers both rules
     clock.advance(1)
     assert dog.check_silence([watched(None, None, shown="mowing")]) is not None
 
@@ -435,7 +405,7 @@ async def test_custom_thresholds(sdk: NavimowSDK, clock: FakeClock) -> None:
     connect(sdk)
     await state(sdk, "isDocked")
     clock.advance(10)
-    request = dog.after_poll([watched("mowing", clock.mono)])
+    request = dog.after_poll([watched("mowing", clock.monotonic_now)])
     assert request is not None
     dog.acknowledge(request)
     clock.advance(29)

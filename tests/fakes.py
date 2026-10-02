@@ -1,7 +1,7 @@
 """The fakes and helpers the test modules share.
 
 A fake here stands in for something the SDK talks to (an aiohttp session and
-its response, paho's client) and has only the methods written for it: code
+its response, paho's client, the MQTT client under the facade, the clock) and has only the methods written for it: code
 that calls one it lacks, or with arguments it does not take, fails the test. A
 fake that one module alone needs stays in that module. The fixtures that
 install these fakes are in conftest.py.
@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import aiohttp
@@ -230,3 +231,64 @@ class FakeMessage:
     def __init__(self, topic: str, payload: bytes) -> None:
         self.topic = topic
         self.payload = payload
+
+
+# ---- MQTT: the client under the facade ------------------------------------------------------------
+
+DEVICE_ID = "dev-1"
+
+
+def topic(channel: str, device_id: str = DEVICE_ID) -> str:
+    """The topic a mower publishes this channel on."""
+    return f"/downlink/vehicle/{device_id}/realtimeDate/{channel}"
+
+
+class FakeMQTT:
+    """Records what NavimowSDK asks of its MQTT client; connects to nothing."""
+
+    instances: list[FakeMQTT] = []
+
+    def __init__(self, **kwargs: Any) -> None:
+        self.kwargs = kwargs
+        self.on_message: Any = None
+        self.on_raw: Any = None
+        self.on_message_seen: Any = None
+        self.is_connected = False
+        self.calls: list[tuple[str, tuple[Any, ...]]] = []
+        FakeMQTT.instances.append(self)
+
+    def connect_async(self) -> None:
+        self.calls.append(("connect_async", ()))
+
+    def disconnect(self) -> None:
+        self.calls.append(("disconnect", ()))
+
+    def publish_command(self, device_id: str, payload: dict[str, Any]) -> None:
+        self.calls.append(("publish_command", (device_id, payload)))
+
+    def update_credentials(self, *args: Any, **kwargs: Any) -> None:
+        self.calls.append(("update_credentials", (args, kwargs)))
+
+
+# ---- time -----------------------------------------------------------------------------------------
+
+T0 = datetime(2026, 9, 28, 12, 0, tzinfo=UTC)
+
+
+class FakeClock:
+    """Stands in for ``time`` and ``datetime`` in an SDK module: ``monotonic()`` and ``now(tz)`` read from settable values."""
+
+    def __init__(self) -> None:
+        self.monotonic_now = 100.0
+        self.wall_now = T0
+
+    def monotonic(self) -> float:
+        return self.monotonic_now
+
+    def now(self, tz: Any) -> datetime:
+        assert tz is UTC
+        return self.wall_now
+
+    def advance(self, seconds: float) -> None:
+        self.monotonic_now += seconds
+        self.wall_now += timedelta(seconds=seconds)

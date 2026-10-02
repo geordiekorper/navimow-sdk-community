@@ -2,7 +2,7 @@
 
 The real NavimowMQTT runs on a recording fake paho client, so what the helper
 applies can be read off the client; a fake API returns the credential reply, and
-a fake clock is patched into the sdk module in place of time.
+the shared clock stands in for time.
 """
 
 from __future__ import annotations
@@ -14,21 +14,12 @@ from typing import Any, Literal
 
 import pytest
 
-from mower_sdk import sdk as sdk_module
 from mower_sdk.errors import MowerAPIError, MowerRateLimitedError
 from mower_sdk.sdk import NavimowSDK
 
-from .fakes import SUCCESS, FakeClient
+from .fakes import SUCCESS, FakeClient, FakeClock
 
 HEADERS = {"Authorization": "Bearer tok"}
-
-
-class FakeClock:
-    def __init__(self) -> None:
-        self.now = 1000.0
-
-    def monotonic(self) -> float:
-        return self.now
 
 
 class FakeAPI:
@@ -46,13 +37,6 @@ class FakeAPI:
 
 
 pytestmark = pytest.mark.usefixtures("fake_paho", "clock")
-
-
-@pytest.fixture
-def clock(monkeypatch: pytest.MonkeyPatch) -> FakeClock:
-    fake = FakeClock()
-    monkeypatch.setattr(sdk_module, "time", fake)
-    return fake
 
 
 def facade(**kwargs: Any) -> NavimowSDK:
@@ -80,12 +64,12 @@ async def test_a_call_within_the_cooldown_makes_no_request_and_a_failed_attempt_
     api = FakeAPI(MowerRateLimitedError("too frequent", envelope_code=4001), reply(), reply("u2"))
     with pytest.raises(MowerRateLimitedError):
         await sdk.async_refresh_broker_credentials(api)
-    clock.now += 64.9
+    clock.monotonic_now += 64.9
     assert await sdk.async_refresh_broker_credentials(api) is False
     assert api.calls == 1
-    clock.now += 0.1
+    clock.monotonic_now += 0.1
     assert await sdk.async_refresh_broker_credentials(api) is True
-    clock.now += 10
+    clock.monotonic_now += 10
     assert await sdk.async_refresh_broker_credentials(api, cooldown=5) is True
     assert (api.calls, sdk.mqtt.username) == (3, "u2")
 
@@ -215,7 +199,7 @@ async def test_a_second_call_waits_for_the_first_to_finish_even_past_the_cooldow
     api = GatedAPI(reply("u1"), reply("u2"))
     first = asyncio.create_task(sdk.async_refresh_broker_credentials(api))
     await asyncio.wait_for(api.requested.wait(), 5)
-    clock.now += 100  # the cooldown has passed, but the first call still holds the lock
+    clock.monotonic_now += 100  # the cooldown has passed, but the first call still holds the lock
     second = asyncio.create_task(sdk.async_refresh_broker_credentials(api))
     await asyncio.wait_for(lock.contended.wait(), 5)  # the second call has reached the lock
     assert api.calls == 1

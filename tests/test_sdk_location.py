@@ -1,9 +1,9 @@
 """NavimowSDK and the payloads it does not model: location messages and malformed state.
 
-A minimal fake stands in for NavimowMQTT (the facade only sets its
-on_message), and _on_mqtt_message is driven directly. A location
-message is decoded into per-entry messages and a cached record, and what was
-not applied is reported through on_rejected, as is a malformed state payload.
+The shared fake stands in for NavimowMQTT, and _on_mqtt_message is driven
+directly. A location message is decoded into per-entry messages and a cached
+record, and what was not applied is reported through on_rejected, as is a
+malformed state payload.
 """
 
 from __future__ import annotations
@@ -15,7 +15,6 @@ from typing import Any
 
 import pytest
 
-from mower_sdk import sdk as sdk_module
 from mower_sdk.models import (
     DeviceAttributesMessage,
     DeviceEventMessage,
@@ -27,25 +26,14 @@ from mower_sdk.models import (
 from mower_sdk.mqtt import ReceivedPayload
 from mower_sdk.sdk import NavimowSDK
 
-DEVICE_ID = "dev-1"
+from .fakes import DEVICE_ID, topic
 
-
-class FakeMQTT:
-    def __init__(self, **kwargs: Any) -> None:
-        self.kwargs = kwargs
-        self.on_message: Any = None
-        self.on_raw: Any = None
-        self.on_message_seen: Any = None
+pytestmark = pytest.mark.usefixtures("fake_mqtt")
 
 
 @pytest.fixture
-def sdk(monkeypatch: pytest.MonkeyPatch) -> NavimowSDK:
-    monkeypatch.setattr(sdk_module, "NavimowMQTT", FakeMQTT)
+def sdk() -> NavimowSDK:
     return NavimowSDK(broker="broker.example.invalid", port=443)
-
-
-def topic(channel: str) -> str:
-    return f"/downlink/vehicle/{DEVICE_ID}/realtimeDate/{channel}"
 
 
 async def deliver(sdk: NavimowSDK, channel: str, payload: bytes, topic_name: str | None = None) -> None:
@@ -239,8 +227,7 @@ async def test_message_seen_callbacks_are_installed_on_the_client_only_once_regi
     assert DEVICE_ID in message and "location" in message
 
 
-def test_the_facade_forwards_subscribe_location_and_extra_topics(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(sdk_module, "NavimowMQTT", FakeMQTT)
+def test_the_facade_forwards_subscribe_location_and_extra_topics() -> None:
     facade = NavimowSDK(broker="broker.example.invalid", port=443, subscribe_location=True, extra_topics=["a/b"])
     assert (facade.mqtt.kwargs["subscribe_location"], facade.mqtt.kwargs["extra_topics"]) == (True, ["a/b"])
 

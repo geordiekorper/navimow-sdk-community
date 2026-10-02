@@ -39,8 +39,8 @@ the machine's speed or to how many turns of the loop a delivery takes.
 
 What a test replaces (an aiohttp session, paho's client, the MQTT client
 under the facade) is replaced by a recording fake, not by a `Mock` object. A
-fake is a small class in the test module with real methods: it records what
-it was asked and answers as the test tells it. The reason is what each does
+fake is a small class with real methods: it records what it was asked and
+answers as the test tells it. The reason is what each does
 with a call nobody expected. A fake has only the methods written for it, so
 code that calls one it lacks, or with arguments it does not take, fails the
 test. A `Mock` accepts any call with any arguments, so the test keeps passing
@@ -51,14 +51,22 @@ classes (`Mock`, `MagicMock`, `AsyncMock` and their relatives, and
 pytest's `monkeypatch`, as the suite does. The `test-style` commit hook
 refuses the `Mock` classes in this folder.
 
-Typical fakes:
+The fakes that more than one module uses have one definition each, in
+`fakes.py`, and the fixtures that install them are in `conftest.py`:
 
-- `FakeSession` and `FakeResponse` stand in for aiohttp:
-  `test_api_command_result.py` has the shortest pair.
+- `FakeSession` and `FakeResponse` stand in for aiohttp; `api_with()` builds a
+  `MowerAPI` on them.
 - `FakeClient` stands in for paho's client and is installed by the `fake_paho`
-  fixture in `test_mqtt_client.py`.
-- `FakeMQTT` stands in for `NavimowMQTT` under the facade, and `FakeClock`
-  for time, in several of the `test_sdk_*.py` modules.
+  fixture.
+- `FakeMQTT` stands in for `NavimowMQTT` under the facade and is installed by
+  the `fake_mqtt` fixture.
+- `FakeClock` stands in for `time` and `datetime` in the modules of the live
+  path and is installed by the `clock` fixture; it starts at `T0`.
+
+A fake that one module alone needs stays in that module, and so does a
+subclass that adds to a shared one, as `test_threaded_recipe.py` has. A test
+module imports from the shared module relative to this package
+(`from .fakes import FakeClient`), which works however the suite is run.
 
 Several modules call themselves characterisation tests: they pin what the code
 does today, case by case. When a change alters behaviour that such a test
@@ -115,7 +123,8 @@ the source tree is on the path fails in that run, which is the point of it.
 ## Adding a test
 
 - Put it in the module for its area, or a new `test_<area>.py`.
-- No network: use a fake. Several modules have a `FakeClock` for code that
-  reads the time.
+- No network: use a fake from `fakes.py`, and the `clock` fixture for code
+  that reads the time. A new fake goes into the test module that needs it,
+  and moves to `fakes.py` when a second module does.
 - It has to pass on both dependency bounds: Python 3.11 with the lowest
   allowed aiohttp and paho-mqtt, and Python 3.14 with the newest.
