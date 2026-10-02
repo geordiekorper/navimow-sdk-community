@@ -290,7 +290,13 @@ legacy class.
   keeps their values), which is why the checks run on the oldest and the
   newest allowed aiohttp and paho-mqtt; the
   [development guide](development.md#the-checks) says how.
-- **The consumer keeps the policy.** The SDK obtains no token, runs no timer
+
+## What the code leaves to the consumer
+
+This section describes the live path as it is today. It is not a rule for
+what a change may do.
+
+- **Policy stays with the consumer.** The SDK obtains no token, runs no timer
   and polls nothing. It reports (cache ages, receipt times, rejections,
   rebuild requests), and the consumer decides what is current, when to poll
   and when to rebuild.
