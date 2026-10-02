@@ -85,9 +85,14 @@ repos:
         language: python
         pass_filenames: false
         always_run: true
-      # Tests are plain asyncio.run tests with recording fakes.
+      # Tests are plain asyncio.run tests. They stand in for aiohttp, paho and
+      # the MQTT client with recording fakes, small classes with real methods,
+      # and not with Mock objects. A fake has only the methods written for it,
+      # so code that calls one it lacks, or with arguments it does not take,
+      # fails the test; a Mock accepts any call, so the test would pass. Only
+      # the Mock classes are refused, not the rest of unittest.mock.
       - id: test-style
-        name: tests use asyncio.run and recording fakes, not async plugins or mocks
+        name: tests use asyncio.run and recording fakes, not async plugins or Mock objects
         language: pygrep
-        entry: '\bpytest_asyncio\b|\bpytest\.mark\.asyncio\b|\bunittest\.mock\b|from unittest import mock\b'
+        entry: '\bpytest_asyncio\b|\bpytest\.mark\.asyncio\b|\b(?:NonCallable)?(?:Magic|Async|Property)?Mock\b|\bcreate_autospec\b'
         files: ^tests/.*\.py$

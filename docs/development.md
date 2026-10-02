@@ -94,7 +94,7 @@ them together:
 | `no-local-paths` | A path that exists only on one machine: a home directory, a per-user temporary directory. `/tmp` in an example is allowed |
 | `check-leaks` | A reference to a file git does not track, in any worktree of the checkout |
 | `no-protected-changes` | Any change under `mower_sdk/legacy/` other than its README, and any change to `tests/upstream_exports.json` |
-| `test-style` | pytest-asyncio and `unittest.mock` in `tests/` |
+| `test-style` | pytest-asyncio and `Mock` objects in `tests/`; [tests/README.md](../tests/README.md#style) gives the reason |
 | `gitlint` (commit message) | A message that breaks the rules below |
 | `check-message-leaks` (commit message) | A local path or the name of an untracked file in the message |
 

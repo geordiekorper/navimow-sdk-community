@@ -17,12 +17,24 @@ does: see [docs/development.md](../docs/development.md#the-checks).
 
 ## Style
 
-Tests are plain functions that call `asyncio.run` and use recording fakes.
-pytest-asyncio and `unittest.mock` are not used, and the `test-style` commit
-hook refuses them in this folder.
+Tests are plain functions that call `asyncio.run`; pytest-asyncio is not
+used.
 
-A fake is a small class in the test module that records what it was asked and
-answers as the test tells it. Typical ones:
+What a test replaces (an aiohttp session, paho's client, the MQTT client
+under the facade) is replaced by a recording fake, not by a `Mock` object. A
+fake is a small class in the test module with real methods: it records what
+it was asked and answers as the test tells it. The reason is what each does
+with a call nobody expected. A fake has only the methods written for it, so
+code that calls one it lacks, or with arguments it does not take, fails the
+test. A `Mock` accepts any call with any arguments, so the test keeps passing
+when the code calls something the real object does not have. Only the `Mock`
+classes (`Mock`, `MagicMock`, `AsyncMock` and their relatives, and
+`create_autospec`) are ruled out, not the rest of `unittest.mock`; a bare
+`patch()` makes a `MagicMock` too, so give it an explicit replacement or use
+pytest's `monkeypatch`, as the suite does. The `test-style` commit hook
+refuses the async plugin and the `Mock` classes in this folder.
+
+Typical fakes:
 
 - `FakeSession` and `FakeResponse` stand in for aiohttp:
   `test_api_command_result.py` has the shortest pair.
