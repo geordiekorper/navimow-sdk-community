@@ -13,7 +13,6 @@ command number only from a recognised key, never a bare scalar from a list.
 
 from __future__ import annotations
 
-import json
 import dataclasses
 from typing import Any
 
@@ -26,54 +25,12 @@ from mower_sdk.api import MowerAPI, _extract_command_number
 from mower_sdk.errors import ERROR_MESSAGES, MowerAPIError
 from mower_sdk.models import CommandReceipt, CommandVerdict, MowerCommand
 
-BASE_URL = "https://api.example.invalid"
+from .fakes import BASE_URL, FakeResponse, api_with, ok
+
 DEVICE_ID = "dev-1"
 SUCCESS = {"devices": [{"id": DEVICE_ID}], "status": "SUCCESS"}
 ALREADY = {"devices": [{"id": DEVICE_ID}], "status": "ERROR", "errorCode": "alreadyInState"}
 NO_STATUS = {"devices": [{"id": DEVICE_ID}]}
-
-
-class FakeResponse:
-    def __init__(self, body: Any = None, *, error: Exception | None = None) -> None:
-        self.status = 200
-        self._body = body
-        self._error = error
-
-    async def __aenter__(self) -> FakeResponse:
-        if self._error is not None:
-            raise self._error
-        return self
-
-    async def __aexit__(self, *exc_info: object) -> bool:
-        return False
-
-    async def json(self) -> Any:
-        return self._body
-
-    async def read(self) -> bytes:
-        return json.dumps(self._body).encode()
-
-    async def text(self) -> str:
-        return ""
-
-
-class FakeSession:
-    def __init__(self, *responses: FakeResponse) -> None:
-        self.responses = list(responses)
-        self.requests: list[dict[str, Any]] = []
-
-    def request(self, method: str, url: str, **kwargs: Any) -> FakeResponse:
-        self.requests.append({"method": method, "url": url, **kwargs})
-        return self.responses.pop(0)
-
-
-def ok(payload: Any) -> dict[str, Any]:
-    return {"code": 1, "desc": "success", "data": {"payload": payload}}
-
-
-def api_with(*responses: FakeResponse) -> tuple[MowerAPI, FakeSession]:
-    session = FakeSession(*responses)
-    return MowerAPI(session=session, token="token", base_url=BASE_URL), session  # type: ignore[arg-type]
 
 
 async def receipt_for(payload: Any, command: MowerCommand = MowerCommand.START) -> CommandReceipt:
@@ -175,7 +132,7 @@ async def test_receipt_request_is_the_send_commands_request() -> None:
     await api.async_send_command_receipt(DEVICE_ID, MowerCommand.PAUSE)
     (request,) = session.requests
     assert request["method"] == "POST"
-    assert request["url"] == f"{BASE_URL}/openapi/smarthome/sendCommands"
+    assert request["url"] == f"{BASE_URL.rstrip('/')}/openapi/smarthome/sendCommands"
     assert request["json"] == {
         "commands": [
             {

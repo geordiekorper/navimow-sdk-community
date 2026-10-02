@@ -14,7 +14,6 @@ application's thread, and the refusal to wait on the loop's own thread.
 from __future__ import annotations
 
 import asyncio
-import json
 import queue
 import re
 import threading
@@ -29,6 +28,8 @@ from mower_sdk.api import MowerAPI
 from mower_sdk.errors import MowerAuthRequiredError
 from mower_sdk.models import DeviceStateMessage
 from mower_sdk.sdk import NavimowSDK
+
+from .fakes import FakeResponse, FakeSession
 
 README = Path(__file__).resolve().parent.parent / "README.md"
 if not README.exists():
@@ -73,33 +74,17 @@ def run_usage(wait: float = 120) -> dict[str, Any]:
     return namespace
 
 
-class FakeResponse:
-    def __init__(self, reply: dict[str, Any]) -> None:
-        self.status = 200
-        self._body = json.dumps(reply).encode()
-
-    async def __aenter__(self) -> FakeResponse:
-        return self
-
-    async def __aexit__(self, *_exc: Any) -> None:
-        return None
-
-    async def read(self) -> bytes:
-        return self._body
-
-
-class FakeSession:
-    """Records the thread each request is made on and answers in order."""
+class ThreadSession(FakeSession):
+    """Also records the thread each request is made on and the loop it was made on; it can be closed."""
 
     def __init__(self, *replies: dict[str, Any]) -> None:
-        self.replies = list(replies)
+        super().__init__(*(FakeResponse(reply) for reply in replies))
         self.request_threads: list[threading.Thread] = []
-        self.closed = False
         self.made_on_loop = asyncio.get_running_loop()
 
-    def request(self, *_args: Any, **_kwargs: Any) -> FakeResponse:
+    def request(self, *args: Any, **kwargs: Any) -> FakeResponse:
         self.request_threads.append(threading.current_thread())
-        return FakeResponse(self.replies.pop(0))
+        return super().request(*args, **kwargs)
 
     async def close(self) -> None:
         self.closed = True
@@ -179,12 +164,12 @@ BROKER_REPLY = {
 }
 
 
-def serve(monkeypatch: pytest.MonkeyPatch, *replies: dict[str, Any]) -> list[FakeSession]:
-    """Make aiohttp.ClientSession() build a FakeSession with these replies; the sessions made are returned."""
-    sessions: list[FakeSession] = []
+def serve(monkeypatch: pytest.MonkeyPatch, *replies: dict[str, Any]) -> list[ThreadSession]:
+    """Make aiohttp.ClientSession() build a ThreadSession with these replies; the sessions made are returned."""
+    sessions: list[ThreadSession] = []
 
-    def make_session() -> FakeSession:
-        sessions.append(FakeSession(*replies))
+    def make_session() -> ThreadSession:
+        sessions.append(ThreadSession(*replies))
         return sessions[-1]
 
     monkeypatch.setattr(aiohttp, "ClientSession", make_session)
@@ -257,7 +242,7 @@ def test_the_threaded_recipe_delivers_rest_and_mqtt_to_a_plain_thread() -> None:
             {"code": 1, "data": {"payload": {"devices": [{"id": DEVICE_ID, "name": "Lawn"}]}}},
             {"code": 1, "data": {"userName": "user", "pwdInfo": "secret"}},
         )
-        session = mowers.call(FakeSession, *replies)
+        session = mowers.call(ThreadSession, *replies)
         assert session.made_on_loop is mowers.loop
         api = MowerAPI(session, "token", "https://api.example.invalid")  # type: ignore[arg-type]
         devices = mowers.run(api.async_get_devices())
