@@ -41,8 +41,8 @@ and firmware it came from, is a contribution.
 
 ## Proposing a change
 
-For anything larger than a small fix, open an issue first so the approach can
-be agreed before the work is done.
+An issue before a larger change is welcome: agreeing the approach first can
+save rework. It is not required.
 
 A pull request needs tests for the change and an entry in `CHANGELOG.md` when
 a consumer can see it. [docs/development.md](docs/development.md) has the
