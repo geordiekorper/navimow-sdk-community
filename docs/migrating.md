@@ -278,7 +278,9 @@ To find every deprecated use in a program, run it with
 explains.
 
 No removal date has been set: not for the legacy classes, not for the old
-import paths and not for `MowerAPI`'s synchronous wrappers.
+import paths and not for `MowerAPI`'s synchronous wrappers. For the legacy
+classes and the old paths the question is decided when 0.2.0 is final, as the
+[legacy README](../mower_sdk/legacy/README.md#why-the-code-is-frozen) says.
 
 [0.2.0a1]: ../CHANGELOG.md#020a1---2026-09-27
 [0.2.0a2]: ../CHANGELOG.md#020a2---2026-09-28

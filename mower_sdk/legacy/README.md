@@ -98,6 +98,11 @@ Several checks keep it that way:
 This README is the one file in the folder that is not protected. It is this
 project's own text, not upstream's, and it is changed by an ordinary commit.
 
+The freeze, and the rule that nothing upstream published is removed, are in
+force until 0.2.0 is final. They rest on upstream becoming active again, and
+are decided afresh at that release: keep the folder frozen, name a version
+that removes it, or let its code be fixed like any other.
+
 ## Changing something here
 
 The change this folder expects is an upstream commit, ported as
