@@ -52,7 +52,7 @@ Every check CI runs is a nox session, so the same command runs it locally.
 | `"bounds(oldest)"` | The suite and the MQTT construction check on Python 3.11 with the lowest allowed aiohttp and paho-mqtt | `bounds` |
 | `"bounds(newest)"` | The same on Python 3.14 with the newest releases | `bounds` |
 | `wheel` | Builds the wheel, checks what it ships, installs it into a fresh environment, runs the tests from another directory and checks the metadata | `wheel` |
-| `lint` | ruff, with the rule set in `pyproject.toml` | `ruff` |
+| `lint` | ruff: the rules, then `ruff format --check`; both are configured in `pyproject.toml` | `ruff` |
 
 ```bash
 nox -s tests-3.14
@@ -82,6 +82,23 @@ them together:
 - The sessions `ci.yml` calls and the sessions `noxfile.py` defines: CI runs
   every session and calls none that does not exist.
 
+### Formatting
+
+`ruff format` lays out every Python file outside `mower_sdk/legacy/`, at 100
+characters a line: the `ruff-format` hook runs it at commit and `nox -s lint`
+checks it. What the formatter cannot shorten (a long string, a comment, a
+docstring line) is wrapped by hand, and the `E501` rule reports a line that
+is still too long.
+
+The commit that first formatted the tree is listed in
+`.git-blame-ignore-revs`, so that `git blame` shows who wrote a line and not
+who laid it out. GitHub's blame view reads the file by itself; locally, once
+per clone:
+
+```bash
+git config blame.ignoreRevsFile .git-blame-ignore-revs
+```
+
 ## The commit hooks
 
 | Hook | What it refuses |
@@ -91,6 +108,7 @@ them together:
 | `gitleaks` | Secrets |
 | `actionlint` | Mistakes in the workflow files |
 | `ruff-check` | ruff findings; legacy code keeps only the `F` rules |
+| `ruff-format` | It formats the file and fails the commit; legacy code and Markdown are left alone |
 | `no-local-paths` | A path that exists only on one machine: a home directory, a per-user temporary directory. `/tmp` in an example is allowed |
 | `check-leaks` | A reference to a file git does not track, in any worktree of the checkout |
 | `no-protected-changes` | Any change under `mower_sdk/legacy/` other than its README, and any change to `tests/upstream_exports.json` |

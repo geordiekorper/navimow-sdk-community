@@ -123,6 +123,76 @@ def test_tool_versions_match_the_pre_commit_hooks() -> None:
     assert pins == [noxfile.GITLINT]
 
 
+def test_the_formatter_hook_runs_beside_the_rules_at_one_version() -> None:
+    config = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
+    (ruff,) = [repo for repo in config["repos"] if repo["repo"].endswith("/ruff-pre-commit")]
+    assert [hook["id"] for hook in ruff["hooks"]] == ["ruff-check", "ruff-format"]
+
+
+class RecordingSession:
+    """Stands in for a nox session: records what a session function installs and runs."""
+
+    def __init__(self, *posargs: str) -> None:
+        self.posargs = list(posargs)
+        self.installed: list[tuple[str, ...]] = []
+        self.commands: list[tuple[str, ...]] = []
+
+    def install(self, *packages: str) -> None:
+        self.installed.append(packages)
+
+    def run(self, *command: str) -> None:
+        self.commands.append(command)
+
+
+@pytest.mark.parametrize(
+    ("posargs", "checked"),
+    [((), (".",)), (("--output-format", "github", "."), ("--output-format", "github", "."))],
+    ids=["no-arguments", "the-arguments-ci-passes"],
+)
+def test_the_lint_session_checks_the_rules_and_then_the_formatting(
+    posargs: tuple[str, ...], checked: tuple[str, ...]
+) -> None:
+    noxfile = _noxfile()
+    session = RecordingSession(*posargs)
+    noxfile.lint(session)
+    assert session.installed == [(noxfile.RUFF,)]
+    # The session's arguments go to the rules only; the formatter's check reads the whole tree.
+    assert session.commands == [("ruff", "check", *checked), ("ruff", "format", "--check", ".")]
+
+
+def test_the_formatter_check_fails_on_an_unformatted_file_outside_legacy_and_documents(
+    tmp_path: Path,
+) -> None:
+    """The command the lint session runs, on a small tree with this repository's configuration."""
+    pytest.importorskip("ruff")
+    (tmp_path / "pyproject.toml").write_text(
+        (ROOT / "pyproject.toml").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    unformatted = "x = {  'a':1 }\n"
+    (tmp_path / "mower_sdk" / "legacy").mkdir(parents=True)
+    (tmp_path / "mower_sdk" / "legacy" / "old.py").write_text(unformatted, encoding="utf-8")
+    (tmp_path / "guide.md").write_text(
+        f"# Guide\n\n```python\n{unformatted}```\n", encoding="utf-8"
+    )
+    (tmp_path / "mower_sdk" / "new.py").write_text('x = {"a": 1}\n', encoding="utf-8")
+
+    def check() -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, "-m", "ruff", "format", "--check", "."],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    assert check().returncode == 0  # legacy code and the document are left alone
+    (tmp_path / "mower_sdk" / "new.py").write_text(unformatted, encoding="utf-8")
+    refused = check()
+    assert refused.returncode == 1
+    assert "new.py" in refused.stdout and "old.py" not in refused.stdout
+    assert "guide.md" not in refused.stdout
+
+
 def test_the_nox_jobs_cache_pip_downloads_per_noxfile() -> None:
     jobs = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"]
     nox_jobs = [

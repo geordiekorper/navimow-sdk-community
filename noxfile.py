@@ -10,7 +10,8 @@
   nox -s wheel                          build; check what the wheel ships; install
                                         it into a fresh environment and test it from
                                         another directory; check its metadata
-  nox -s lint                           ruff (the rule set is in pyproject.toml)
+  nox -s lint                           ruff: the rules, then the formatting (both
+                                        configured in pyproject.toml)
   nox -s tools-3.11 ... tools-3.14      the commit checks' own tests (tools/tests)
 
 Run everything with `nox`; the environments are made with uv when it is
@@ -113,11 +114,13 @@ def wheel(session: nox.Session) -> None:
 def lint(session: nox.Session) -> None:
     session.install(RUFF)
     session.run("ruff", "check", *(session.posargs or ["."]))
+    # The formatter's check takes no arguments: it reads the whole tree.
+    session.run("ruff", "format", "--check", ".")
 
 
 @nox.session(python=PYTHONS)
 def tools(session: nox.Session) -> None:
     # The plugin is installed here too: pyproject.toml sets its options, and
     # pytest warns about options no installed plugin knows.
-    session.install(*TEST_DEPS, "pyyaml", "nox", GITLINT)
+    session.install(*TEST_DEPS, "pyyaml", "nox", GITLINT, RUFF)
     session.run("python", "-m", "pytest", "tools/tests", "-q", *session.posargs)

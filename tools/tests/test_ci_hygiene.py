@@ -68,7 +68,7 @@ def test_without_a_known_base_only_the_whole_tree_is_checked(
 def test_the_steps_run_every_check_in_the_right_mode() -> None:
     assert JOB["steps"][0]["with"] == {"fetch-depth": 0}
     whole = STEPS["Every hook over every file"]
-    assert whole["env"] == {"GATE_MODE": "content", "SKIP": "ruff-check"}
+    assert whole["env"] == {"GATE_MODE": "content", "SKIP": "ruff-check,ruff-format"}
     assert "--all-files" in whole["run"]
     # The whole-tree run reads every file, so no second pass over the range's
     # changes; protected paths are judged per commit by gitlint's trailer rule.
