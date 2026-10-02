@@ -180,15 +180,17 @@ class ReplyingAPI(MowerAPI):
         return self.reply
 
 
-def test_the_api_reads_the_credential_reply_into_connection_info() -> None:
+@pytest.mark.asyncio
+async def test_the_api_reads_the_credential_reply_into_connection_info() -> None:
     reply = {"mqttHost": f"wss://{HOST}", "mqttUrl": "/mqtt/12345", "userName": 12345, "pwdInfo": "secret"}
-    info = asyncio.run(ReplyingAPI(reply).async_get_mqtt_connection_info())
+    info = await ReplyingAPI(reply).async_get_mqtt_connection_info()
     assert info == MqttConnectionInfo(HOST, 443, "/mqtt/12345", "12345", "secret")
 
 
-def test_the_api_raises_for_a_reply_without_a_broker() -> None:
+@pytest.mark.asyncio
+async def test_the_api_raises_for_a_reply_without_a_broker() -> None:
     with pytest.raises(MowerAPIError, match="no broker"):
-        asyncio.run(ReplyingAPI({"userName": "user"}).async_get_mqtt_connection_info())
+        await ReplyingAPI({"userName": "user"}).async_get_mqtt_connection_info()
 
 
 # ---- the factory --------------------------------------------------------------------------------

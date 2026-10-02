@@ -17,7 +17,18 @@ does: see [docs/development.md](../docs/development.md#the-checks).
 
 ## Style
 
-Tests of async code are plain functions that call `asyncio.run`.
+A test of async code is an `async def` with `@pytest.mark.asyncio`, run by
+pytest-asyncio on a fresh event loop per test. The marker is written on every
+such test and not switched on by configuration: the wheel run executes this
+folder from another directory, where the repository's pytest configuration is
+not found, and an unmarked async test fails.
+
+A test that needs the event loop itself in a particular state is a plain
+function that drives the loop by hand with `asyncio.run` or a loop of its own:
+a client or facade built with no loop running, a loop that has been closed, a
+loop set as current and not running, a connect from another thread's loop,
+`MowerAPI`'s synchronous wrappers, which start a loop themselves, and the
+README's threaded recipe, which runs its loop on a thread of its own.
 
 What a test replaces (an aiohttp session, paho's client, the MQTT client
 under the facade) is replaced by a recording fake, not by a `Mock` object. A
