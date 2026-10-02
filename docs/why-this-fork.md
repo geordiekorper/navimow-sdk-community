@@ -46,6 +46,37 @@ process that stays connected for weeks: the longer it runs, the likelier it is
 to meet a request that hangs, a credential that rotates or a callback that
 raises.
 
+### Three ways to the feed, one that works
+
+Upstream's package offered three ways to receive the mower's messages, side
+by side and without a word on which to use. Its README's example began with
+the first.
+
+- **`MowerClient`, on the generation-1 MQTT client `MowerMQTT`.** That client
+  subscribes to `device/<id>/status` and `device/<id>/event`, under a comment
+  of upstream's own that the topic format is still to be adjusted to the real
+  one (`mower_sdk/mqtt.py`, lines 149 to 171 at the fork point). The broker's
+  topics have another form, so nothing arrives. `MowerClient`'s REST methods
+  do work: they forward to `MowerAPI`.
+- **`Navimow`, with `NavimowCloud`, `NavimowCloudDevice` and
+  `StateManager`.** It is built on the client that does connect,
+  `NavimowMQTT`, but reads the channel from a topic of the form
+  `navimow/<id>/<channel>` (`mower_sdk/cloud.py`, line 70), which is not what
+  that client subscribes to and delivers (`mower_sdk/mqtt.py`, lines 642 to
+  646). Its three message events never fire.
+- **`NavimowSDK`, on `NavimowMQTT`.** This one receives messages, and it is
+  the one the official integration uses.
+
+The topics of the first two were already these in upstream's first release
+and stayed so through 0.1.2, whatever else changed around them: as
+published, neither appears ever to have been usable for the feed. The fork does not repair them and does not
+delete them. It moves them out of the way, into `mower_sdk.legacy`, and makes
+them explicitly deprecated: they still import from their old names, and the
+first use of one emits a `DeprecationWarning`, so the state of these routes
+is no longer silent.
+[`mower_sdk/legacy/README.md`](../mower_sdk/legacy/README.md) describes each
+module, and [migrating.md](migrating.md) gives the way over to `NavimowSDK`.
+
 ## Why a fork
 
 A fix reaches a library's users when it is merged and released. Upstream's
@@ -72,8 +103,9 @@ rename the package and delete what it does not use. This one does neither.
   differs, the CHANGELOG lists it.
 - **A live path and a frozen legacy folder.** The fixes go to the classes a
   consumer's code runs on, which [architecture.md](architecture.md) describes.
-  The rest of what upstream published is kept as upstream wrote it, so that
-  upstream's own commits can still be ported onto it;
+  The rest of what upstream published, the two routes that receive nothing
+  among it, is kept as upstream wrote it, so that upstream's own commits can
+  still be ported onto it;
   [`mower_sdk/legacy/README.md`](../mower_sdk/legacy/README.md) says what is
   there and why it is frozen.
 - **Changes are written so they can be offered as they are.** A change that
