@@ -42,108 +42,13 @@ from mower_sdk.models import Device, RejectedMessage
 from mower_sdk.mqtt import NavimowMQTT
 from mower_sdk.sdk import NavimowSDK
 
-Call = tuple[str, tuple[Any, ...], dict[str, Any]]
+from .fakes import SUCCESS, Call, FakeClient, FakeMessage, FakeReasonCode
+
 VERSION2 = mqtt_module.mqtt_client.CallbackAPIVersion.VERSION2
 
 
-class FakeClient:
-    """Records every paho call made on it; connects to nothing."""
-
-    instances: list[FakeClient] = []
-    # Every call on every instance, in order, for tests about the order across clients.
-    events: list[tuple[FakeClient, str]] = []
-
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        self.calls: list[Call] = [("__init__", args, kwargs)]
-        self.connected = False
-        self.on_connect: Any = None
-        self.on_disconnect: Any = None
-        self.on_message: Any = None
-        FakeClient.instances.append(self)
-        FakeClient.events.append((self, "__init__"))
-
-    def _record(self, name: str, *args: Any, **kwargs: Any) -> None:
-        self.calls.append((name, args, kwargs))
-        FakeClient.events.append((self, name))
-
-    def username_pw_set(self, *args: Any, **kwargs: Any) -> None:
-        self._record("username_pw_set", *args, **kwargs)
-
-    def ws_set_options(self, *args: Any, **kwargs: Any) -> None:
-        self._record("ws_set_options", *args, **kwargs)
-
-    def tls_set(self, *args: Any, **kwargs: Any) -> None:
-        self._record("tls_set", *args, **kwargs)
-
-    def reconnect_delay_set(self, *args: Any, **kwargs: Any) -> None:
-        self._record("reconnect_delay_set", *args, **kwargs)
-
-    def subscribe(self, *args: Any, **kwargs: Any) -> tuple[int, int | None]:
-        """paho's (result, message id): success with the next id, unless subscribe_result says otherwise."""
-        self._record("subscribe", *args, **kwargs)
-        self.next_mid = getattr(self, "next_mid", 0) + 1
-        result = getattr(self, "subscribe_result", 0)
-        return result, (self.next_mid if result == 0 else None)
-
-    def unsubscribe(self, *args: Any, **kwargs: Any) -> None:
-        self._record("unsubscribe", *args, **kwargs)
-
-    def connect_async(self, *args: Any, **kwargs: Any) -> None:
-        self._record("connect_async", *args, **kwargs)
-
-    def loop_start(self) -> None:
-        self._record("loop_start")
-
-    def loop_stop(self) -> None:
-        self._record("loop_stop")
-
-    def disconnect(self) -> None:
-        self._record("disconnect")
-        self.connected = False
-
-    def publish(self, *args: Any, **kwargs: Any) -> None:
-        self._record("publish", *args, **kwargs)
-
-    def is_connected(self) -> bool:
-        return self.connected
-
-    def named(self, name: str) -> list[Call]:
-        return [call for call in self.calls if call[0] == name]
-
-    @property
-    def callbacks(self) -> tuple[Any, Any, Any, Any]:
-        return (self.on_connect, self.on_disconnect, self.on_message, getattr(self, "on_connect_fail", None))
-
-
-class FakeReasonCode:
-    """The parts of paho's ReasonCode the client reads."""
-
-    def __init__(self, value: int, name: str) -> None:
-        self.value = value
-        self.is_failure = value >= 0x80
-        self._name = name
-
-    def __str__(self) -> str:
-        return self._name
-
-
-SUCCESS = FakeReasonCode(0, "Success")
 NOT_AUTHORIZED = FakeReasonCode(135, "Not authorized")
 UNSPECIFIED = FakeReasonCode(128, "Unspecified error")
-
-
-class FakeMessage:
-    def __init__(self, topic: str, payload: bytes) -> None:
-        self.topic = topic
-        self.payload = payload
-
-
-@pytest.fixture
-def fake_paho(monkeypatch: pytest.MonkeyPatch) -> type[FakeClient]:
-    FakeClient.instances = []
-    FakeClient.events = []
-    monkeypatch.setattr(mqtt_module.mqtt_client, "Client", FakeClient)
-    return FakeClient
 
 
 def run(test: Callable[[], Awaitable[None]]) -> None:

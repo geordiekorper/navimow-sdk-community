@@ -15,11 +15,14 @@ import pytest
 
 import mower_sdk
 from mower_sdk import models
-from mower_sdk import mqtt as mqtt_module
 from mower_sdk.api import MowerAPI
 from mower_sdk.errors import MowerAPIError
 from mower_sdk.models import Device, MqttConnectionInfo
 from mower_sdk.sdk import NavimowSDK
+
+from .fakes import FakeClient
+
+pytestmark = pytest.mark.usefixtures("fake_paho")
 
 HOST = "broker.example.invalid"
 
@@ -196,32 +199,6 @@ async def test_the_api_raises_for_a_reply_without_a_broker() -> None:
 # ---- the factory --------------------------------------------------------------------------------
 
 
-class FakeClient:
-    instances: list[FakeClient] = []
-
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        self.calls: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = [("__init__", args, kwargs)]
-        FakeClient.instances.append(self)
-
-    def __getattr__(self, name: str) -> Any:
-        def record(*args: Any, **kwargs: Any) -> None:
-            self.calls.append((name, args, kwargs))
-
-        return record
-
-    def is_connected(self) -> bool:
-        return False
-
-    def named(self, name: str) -> list[tuple[tuple[Any, ...], dict[str, Any]]]:
-        return [(args, kwargs) for called, args, kwargs in self.calls if called == name]
-
-
-@pytest.fixture(autouse=True)
-def fake_paho(monkeypatch: pytest.MonkeyPatch) -> None:
-    FakeClient.instances = []
-    monkeypatch.setattr(mqtt_module.mqtt_client, "Client", FakeClient)
-
-
 INFO = MqttConnectionInfo(broker=HOST, port=443, ws_path="/mqtt/12345", username="user", password="secret")
 RECORDS = [Device(id="dev-1", name="Mower", model="X430", firmware_version="1.0", serial_number="SN1")]
 
@@ -240,9 +217,9 @@ def test_the_factory_builds_tls_over_websocket_with_the_bearer() -> None:
     assert mqtt.records == RECORDS
     client = mqtt.client
     assert client.calls[0][2]["transport"] == "websockets"
-    assert client.named("tls_set") == [((), {})]
-    assert client.named("username_pw_set") == [(("user", "secret"), {})]
-    assert client.named("ws_set_options") == [((), {"path": "/mqtt/12345", "headers": {"Authorization": "Bearer tok"}})]
+    assert client.named("tls_set") == [("tls_set", (), {})]
+    assert client.named("username_pw_set") == [("username_pw_set", ("user", "secret"), {})]
+    assert client.named("ws_set_options") == [("ws_set_options", (), {"path": "/mqtt/12345", "headers": {"Authorization": "Bearer tok"}})]
 
 
 def test_the_bearer_is_merged_into_the_callers_headers_and_replaces_their_authorization() -> None:

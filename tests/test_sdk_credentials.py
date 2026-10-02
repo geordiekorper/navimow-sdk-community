@@ -14,33 +14,13 @@ from typing import Any, Literal
 
 import pytest
 
-from mower_sdk import mqtt as mqtt_module
 from mower_sdk import sdk as sdk_module
 from mower_sdk.errors import MowerAPIError, MowerRateLimitedError
 from mower_sdk.sdk import NavimowSDK
 
+from .fakes import SUCCESS, FakeClient
+
 HEADERS = {"Authorization": "Bearer tok"}
-
-
-class FakeClient:
-    instances: list[FakeClient] = []
-
-    def __init__(self, *_args: Any, **_kwargs: Any) -> None:
-        self.calls: list[tuple[str, tuple[Any, ...]]] = []
-        self.connected = False
-        FakeClient.instances.append(self)
-
-    def __getattr__(self, name: str) -> Any:
-        def record(*args: Any, **_kwargs: Any) -> None:
-            self.calls.append((name, args))
-
-        return record
-
-    def is_connected(self) -> bool:
-        return self.connected
-
-    def named(self, name: str) -> list[tuple[Any, ...]]:
-        return [args for called, args in self.calls if called == name]
 
 
 class FakeClock:
@@ -65,13 +45,11 @@ class FakeAPI:
         return reply
 
 
-pytestmark = pytest.mark.usefixtures("clock")
+pytestmark = pytest.mark.usefixtures("fake_paho", "clock")
 
 
 @pytest.fixture
 def clock(monkeypatch: pytest.MonkeyPatch) -> FakeClock:
-    FakeClient.instances = []
-    monkeypatch.setattr(mqtt_module.mqtt_client, "Client", FakeClient)
     fake = FakeClock()
     monkeypatch.setattr(sdk_module, "time", fake)
     return fake
@@ -92,7 +70,7 @@ async def test_the_reply_is_applied_as_strings_with_the_header() -> None:
     sdk.mqtt.client.connected = True
     assert await sdk.async_refresh_broker_credentials(FakeAPI(reply(12345, 678)), auth_headers=HEADERS) is True
     assert (sdk.mqtt.username, sdk.mqtt.password, sdk.mqtt.auth_headers) == ("12345", "678", HEADERS)
-    assert sdk.mqtt.client.named("username_pw_set")[-1] == ("12345", "678")  # set on the live client
+    assert sdk.mqtt.client.named("username_pw_set")[-1] == ("username_pw_set", ("12345", "678"), {})  # set on the live client
     assert len(FakeClient.instances) == 1  # connected, not forced: no rebuild
 
 
@@ -129,7 +107,7 @@ async def test_force_reconnect_rebuilds_even_with_unchanged_values() -> None:
     assert await sdk.async_refresh_broker_credentials(FakeAPI(reply()), force_reconnect=True) is True
     assert sdk.mqtt.client is not first
     assert sdk.mqtt.rebuilds == 1
-    assert sdk.mqtt.client.named("connect_async") == [("broker.example.invalid", 443, 60)]
+    assert sdk.mqtt.client.named("connect_async") == [("connect_async", ("broker.example.invalid", 443, 60), {})]
 
 
 @pytest.mark.asyncio
@@ -147,8 +125,8 @@ async def test_a_startup_call_with_new_credentials_connects_through_the_rebuild(
     sdk = facade()  # constructed without credentials, not connected
     assert await sdk.async_refresh_broker_credentials(FakeAPI(reply())) is True
     assert len(FakeClient.instances) == 2
-    assert sdk.mqtt.client.named("username_pw_set") == [("user", "secret")]
-    assert sdk.mqtt.client.named("connect_async") == [("broker.example.invalid", 443, 60)]
+    assert sdk.mqtt.client.named("username_pw_set") == [("username_pw_set", ("user", "secret"), {})]
+    assert sdk.mqtt.client.named("connect_async") == [("connect_async", ("broker.example.invalid", 443, 60), {})]
     sdk.connect()  # already started: nothing more
     assert len(sdk.mqtt.client.named("connect_async")) == 1
 
@@ -169,16 +147,11 @@ def test_a_startup_call_binds_the_callers_loop_before_the_executor() -> None:
         assert sdk.loop is asyncio.get_running_loop()
         sdk.mqtt.on_disconnected = on_disconnected
         sdk.connect()
-        sdk.mqtt._on_disconnect(sdk.mqtt.client, None, {}, _Success(), None)
+        sdk.mqtt._on_disconnect(sdk.mqtt.client, None, {}, SUCCESS, None)
         await asyncio.wait_for(called.wait(), 5)
         assert delivered == [asyncio.get_running_loop()]
 
     asyncio.run(test())
-
-
-class _Success:
-    value = 0
-    is_failure = False
 
 
 def test_a_call_from_another_loop_is_refused_before_any_request() -> None:
@@ -290,7 +263,7 @@ async def test_a_reply_naming_another_broker_rebuilds_a_live_client_on_it(
     assert (sdk.mqtt.broker, sdk.mqtt.port, sdk.mqtt.ws_path) == address
     assert (sdk.mqtt.rebuilds, sdk.mqtt.last_rebuild_reason) == (1, "broker changed")
     assert sdk.mqtt.auth_headers == HEADERS
-    assert sdk.mqtt.client.named("connect_async") == [(address[0], address[1], 60)]
+    assert sdk.mqtt.client.named("connect_async") == [("connect_async", (address[0], address[1], 60), {})]
 
 
 @pytest.mark.asyncio

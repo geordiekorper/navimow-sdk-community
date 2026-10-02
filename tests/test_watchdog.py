@@ -31,6 +31,10 @@ from mower_sdk.watchdog import (
     WatchInput,
 )
 
+from .fakes import SUCCESS, FakeMessage
+
+pytestmark = pytest.mark.usefixtures("fake_paho")
+
 T0 = datetime(2026, 9, 30, 12, 0, tzinfo=UTC)
 DEV = "dev-1"
 OTHER = "dev-2"
@@ -53,29 +57,9 @@ class FakeClock:
         self.wall += timedelta(seconds=seconds)
 
 
-class FakeClient:
-    def __init__(self, *_args: Any, **_kwargs: Any) -> None:
-        self.connected = False
-
-    def __getattr__(self, name: str) -> Any:
-        return lambda *_args, **_kwargs: None
-
-    def subscribe(self, *_args: Any, **_kwargs: Any) -> tuple[int, int]:
-        return 0, 1  # paho's (result, message id)
-
-    def is_connected(self) -> bool:
-        return self.connected
-
-
-class _Success:
-    value = 0
-    is_failure = False
-
-
 @pytest.fixture
 def clock(monkeypatch: pytest.MonkeyPatch) -> FakeClock:
     fake = FakeClock()
-    monkeypatch.setattr(mqtt_module.mqtt_client, "Client", FakeClient)
     for module in (mqtt_module, sdk_module):
         monkeypatch.setattr(module, "time", fake)
         monkeypatch.setattr(module, "datetime", fake)
@@ -91,14 +75,8 @@ def sdk(clock: FakeClock) -> NavimowSDK:  # noqa: ARG001 - the clock must be pat
 
 
 def connect(sdk: NavimowSDK) -> None:
-    sdk.mqtt._on_connect(sdk.mqtt.client, None, {}, _Success(), None)
+    sdk.mqtt._on_connect(sdk.mqtt.client, None, {}, SUCCESS, None)
     sdk.mqtt.client.connected = True
-
-
-class Message:
-    def __init__(self, topic: str, payload: bytes) -> None:
-        self.topic = topic
-        self.payload = payload
 
 
 def arrive(sdk: NavimowSDK, channel: str, payload: bytes, device_id: str) -> str:
@@ -110,7 +88,7 @@ def arrive(sdk: NavimowSDK, channel: str, payload: bytes, device_id: str) -> str
     topic = f"/downlink/vehicle/{device_id}/realtimeDate/{channel}"
     handler, sdk.mqtt.on_message = sdk.mqtt.on_message, None
     try:
-        sdk.mqtt._on_message(sdk.mqtt.client, None, Message(topic, payload))
+        sdk.mqtt._on_message(sdk.mqtt.client, None, FakeMessage(topic, payload))
     finally:
         sdk.mqtt.on_message = handler
     return topic
