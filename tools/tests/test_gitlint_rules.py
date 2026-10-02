@@ -390,10 +390,11 @@ def test_a_revert_commit_is_linted(repo: Path) -> None:
     assert lint(repo, "revert: feat(sdk): x\n") == []  # no body needed
 
 
-# ---- commits ported from upstream -----------------------------------------------------------------
+# ---- commits ported from upstream ----------------------------------------------------------------
 
 UPSTREAM_SHA = "0123456789abcdef0123456789abcdef01234567"
-PORTED = f"update the client.\n\nUpstream-commit: {UPSTREAM_SHA}\n"  # upstream's message: no rule would pass it
+# Upstream's message: no rule would pass it.
+PORTED = f"update the client.\n\nUpstream-commit: {UPSTREAM_SHA}\n"
 
 
 @pytest.mark.parametrize(
@@ -417,7 +418,8 @@ def test_a_ported_commit_is_exempt_from_every_rule(repo: Path, path: str) -> Non
 def test_a_ported_commit_keeps_its_exemption_when_its_subject_matches_another_ignore_rule(
     repo: Path,
 ) -> None:
-    # chore(release) subjects are exempt from the body rules only; the port's exemption is not narrowed to that.
+    # chore(release) subjects are exempt from the body rules only; the port's exemption is
+    # not narrowed to that.
     stage(repo, "mower_sdk/legacy/client.py", "OLD = 2\n")
     assert lint(repo, f"chore(release): upstream's 1.0.\n\nUpstream-commit: {UPSTREAM_SHA}\n") == []
 
@@ -498,7 +500,8 @@ def test_a_series_ported_by_the_tool_passes_in_range_mode(
     moved = run("git", "rev-parse", "HEAD", cwd=repo).strip()
     monkeypatch.setattr(port_upstream, "REPO_ROOT", repo)
 
-    # Without the trailer the ported commits break the rules: upstream's subjects, no Legacy-edit trailer.
+    # Without the trailer the ported commits break the rules: upstream's subjects and no
+    # Legacy-edit trailer.
     with monkeypatch.context() as unmarked:
         unmarked.setattr(port_upstream, "with_trailer", lambda mail, _commit: mail)
         assert port_upstream.main(["base..upstream"]) == 0

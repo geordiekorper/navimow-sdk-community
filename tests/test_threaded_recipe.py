@@ -79,7 +79,7 @@ def run_usage(wait: float = 120) -> dict[str, Any]:
 
 
 class ThreadSession(FakeSession):
-    """Also records the thread each request is made on and the loop it was made on; it can be closed."""
+    """Also records each request's thread and the loop the session was made on; it can be closed."""
 
     def __init__(self, *replies: dict[str, Any]) -> None:
         super().__init__(*(FakeResponse(reply) for reply in replies))
@@ -95,7 +95,10 @@ class ThreadSession(FakeSession):
 
 
 class FakePaho(FakeClient):
-    """A paho client that also hands itself, when it starts a connection, to the thread standing in for paho's."""
+    """A paho client that also hands itself over when it starts a connection.
+
+    It goes to the thread standing in for paho's.
+    """
 
     connecting: queue.Queue[FakePaho] = queue.Queue()
 
@@ -114,7 +117,10 @@ def as_paho_thread(target: Any, *args: Any) -> None:
 
 @pytest.fixture
 def fake_paho(fake_paho: type[FakeClient], monkeypatch: pytest.MonkeyPatch) -> type[FakeClient]:
-    """The shared fixture, with FakePaho as the client; the clients made are still FakeClient.instances."""
+    """The shared fixture, with FakePaho as the client.
+
+    The clients made are still FakeClient.instances.
+    """
     FakePaho.connecting = queue.Queue()
     monkeypatch.setattr(mqtt_module.mqtt_client, "Client", FakePaho)
     return fake_paho
@@ -133,7 +139,10 @@ BROKER_REPLY = {
 
 
 def serve(monkeypatch: pytest.MonkeyPatch, *replies: dict[str, Any]) -> list[ThreadSession]:
-    """Make aiohttp.ClientSession() build a ThreadSession with these replies; the sessions made are returned."""
+    """Make aiohttp.ClientSession() build a ThreadSession with these replies.
+
+    The sessions made are returned.
+    """
     sessions: list[ThreadSession] = []
 
     def make_session() -> ThreadSession:

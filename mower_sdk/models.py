@@ -347,7 +347,9 @@ def _endpoint(value: Any, key: str) -> tuple[str | None, int | None, str | None]
 
 
 def _broker_endpoint(data: dict[str, Any]) -> tuple[str | None, int | None, str | None]:
-    """The broker host, port and WebSocket path a credential reply names, each None when it names none.
+    """The broker host, port and WebSocket path a credential reply names.
+
+    Each is None when the reply names none.
 
     The host is mqttHost's, else a full mqttUrl's. The port is a full
     mqttUrl's, else mqttHost's: mqttUrl is the address the connection is made
@@ -404,7 +406,8 @@ class MqttConnectionInfo:
         host, port, ws_path = _broker_endpoint(data)
         if host is None:
             raise MowerAPIError(
-                f"{ERROR_MESSAGES['API_REQUEST_FAILED']}: no broker (mqttHost) in the credential reply"
+                f"{ERROR_MESSAGES['API_REQUEST_FAILED']}: "
+                "no broker (mqttHost) in the credential reply"
             )
         return cls(
             broker=host,
@@ -1062,8 +1065,9 @@ class DeviceLocation:
     the same grid as the pose, None until the first such pose; ``dock_theta``,
     the heading of the latest pose in the estimate (the previous one's when a
     pose omits it; after a detected move, the latest heading among the poses
-    that showed it, never the old dock's); ``dock_at``, that pose's mower time, None when it was sent
-    without one; ``dock_samples``, how many poses the estimate holds, capped
+    that showed it, never the old dock's); ``dock_at``, that pose's mower
+    time, None when it was sent without one; ``dock_samples``, how many poses
+    the estimate holds, capped
     (200 by default), 0 without an estimate. The estimate is a capped mean: once
     the cap is reached each docked pose moves it by one over the cap of the way,
     so a dock moved by less than the move distance (1 m by default) is followed
@@ -1119,7 +1123,11 @@ class DeviceLocation:
 
     @property
     def progress_percent(self) -> float | None:
-        """The route reading as a percentage, else the latest task entry's mowingPercentage, else None."""
+        """The mowing progress as a percentage, or None.
+
+        The route reading when there is one, else the latest task entry's
+        mowingPercentage.
+        """
         if self.route_progress is not None:
             return self.route_progress / 100
         return self.mowing_percentage
@@ -1134,7 +1142,10 @@ class DeviceLocation:
         return "none"
 
     def to_dict(self) -> dict[str, Any]:
-        """The record as JSON-ready values: times as ISO 8601, partition ids as a list, marks keyed by type."""
+        """The record as JSON-ready values.
+
+        Times are ISO 8601 strings, partition ids a list, marks keyed by type.
+        """
         data: dict[str, Any] = {}
         for item in fields(self):
             value = getattr(self, item.name)
@@ -1149,7 +1160,9 @@ class DeviceLocation:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "DeviceLocation":
-        """The record from to_dict()'s output; absent or unreadable values are None, absent marks empty.
+        """The record from to_dict()'s output.
+
+        Absent or unreadable values are None, absent marks empty.
 
         dock_samples is 0 when absent, unreadable or negative.
         """

@@ -1,10 +1,10 @@
 """The fakes and helpers the test modules share.
 
 A fake here stands in for something the SDK talks to (an aiohttp session and
-its response, paho's client, the MQTT client under the facade, the clock) and has only the methods written for it: code
-that calls one it lacks, or with arguments it does not take, fails the test. A
-fake that one module alone needs stays in that module. The fixtures that
-install these fakes are in conftest.py.
+its response, paho's client, the MQTT client under the facade, the clock) and
+has only the methods written for it: code that calls one it lacks, or with
+arguments it does not take, fails the test. A fake that one module alone needs
+stays in that module. The fixtures that install these fakes are in conftest.py.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from yarl import URL
 
 from mower_sdk.api import MowerAPI
 
-# ---- REST: an aiohttp session and its responses ---------------------------------------------------
+# ---- REST: an aiohttp session and its responses --------------------------------------------------
 
 # The trailing slash is on purpose: MowerAPI removes it before it builds a URL.
 BASE_URL = "https://api.example.invalid/"
@@ -139,7 +139,7 @@ def api_with(*responses: FakeResponse, token: str | None = TOKEN) -> tuple[Mower
     return MowerAPI(session=session, token=token, base_url=BASE_URL), session  # type: ignore[arg-type]
 
 
-# ---- MQTT: paho's client --------------------------------------------------------------------------
+# ---- MQTT: paho's client -------------------------------------------------------------------------
 
 Call = tuple[str, tuple[Any, ...], dict[str, Any]]
 
@@ -177,7 +177,10 @@ class FakeClient:
         self._record("reconnect_delay_set", *args, **kwargs)
 
     def subscribe(self, *args: Any, **kwargs: Any) -> tuple[int, int | None]:
-        """paho's (result, message id): success with the next id, unless subscribe_result says otherwise."""
+        """paho's (result, message id).
+
+        Success with the next id, unless subscribe_result says otherwise.
+        """
         self._record("subscribe", *args, **kwargs)
         self.next_mid = getattr(self, "next_mid", 0) + 1
         result = getattr(self, "subscribe_result", 0)
@@ -259,7 +262,7 @@ async def drain() -> None:
             await asyncio.wait(tasks)
 
 
-# ---- MQTT: the client under the facade ------------------------------------------------------------
+# ---- MQTT: the client under the facade -----------------------------------------------------------
 
 DEVICE_ID = "dev-1"
 
@@ -296,13 +299,16 @@ class FakeMQTT:
         self.calls.append(("update_credentials", (args, kwargs)))
 
 
-# ---- time -----------------------------------------------------------------------------------------
+# ---- time ----------------------------------------------------------------------------------------
 
 T0 = datetime(2026, 9, 28, 12, 0, tzinfo=UTC)
 
 
 class FakeClock:
-    """Stands in for ``time`` and ``datetime`` in an SDK module: ``monotonic()`` and ``now(tz)`` read from settable values."""
+    """Stands in for ``time`` and ``datetime`` in an SDK module.
+
+    ``monotonic()`` and ``now(tz)`` read from settable values.
+    """
 
     def __init__(self) -> None:
         self.monotonic_now = 100.0

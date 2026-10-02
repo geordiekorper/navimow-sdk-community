@@ -1,4 +1,4 @@
-"""NavimowSDK.async_refresh_broker_credentials: the cooldown, one call at a time, the applied values, the loop.
+"""NavimowSDK.async_refresh_broker_credentials: cooldown, one call at a time, applied values, loop.
 
 The real NavimowMQTT runs on a recording fake paho client, so what the helper
 applies can be read off the client; a fake API returns the credential reply, and
@@ -207,7 +207,10 @@ class GatedAPI(FakeAPI):
 
 
 class WatchedLock(asyncio.Lock):
-    """Stands in for the facade's credentials lock; ``contended`` is set when a call has to wait for it."""
+    """Stands in for the facade's credentials lock.
+
+    ``contended`` is set when a call has to wait for it.
+    """
 
     def __init__(self) -> None:
         super().__init__()

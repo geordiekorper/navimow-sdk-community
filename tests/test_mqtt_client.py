@@ -517,19 +517,21 @@ async def test_the_connection_logs_redact_the_client_id_the_account_id_and_the_w
         new_suffix = mqtt.client_id.rsplit("_", 1)[1]
     lines = [r.getMessage() for r in caplog.records if "subscribing" not in r.getMessage()]
     assert lines[:4] == [
-        f"NavimowMQTT init: broker=broker.example.invalid port=8884 ws_path=/mqtt/… tls=True client_id=web_…_{suffix}",
+        "NavimowMQTT init: broker=broker.example.invalid port=8884 ws_path=/mqtt/… tls=True "
+        f"client_id=web_…_{suffix}",
         "NavimowMQTT connect details: transport=websockets broker=broker.example.invalid port=8884 "
         "ws_path=/mqtt/… tls=True username=configured auth_headers={'Authorization': 'Be***ok'}",
-        f"NavimowMQTT connecting: broker=broker.example.invalid port=8884 ws_path=/mqtt/… client_id=web_…_{suffix}",
+        "NavimowMQTT connecting: broker=broker.example.invalid port=8884 ws_path=/mqtt/… "
+        f"client_id=web_…_{suffix}",
         f"NavimowMQTT connected: broker=broker.example.invalid port=8884 client_id=web_…_{suffix}",
     ]
     assert (
-        f"NavimowMQTT disconnected: broker=broker.example.invalid port=8884 client_id=web_…_{suffix} rc=Unspecified error"
-        in lines
+        "NavimowMQTT disconnected: broker=broker.example.invalid port=8884 "
+        f"client_id=web_…_{suffix} rc=Unspecified error" in lines
     )
     assert (
-        f"NavimowMQTT rebuilding the client: reason=watchdog broker=broker.example.invalid port=8884 "
-        f"client_id=web_…_{new_suffix}"
+        "NavimowMQTT rebuilding the client: reason=watchdog broker=broker.example.invalid "
+        f"port=8884 client_id=web_…_{new_suffix}"
     ) in lines
     assert not any("12345678" in line for line in lines)
     # What goes to the broker is untouched.
@@ -681,7 +683,9 @@ async def test_update_credentials(fake_paho: type[FakeClient]) -> None:
 async def test_update_credentials_partial_update_while_connected(
     fake_paho: type[FakeClient], update: dict[str, Any], expected: tuple[Any, Any, Any]
 ) -> None:
-    """A partial update while connected merges into the stored values, which are set on the live client.
+    """A partial update while connected merges into the stored values.
+
+    The merged values are set on the live client.
 
     A token refresh typically sends a password-only or headers-only update, so the
     untouched values must survive the merge and the setters must receive the
@@ -723,7 +727,7 @@ async def test_update_credentials_while_connected_calls_only_the_setters_that_ap
     update: dict[str, Any],
     new_calls: list[Call],
 ) -> None:
-    """username_pw_set needs both a username and a password; ws_set_options needs a WebSocket path."""
+    """username_pw_set needs a username and a password; ws_set_options needs a WebSocket path."""
 
     mqtt = make(kwargs)
     client = mqtt.client
@@ -1048,7 +1052,7 @@ async def test_a_refusal_from_paho_is_logged_with_its_reason_text_and_value(
     assert fake_paho.instances == [mqtt.client]
 
 
-# ---- connection bookkeeping: hooks, reasons, counters, client id, message times -------------------
+# ---- connection bookkeeping: hooks, reasons, counters, client id, message times ------------------
 
 
 @pytest.mark.asyncio
@@ -1233,7 +1237,7 @@ async def test_the_newest_message_time_is_read_safely_while_paho_adds_a_channel(
     assert fake_paho.instances == [mqtt.client]
 
 
-# ---- rebuild(), the retired-client guard, the connect guard and the credential rule ---------------
+# ---- rebuild(), the retired-client guard, the connect guard and the credential rule --------------
 
 
 @pytest.mark.asyncio
@@ -1757,7 +1761,7 @@ def test_a_credential_update_during_a_rebuild_reaches_the_new_client(
     assert mqtt.last_rebuild_reason == "credentials updated while disconnected"
 
 
-# ---- loop affinity: a closed loop, a second loop, a loop closing under a callback -----------------
+# ---- loop affinity: a closed loop, a second loop, a loop closing under a callback ----------------
 
 
 def test_a_closed_loop_is_refused_at_construction(fake_paho: type[FakeClient]) -> None:
@@ -2049,7 +2053,7 @@ async def test_without_on_raw_nothing_extra_is_scheduled(
     assert fake_paho.instances == [mqtt.client]
 
 
-# ---- subscription acknowledgements -----------------------------------------------------------------
+# ---- subscription acknowledgements ---------------------------------------------------------------
 
 
 def acknowledge(mqtt: NavimowMQTT, topic: str, *codes: FakeReasonCode, client: Any = None) -> None:
@@ -2087,7 +2091,8 @@ async def test_each_topic_is_pending_then_granted_or_refused(
     }
     assert seen == [*[(t, True, (0,)) for t in topics[:3]], ("custom/+/topic", False, (128,))]
     assert [r.getMessage() for r in caplog.records] == [
-        "NavimowMQTT subscription refused by the broker: topic=custom/+/topic reason=Unspecified error (128)"
+        "NavimowMQTT subscription refused by the broker: topic=custom/+/topic "
+        "reason=Unspecified error (128)"
     ]
     assert mqtt._pending_subscribes == {}
 
@@ -2122,7 +2127,7 @@ async def test_a_reconnect_starts_the_results_afresh_and_a_late_acknowledgement_
 
 @pytest.mark.usefixtures("fake_paho")
 @pytest.mark.asyncio
-async def test_an_acknowledgement_from_a_replaced_client_is_ignored_and_the_new_client_reports() -> (
+async def test_an_acknowledgement_from_a_replaced_client_is_ignored_and_the_new_client_reports() -> (  # noqa: E501
     None
 ):
     mqtt = make(TCP_KWARGS, records=[device("dev-1")])
@@ -2211,7 +2216,7 @@ async def test_an_acknowledgement_racing_the_subscribe_call_is_not_lost() -> Non
     assert sorted(seen) == sorted((t, True, (0,)) for t in DEVICE_TOPICS[:3])
 
 
-# ---- the original bytes of a re-encoded payload ------------------------------------------------------
+# ---- the original bytes of a re-encoded payload --------------------------------------------------
 
 
 def test_a_received_payload_is_bytes_equal_to_the_re_encoded_form() -> None:
@@ -2277,7 +2282,7 @@ async def test_the_mowers_bytes_survive_the_re_encoding_exactly() -> None:
     assert json.loads(payload) == {**json.loads(wire), "device_id": "dev-1"}
 
 
-# ---- connection events with their context ---------------------------------------------------------
+# ---- connection events with their context --------------------------------------------------------
 
 
 def recording_events(mqtt: NavimowMQTT) -> list[mqtt_module.ConnectionEvent]:
@@ -2324,7 +2329,7 @@ async def test_each_connection_change_is_an_event_with_its_client_id_and_reason(
 @pytest.mark.usefixtures("fake_paho")
 @pytest.mark.asyncio
 async def test_an_event_delivered_after_a_rebuild_names_the_client_it_came_from() -> None:
-    """The zero-argument hook can only read the attributes, which the rebuild has changed by then."""
+    """The zero-argument hook can only read the attributes, which the rebuild has changed."""
 
     mqtt = make(TCP_KWARGS)
     events = recording_events(mqtt)

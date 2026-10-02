@@ -131,7 +131,8 @@ def test_rewrite_touches_only_diff_headers_of_moved_files() -> None:
     rewritten = port_upstream.rewrite_diff(DIFF, MOVED)
     expected = (
         DIFF.replace(
-            b"diff --git a/mower_sdk/client.py b/mower_sdk/client.py\nindex f3b25fd..c0c3f26 100644\n"
+            b"diff --git a/mower_sdk/client.py b/mower_sdk/client.py\n"
+            b"index f3b25fd..c0c3f26 100644\n"
             b"--- a/mower_sdk/client.py\n+++ b/mower_sdk/client.py\n",
             b"diff --git a/mower_sdk/legacy/client.py b/mower_sdk/legacy/client.py\n"
             b"index f3b25fd..c0c3f26 100644\n"
@@ -415,26 +416,30 @@ def sha_of(repo: Path, rev: str) -> bytes:
     return git_out(repo, "rev-parse", rev).strip().encode()
 
 
+# An mbox entry's header lines and the blank line before the message body.
+HEADERS = b"From 1 Mon Sep 17 00:00:00 2001\nFrom: U <u@example.invalid>\nSubject: [PATCH] s\n\n"
+
+
 def test_the_trailer_is_a_paragraph_of_its_own_after_a_body() -> None:
-    mail = b"From 1 Mon Sep 17 00:00:00 2001\nFrom: U <u@example.invalid>\nSubject: [PATCH] s\n\nWhy.\nAnd: how.\n"
+    mail = HEADERS + b"Why.\nAnd: how.\n"
     assert port_upstream.with_trailer(mail, "abc") == mail + b"\nUpstream-commit: abc\n"
 
 
 def test_the_trailer_joins_a_trailer_block() -> None:
     mail = (
-        b"From 1 Mon Sep 17 00:00:00 2001\nFrom: U <u@example.invalid>\nSubject: [PATCH] s\n\nWhy.\n\n"
+        HEADERS + b"Why.\n\n"
         b"Signed-off-by: U <u@example.invalid>\nReviewed-by: V <v@example.invalid>\n"
     )
     assert port_upstream.with_trailer(mail, "abc") == mail + b"Upstream-commit: abc\n"
 
 
 def test_the_trailer_follows_a_subject_with_no_body() -> None:
-    mail = b"From 1 Mon Sep 17 00:00:00 2001\nFrom: U <u@example.invalid>\nSubject: [PATCH] s\n\n"
+    mail = HEADERS
     assert port_upstream.with_trailer(mail, "abc") == mail + b"Upstream-commit: abc\n"
 
 
 def test_blank_lines_at_the_end_of_a_message_do_not_separate_the_trailer_twice() -> None:
-    mail = b"From 1 Mon Sep 17 00:00:00 2001\nFrom: U <u@example.invalid>\nSubject: [PATCH] s\n\nWhy.\n\n\n"
+    mail = HEADERS + b"Why.\n\n\n"
     assert (
         port_upstream.with_trailer(mail, "abc")
         == mail.rstrip(b"\n") + b"\n\nUpstream-commit: abc\n"
@@ -485,8 +490,8 @@ def test_scan_refuses_a_mixed_file_before_applying_anything(
     captured = capsys.readouterr()
     assert "core edit: mower_sdk/mqtt.py" in captured.err
     assert (
-        "clean merge: merge commit, ported as its net change against its first parent, squashing 1 commit(s):"
-        in captured.out
+        "clean merge: merge commit, ported as its net change against its first parent, "
+        "squashing 1 commit(s):" in captured.out
     )
     assert "    " in captured.out and "side edit" in captured.out
 

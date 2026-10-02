@@ -50,7 +50,9 @@ _REST_ALTERNATIVES: dict[str, str] = {
 }
 # What the refusal says when there is no REST alternative.
 _NO_ALTERNATIVE: dict[str, str] = {
-    "set_blade_height": "No supported call sets the blade height (the REST API has no such command);",
+    "set_blade_height": (
+        "No supported call sets the blade height (the REST API has no such command);"
+    ),
 }
 _NO_ALTERNATIVE_KNOWN = "No supported alternative is known;"
 # The constructor arguments NavimowSDK.from_connection_info takes from the connection info.
@@ -194,8 +196,8 @@ class NavimowSDK:
         owned = [name for name in _CONNECTION_INFO_ARGUMENTS if name in options]
         if owned:
             raise TypeError(
-                f"NavimowSDK.from_connection_info() takes {', '.join(owned)} from the connection info; "
-                "use the constructor to choose them"
+                f"NavimowSDK.from_connection_info() takes {', '.join(owned)} "
+                "from the connection info; use the constructor to choose them"
             )
         # Decision: the factory builds the one connection the cloud has been seen to
         # serve, TLS over WebSocket on the reply's port (443 unless named) with the
@@ -205,8 +207,8 @@ class NavimowSDK:
         # broker, port, ws_path and TLS are unchanged.
         if not info.ws_path:
             raise ValueError(
-                "NavimowSDK.from_connection_info(): the connection info names no WebSocket path (mqttUrl); "
-                "use the constructor to choose one"
+                "NavimowSDK.from_connection_info(): the connection info names no "
+                "WebSocket path (mqttUrl); use the constructor to choose one"
             )
         headers = {
             key: value
@@ -312,8 +314,9 @@ class NavimowSDK:
         client's, they are applied too, and the client is rebuilt on the new
         address whether or not it is connected; a value the reply does not name
         is kept, and a broker the reply names but that cannot be read is logged
-        and kept while the credentials are still applied. It does not start a connection of its own: unchanged
-        values without force_reconnect leave the client alone. Changed values
+        and kept while the credentials are still applied. It does not start a
+        connection of its own: unchanged values without force_reconnect leave
+        the client alone. Changed values
         on a client that is not connected go through a rebuild, which connects,
         as update_mqtt_credentials always has; a connect() after it is then a
         no-op.
@@ -408,8 +411,9 @@ class NavimowSDK:
         self._rejected_callbacks.append(callback)
 
     def on_raw(self, callback: Callable[[str, bytes], None]) -> None:
-        """Call callback(topic, payload) for every MQTT message, on any topic, with the bytes as received.
+        """Call callback(topic, payload) for every MQTT message, on any topic.
 
+        The payload is the bytes as received.
         Nothing extra runs per message until the first raw callback is registered.
         """
         self._raw_callbacks.append(callback)
@@ -427,7 +431,10 @@ class NavimowSDK:
         self._mqtt.on_message_seen = self._on_mqtt_message_seen
 
     def get_cached_location(self, device_id: str) -> DeviceLocation | None:
-        """The merged location record for device_id, or None before any location entry or restore."""
+        """The merged location record for device_id.
+
+        None before any location entry or restore.
+        """
         return self._location.get(device_id)
 
     def restore_location(self, device_id: str, location: DeviceLocation) -> None:
@@ -450,7 +457,10 @@ class NavimowSDK:
         return None if updated_at is None else time.monotonic() - updated_at
 
     def get_cached_attributes_age(self, device_id: str) -> float | None:
-        """Seconds since the cached attributes message for device_id arrived, or None without one."""
+        """Seconds since the cached attributes message for device_id arrived.
+
+        None without one.
+        """
         updated_at = self._attributes_cache_updated_at.get(device_id)
         return None if updated_at is None else time.monotonic() - updated_at
 
@@ -459,7 +469,10 @@ class NavimowSDK:
         return self._state_cache_received_at.get(device_id)
 
     async def _on_mqtt_raw(self, topic: str, payload: bytes) -> None:
-        """Call each raw callback with the topic and bytes; one that raises is logged and the rest still run."""
+        """Call each raw callback with the topic and bytes.
+
+        One that raises is logged and the rest still run.
+        """
         for callback in list(self._raw_callbacks):
             try:
                 callback(topic, payload)

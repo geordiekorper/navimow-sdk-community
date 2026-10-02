@@ -59,7 +59,8 @@ def record_everything(sdk: NavimowSDK) -> list[Any]:
     [
         (b'[{"type":1,"time":"1790000000000","postureX":"1.5","postureY":"2.5"}]', 1),
         (
-            b'{"type": 1, "time": "1790000000000", "postureX": "1.5", "postureY": "2.5", "device_id": "dev-1"}',
+            b'{"type": 1, "time": "1790000000000", "postureX": "1.5", "postureY": "2.5", '
+            b'"device_id": "dev-1"}',
             1,
         ),
         (b"[]", 0),
@@ -272,7 +273,7 @@ def test_the_facade_forwards_subscribe_location_and_extra_topics() -> None:
     )
 
 
-# ---- the bytes as the mower sent them ----------------------------------------------------------------
+# ---- the bytes as the mower sent them ------------------------------------------------------------
 
 
 def re_encoded(wire: bytes) -> ReceivedPayload:

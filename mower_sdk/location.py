@@ -304,7 +304,8 @@ class LocationDecoder:
             or dock_move_distance_m <= 0
         ):
             raise ValueError(
-                f"LocationDecoder: dock_move_distance_m must be a finite number above 0, got {dock_move_distance_m!r}"
+                "LocationDecoder: dock_move_distance_m must be a finite number above 0, "
+                f"got {dock_move_distance_m!r}"
             )
         self.dock_max_samples = dock_max_samples
         self.dock_move_distance_m = float(dock_move_distance_m)
@@ -556,7 +557,10 @@ class LocationDecoder:
 
     @staticmethod
     def _newest(record: dict[str, Any], entry_type: int) -> int | None:
-        """The newest applied time of entry_type: its mark or its observation time, whichever is newer."""
+        """The newest applied time of entry_type.
+
+        That is its mark or its observation time, whichever is newer.
+        """
         name = _OBSERVED_AT.get(entry_type)
         if name is None:
             return None

@@ -1,4 +1,4 @@
-"""NavimowSDK's state checks: the opt-in late-state filter, unknown fields, malformed payloads, receipt times.
+"""NavimowSDK's state checks: late-state filter, unknown fields, malformed payloads, receipt times.
 
 The shared fake stands in for NavimowMQTT, the shared clock replaces time and
 datetime, and _on_mqtt_message is driven directly. Mower timestamps are
@@ -147,7 +147,7 @@ async def test_an_unknown_field_is_applied_and_reported_and_never_blocks() -> No
 
 
 @pytest.mark.asyncio
-async def test_a_stale_message_with_an_unknown_field_earns_both_is_not_applied_and_names_stale() -> (
+async def test_a_stale_message_with_an_unknown_field_earns_both_is_not_applied_and_names_stale() -> (  # noqa: E501
     None
 ):
     sdk, seen = make(reject_late_state=True)

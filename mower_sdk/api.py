@@ -428,8 +428,9 @@ class MowerAPI:
         One getVehicleStatus request; returns the dict entries of the reply's
         data.payload.devices unchanged, an empty list for a successful reply
         without entries (data, payload or devices missing or null), and an empty
-        list, without a request, for no ids. An X430's entry carried id, capacityRemaining, vehicleState and
-        descriptiveCapacityRemaining; a field the cloud starts sending reaches the
+        list, without a request, for no ids. An X430's entry carried id,
+        capacityRemaining, vehicleState and descriptiveCapacityRemaining; a field
+        the cloud starts sending reaches the
         caller here first. async_get_device_statuses reads the same entries into
         DeviceStatus.
 
@@ -576,7 +577,8 @@ class MowerAPI:
         for result in command_results:
             if result.get("status") == "ERROR":
                 error_code = result.get("errorCode") or "COMMAND_FAILED"
-                # Treat as success when the device is already in the target state, so a repeated tap or a stale state view does not raise
+                # Treat as success when the device is already in the target state,
+                # so a repeated tap or a stale state view does not raise
                 if error_code == "alreadyInState":
                     continue
                 raise MowerAPIError(

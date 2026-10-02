@@ -13,7 +13,10 @@ from .fakes import FakeClient, FakeClock, FakeMQTT
 
 @pytest.fixture
 def fake_paho(monkeypatch: pytest.MonkeyPatch) -> type[FakeClient]:
-    """FakeClient in place of paho's client, so nothing connects; the clients made are FakeClient.instances."""
+    """FakeClient in place of paho's client, so nothing connects.
+
+    The clients made are FakeClient.instances.
+    """
     FakeClient.instances = []
     FakeClient.events = []
     monkeypatch.setattr(mqtt_module.mqtt_client, "Client", FakeClient)
@@ -22,7 +25,10 @@ def fake_paho(monkeypatch: pytest.MonkeyPatch) -> type[FakeClient]:
 
 @pytest.fixture
 def fake_mqtt(monkeypatch: pytest.MonkeyPatch) -> type[FakeMQTT]:
-    """FakeMQTT in place of NavimowMQTT under the facade; the clients made are FakeMQTT.instances."""
+    """FakeMQTT in place of NavimowMQTT under the facade.
+
+    The clients made are FakeMQTT.instances.
+    """
     FakeMQTT.instances = []
     monkeypatch.setattr(sdk_module, "NavimowMQTT", FakeMQTT)
     return FakeMQTT
@@ -30,7 +36,10 @@ def fake_mqtt(monkeypatch: pytest.MonkeyPatch) -> type[FakeMQTT]:
 
 @pytest.fixture
 def clock(monkeypatch: pytest.MonkeyPatch) -> FakeClock:
-    """A FakeClock in place of ``time`` and ``datetime`` in the modules of the live path that read them."""
+    """A FakeClock in place of ``time`` and ``datetime``.
+
+    It is installed in the modules of the live path that read them.
+    """
     fake = FakeClock()
     for module in (mqtt_module, sdk_module):
         monkeypatch.setattr(module, "time", fake)

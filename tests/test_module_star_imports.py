@@ -9,8 +9,8 @@ picked up, and the names the community edition has added to that module, which
 ``COMMUNITY_ADDITIONS`` records. The imported helpers that a bare star import
 used to leak (``json``, ``asyncio``, ``dataclass`` and the like) no longer
 arrive; plain attribute access to them is unchanged. A module the community
-edition added (``mower_sdk.location``, ``mower_sdk.watchdog``) has no inventory entry: its ``__all__``
-is exactly what ``COMMUNITY_ADDITIONS`` records for it.
+edition added (``mower_sdk.location``, ``mower_sdk.watchdog``) has no inventory
+entry: its ``__all__`` is exactly what ``COMMUNITY_ADDITIONS`` records for it.
 """
 
 from __future__ import annotations

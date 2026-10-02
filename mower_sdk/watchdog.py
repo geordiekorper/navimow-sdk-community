@@ -190,7 +190,10 @@ class MqttWatchdog:
             return None
         first, mqtt_state, rest_state, _ = mismatches[0]
         return RebuildRequest(
-            reason=f"missed a state change (REST says {rest_state} but MQTT last said {mqtt_state} for {first.name})",
+            reason=(
+                f"missed a state change (REST says {rest_state} "
+                f"but MQTT last said {mqtt_state} for {first.name})"
+            ),
             device_ids=tuple(watched.device_id for watched, *_ in mismatches),
             reports=tuple(
                 (watched.device_id, received_at) for watched, _, _, received_at in mismatches

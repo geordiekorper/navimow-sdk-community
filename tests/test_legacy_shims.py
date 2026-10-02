@@ -250,7 +250,8 @@ for _ in range(2):
 cached = "mower_sdk.utils" in sys.modules
 warnings.simplefilter("always")
 import mower_sdk.utils
-print(json.dumps({"outcomes": outcomes, "cached_after_failures": cached, "later": [c["message"] for c in caught]}))
+later = [c["message"] for c in caught]
+print(json.dumps({"outcomes": outcomes, "cached_after_failures": cached, "later": later}))
 """,
     )
     assert result["outcomes"] == [
@@ -272,7 +273,8 @@ def test_star_import_from_a_shim_yields_every_inventory_name(tmp_path: Path, nam
         f"""\
 namespace = {{}}
 exec("from mower_sdk.{name} import *", namespace)
-print(json.dumps({{"names": sorted(n for n in namespace if not n.startswith("__")), "warnings": len(caught)}}))
+names = sorted(n for n in namespace if not n.startswith("__"))
+print(json.dumps({{"names": names, "warnings": len(caught)}}))
 """,
     )
     assert [n for n in expected if n not in result["names"]] == []

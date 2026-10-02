@@ -119,8 +119,9 @@ class PortedCommitScope(CommitRule):
             return [
                 RuleViolation(
                     self.id,
-                    "an Upstream-commit trailer is for a commit that changes only code moved from upstream "
-                    f"(mower_sdk/legacy/ and the mixed files), and this one changes {outside[0]}",
+                    "an Upstream-commit trailer is for a commit that changes only code moved from "
+                    "upstream (mower_sdk/legacy/ and the mixed files), "
+                    f"and this one changes {outside[0]}",
                     None,
                     1,
                 )
@@ -183,7 +184,8 @@ class KindLine(CommitRule):
         return [
             RuleViolation(
                 self.id,
-                "a change to mower_sdk/ needs its kind sentence: 'Upstream-suitable.' or 'Community-only.'",
+                "a change to mower_sdk/ needs its kind sentence: "
+                "'Upstream-suitable.' or 'Community-only.'",
                 None,
                 1,
             )
@@ -239,7 +241,8 @@ class VersionInRelease(CommitRule):
         return [
             RuleViolation(
                 self.id,
-                "__version__ changes only in a chore(release) commit that also updates CHANGELOG.md",
+                "__version__ changes only in a chore(release) commit "
+                "that also updates CHANGELOG.md",
                 None,
                 1,
             )
@@ -295,7 +298,8 @@ class LegacyEditTrailer(CommitRule):
             return [
                 RuleViolation(
                     self.id,
-                    f"a change to a protected path ({touched[0]}) needs a 'Legacy-edit: <reason>' trailer",
+                    f"a change to a protected path ({touched[0]}) needs "
+                    "a 'Legacy-edit: <reason>' trailer",
                     None,
                     1,
                 )

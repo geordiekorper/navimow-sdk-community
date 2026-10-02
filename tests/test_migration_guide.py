@@ -120,7 +120,10 @@ def deprecations_are_errors() -> Iterator[None]:
 
 
 def facade() -> NavimowSDK:
-    """The facade as the README's quick example builds it: inside a coroutine, so it binds the running loop."""
+    """The facade as the README's quick example builds it.
+
+    That is inside a coroutine, so it binds the running loop.
+    """
     return NavimowSDK.from_connection_info(INFO, access_token="token", records=DEVICES)
 
 
