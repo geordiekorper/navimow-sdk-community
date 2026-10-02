@@ -143,7 +143,8 @@ pass, not only the last.
   opening names. Work taken from another fork gets its row in `UPSTREAM.md`.
   Both go in the commit that makes the change.
 - **One concern per commit.** A behaviour change and the test that pins it go
-  together; an unrelated tidy-up is its own commit.
+  together; an unrelated tidy-up is its own commit. Changes that cannot stand
+  apart may share a commit, and its message then says why.
 - **Decisions are written where they are taken.** Where the code takes one
   side of a choice that has consequences for a consumer or for the data, a
   comment at that point, starting `# Decision:`, gives the decision, the
