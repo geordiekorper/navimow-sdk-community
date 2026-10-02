@@ -1,6 +1,8 @@
 """Data models.
 
-Defines every data model the SDK uses: enums and dataclasses.
+Defines the enums and dataclasses that the REST API's replies and the MQTT
+channels' messages are read into, and the readers of the cloud's raw states,
+battery fields and mower times.
 """
 
 import importlib
@@ -93,13 +95,20 @@ RAW_STATE_TO_CANONICAL = MappingProxyType(_RAW_STATE_TO_CANONICAL)
 
 
 def _raw_state(data: dict[str, Any], keys: tuple[str, ...]) -> Any:
-    """Return the raw state under the first key with a truthy value, else the last key's value.
+    """Return the raw state under the first key with a truthy value.
 
-    Exactly what ``data.get(k1) or data.get(k2) or data.get(k3)`` returns: the
-    first truthy value in key order, or, when none is truthy, whatever the last
-    key holds, falsy values such as False or "" included. Each reader passes
-    its own key order, because a payload carrying both keys resolves
-    differently per reader and that precedence is kept.
+    Exactly what ``data.get(k1) or data.get(k2) or data.get(k3)`` returns.
+    Each reader passes its own key order, because a payload carrying both keys
+    resolves differently per reader and that precedence is kept.
+
+    Args:
+        data: The payload to read.
+        keys: The keys to try, in order of precedence.
+
+    Returns:
+        The first truthy value in key order, or, when none is truthy, whatever
+        the last key holds, falsy values such as False or "" included, and
+        None when the last key is absent.
     """
     value = None
     for key in keys:
@@ -115,6 +124,14 @@ def _first_present(data: dict[str, Any], keys: tuple[str, ...], default: Any) ->
     Presence, not truth, decides: an explicit empty or None value under an
     earlier key is returned as it is, and a later key is read only when the
     earlier ones are absent.
+
+    Args:
+        data: The payload to read.
+        keys: The keys to try, in order of precedence.
+        default: What to return when none of the keys is present.
+
+    Returns:
+        The value under the first key that is present, else default.
     """
     for key in keys:
         if key in data:
@@ -123,13 +140,18 @@ def _first_present(data: dict[str, Any], keys: tuple[str, ...], default: Any) ->
 
 
 def canonical_state(raw_state: Any) -> str:
-    """The canonical state for a raw state, as DeviceStateMessage.state holds it.
+    """Give the canonical state for a raw state, as DeviceStateMessage.state holds it.
 
-    A raw state in RAW_STATE_TO_CANONICAL gives its value there; a MowerStatus
-    gives its value; any other string passes through unchanged, so a state the
-    SDK does not know yet stays visible; anything else (None, a number) is
-    "unknown". For the MowerStatus a DeviceStatus would hold, use
-    mower_status_from_raw.
+    For the MowerStatus a DeviceStatus would hold, use mower_status_from_raw.
+
+    Args:
+        raw_state: A raw state as the cloud sent it, or a MowerStatus.
+
+    Returns:
+        A raw state in RAW_STATE_TO_CANONICAL gives its value there; a
+        MowerStatus gives its value; any other string passes through
+        unchanged, so a state the SDK does not know yet stays visible;
+        anything else (None, a number) gives "unknown".
     """
     if isinstance(raw_state, MowerStatus):
         return raw_state.value
@@ -139,10 +161,15 @@ def canonical_state(raw_state: Any) -> str:
 
 
 def mower_status_from_raw(raw_state: Any) -> "MowerStatus":
-    """The MowerStatus for a raw state, as DeviceStatus.status holds it.
+    """Give the MowerStatus for a raw state, as DeviceStatus.status holds it.
 
-    canonical_state, then the MowerStatus of that value, UNKNOWN for a value
-    MowerStatus lacks.
+    Args:
+        raw_state: A raw state as the cloud sent it, or a MowerStatus.
+
+    Returns:
+        The MowerStatus whose value is canonical_state(raw_state), UNKNOWN for
+        a value MowerStatus lacks. So a string the SDK does not know gives
+        UNKNOWN, as does anything that is neither a string nor a MowerStatus.
     """
     return _mower_status(canonical_state(raw_state))
 
@@ -152,10 +179,17 @@ _normalize_state_value = canonical_state
 
 
 def _int(value: Any) -> int | None:
-    """int() that refuses bools and non-finite floats (JSON allows Infinity and NaN).
+    """Read a value with int(), refusing bools and non-finite floats.
 
-    None for anything int() cannot read, a bool, a non-finite float or a value
-    too large to convert.
+    JSON allows Infinity and NaN. As with int(), a float loses its fraction
+    and a string must hold a whole number: "87.5" is not read.
+
+    Args:
+        value: The value to read: a number or a numeric string.
+
+    Returns:
+        int(value), or None for anything int() cannot read, a bool, a
+        non-finite float or a value too large to convert.
     """
     if isinstance(value, bool):
         return None
@@ -173,11 +207,17 @@ def battery_from_payload(data: Any) -> int | None:
     The ``capacityRemaining`` entry whose ``unit`` is PERCENTAGE (compared
     upper-cased) comes first, then any ``capacityRemaining`` entry whose
     ``rawValue`` parses, then the plain ``battery`` field. Each value goes
-    through ``_int``, so None is returned when the payload carries no readable
-    value: both keys missing, an unparsable or non-numeric value, a bool, a
-    non-finite float. Out-of-range numbers pass through unchanged. One reader
-    for both payload shapes, the one DeviceStatus.battery and
-    DeviceStateMessage.battery are read with; None for data that is not a dict.
+    through ``_int``. One reader for both payload shapes, the one
+    DeviceStatus.battery and DeviceStateMessage.battery are read with.
+
+    Args:
+        data: The payload as decoded: a REST status entry or a state payload.
+
+    Returns:
+        The percentage; out-of-range numbers pass through unchanged. None when
+        the payload carries no readable value (both keys missing, an
+        unparsable or non-numeric value, a bool, a non-finite float) and for
+        data that is not a dict.
     """
     if not isinstance(data, dict):
         return None
@@ -203,14 +243,19 @@ _extract_battery_value = battery_from_payload
 
 
 class MowerStatus(Enum):
-    """Mower status.
+    """The state of a mower, in the SDK's canonical names.
 
-    The state channel and the REST status never report CHARGING; the location
-    channel's pose code does (a docked mower that is charging). MAPPING,
-    UPDATING and OFFLINE are the raw states isMapping, inSoftwareUpdate and
-    Offline/offline. A state message keeps a raw state that normalisation
-    changed in metrics["raw_state"]; a DeviceStatus keeps a vehicleState key
-    in extra["vehicleState"].
+    DeviceStatus.status holds a member, and DeviceStateMessage.state holds a
+    member's value for every raw state in RAW_STATE_TO_CANONICAL. The state
+    channel and the REST status never report CHARGING; the location channel's
+    pose code does (a docked mower that is charging). MAPPING, UPDATING and
+    OFFLINE are the raw states isMapping, inSoftwareUpdate and
+    Offline/offline. ERROR is also what the raw state isLifted is read as, and
+    IDLE what Self-Checking is. UNKNOWN stands for a state the SDK cannot
+    name.
+
+    The raw state stays on the model it was read into: see
+    DeviceStateMessage.metrics and DeviceStatus.extra.
     """
 
     IDLE = "idle"  # Idle
@@ -245,7 +290,11 @@ class MowerCommand(Enum):
 
 
 class MowerError(Enum):
-    """Mower error types."""
+    """The kind of error a mower reports, as DeviceStatus.error_code holds it.
+
+    NONE means no error. An error code that is none of the members' values is
+    read as UNKNOWN.
+    """
 
     NONE = "none"  # No error
     STUCK = "stuck"  # Stuck
@@ -261,13 +310,16 @@ class MowerError(Enum):
 class CommandVerdict(StrEnum):
     """The cloud's verdict on a submitted command, read from the reply's command results.
 
-    ACCEPTED: a result said SUCCESS and none said alreadyInState. The cloud
-    accepted the command; it does not mean the mower acted. Pause and resume
-    settle within about 30 seconds, docking can take minutes; poll the status
-    for the target state.
-    ALREADY_IN_STATE: a result was an ERROR with errorCode alreadyInState, so
-    the mower was already in the requested state. It wins over SUCCESS.
-    UNKNOWN: no result said either, an empty result list included.
+    ACCEPTED means a result said SUCCESS and none said alreadyInState. The
+    cloud accepted the command; it does not mean the mower acted. Pause and
+    resume settle within about 30 seconds, docking can take minutes; poll the
+    status for the target state.
+
+    ALREADY_IN_STATE means a result was an ERROR with errorCode
+    alreadyInState, so the mower was already in the requested state. It wins
+    over SUCCESS.
+
+    UNKNOWN means no result said either, an empty result list included.
     """
 
     ACCEPTED = "accepted"
@@ -285,16 +337,17 @@ class CommandReceipt:
     that is not a JSON object; the cloud may still have accepted it).
 
     Attributes:
-        device_id: The device the command was sent to
-        command: The command sent
-        verdict: The cloud's verdict, a CommandVerdict
+        device_id: The device the command was sent to.
+        command: The command sent.
+        verdict: The cloud's verdict, a CommandVerdict.
         command_number: The reply's command number, when it carried one under
             a recognised key (cmdNum and its spellings); None otherwise. No
             captured reply carries one, and where it would come from is
             undocumented.
-        results: The per-command result dicts from the reply, as a tuple. Left
-            out of the hash the frozen dataclass derives from its fields, since
-            dicts are unhashable; equality still compares it.
+        results: The per-command result dicts from the reply, as a tuple;
+            empty when the reply has none. Left out of the hash the frozen
+            dataclass derives from its fields, since dicts are unhashable;
+            equality still compares it.
     """
 
     device_id: str
@@ -305,31 +358,51 @@ class CommandReceipt:
 
     @property
     def accepted(self) -> bool:
+        """Whether the verdict is ACCEPTED: the cloud accepted the command."""
         return self.verdict is CommandVerdict.ACCEPTED
 
     @property
     def already_in_state(self) -> bool:
+        """Whether the verdict is ALREADY_IN_STATE: the mower was in the requested state."""
         return self.verdict is CommandVerdict.ALREADY_IN_STATE
 
 
 def _credential(value: Any) -> str | None:
-    """A broker credential from the credential reply: its text when present, None when absent.
+    """Read a broker credential from the credential reply.
 
-    An empty string is a value, and a number (a user name sent as one) is read
-    as its text.
+    Args:
+        value: The reply's value for the credential; None when it has none.
+
+    Returns:
+        The value's text when present, None when absent. An empty string is a
+        value, and a number (a user name sent as one) is read as its text.
     """
     return None if value is None else str(value)
 
 
 def _endpoint(value: Any, key: str) -> tuple[str | None, int | None, str | None] | None:
-    """The host, port and path mqttHost or mqttUrl names, or None when the reply does not name one.
+    """Read the host, port and path that the reply's mqttHost or mqttUrl names.
 
     A value with a scheme is split as a URL; its path and query form the path,
     "/" standing in for an empty path before a query. Without a scheme, mqttHost
-    is a host with an optional port, and mqttUrl is a path taken as given, with
-    a leading slash added. A scheme other than wss, a value that cannot be split
-    as a URL, or a port that is not a number from 0 to 65535 is a MowerAPIError
-    naming the key but not the value, which may carry an account id or a token.
+    is a host with an optional port, with no path read from it, and mqttUrl is
+    a path taken as given, with a leading slash added.
+
+    Args:
+        value: The reply's value under key.
+        key: "mqttHost" or "mqttUrl": it decides how a value without a scheme
+            is read, and the error names it.
+
+    Returns:
+        The host, the port and the path, each None when the value does not
+        give it; or None when the reply does not name an endpoint under the
+        key (the value is not a string, or is blank).
+
+    Raises:
+        MowerAPIError: The value has a scheme other than wss, cannot be split
+            as a URL, or has a port that is not a number from 0 to 65535. The
+            message names the key but not the value, which may carry an
+            account id or a token.
     """
     if not isinstance(value, str) or not value.strip():
         return None
@@ -353,14 +426,22 @@ def _endpoint(value: Any, key: str) -> tuple[str | None, int | None, str | None]
 
 
 def _broker_endpoint(data: dict[str, Any]) -> tuple[str | None, int | None, str | None]:
-    """The broker host, port and WebSocket path a credential reply names.
-
-    Each is None when the reply names none.
+    """Read the broker host, port and WebSocket path a credential reply names.
 
     The host is mqttHost's, else a full mqttUrl's. The port is a full
     mqttUrl's, else mqttHost's: mqttUrl is the address the connection is made
     to, so its port wins. The path is mqttUrl's (see _endpoint); a path in
     mqttHost is ignored.
+
+    Args:
+        data: The credential reply.
+
+    Returns:
+        The host, the port and the path; each is None when the reply names
+        none.
+
+    Raises:
+        MowerAPIError: mqttHost or mqttUrl cannot be read (see _endpoint).
     """
     host_host, host_port, _ = _endpoint(data.get("mqttHost"), "mqttHost") or (None, None, None)
     url_host, url_port, url_path = _endpoint(data.get("mqttUrl"), "mqttUrl") or (None, None, None)
@@ -378,14 +459,15 @@ class MqttConnectionInfo:
     without a scheme or with a port, and mqttUrl as a full wss:// URL.
 
     Attributes:
-        broker: The broker's host name, never a URL
-        port: The port: a full mqttUrl's, else mqttHost's, else 443
+        broker: The broker's host name, never a URL: mqttHost's, else a full
+            mqttUrl's.
+        port: The port: a full mqttUrl's, else mqttHost's, else 443.
         ws_path: The WebSocket path, with the query a full mqttUrl carried; ""
-            when the reply names none
-        username: userName, as text, or None when the reply has none
+            when the reply names none.
+        username: userName, as text, or None when the reply has none.
         password: pwdInfo, as text, or None when the reply has none; left out
-            of repr
-        raw: The reply as received (a copy), left out of repr and equality
+            of repr.
+        raw: The reply as received (a copy), left out of repr and equality.
     """
 
     broker: str
@@ -399,11 +481,19 @@ class MqttConnectionInfo:
     def from_dict(cls, data: dict[str, Any]) -> "MqttConnectionInfo":
         """Read a credential reply.
 
+        Args:
+            data: The reply's data, as MowerAPI.async_get_mqtt_user_info
+                returns it.
+
+        Returns:
+            The connection info, with the port 443 and the path "" where the
+            reply names none.
+
         Raises:
             MowerAPIError: The reply is not an object or names no broker (neither
                 mqttHost nor a full mqttUrl), or names one that cannot be read: a
                 scheme other than wss, a host and port that cannot be split, or a
-                port that is not a number.
+                port that is not a number from 0 to 65535.
         """
         if not isinstance(data, dict):
             raise MowerAPIError(
@@ -429,15 +519,24 @@ class MqttConnectionInfo:
 class Device:
     """Device information.
 
+    MowerAPI.async_get_devices reads each entry of the cloud's device list
+    into one with from_dict, which says which key fills which field.
+
     Attributes:
-        id: Device ID
-        name: Device name
-        model: Device model
-        firmware_version: Firmware version
-        serial_number: Serial number
-        mac_address: MAC address (optional)
-        online: Whether the device is online
-        extra: Extra information (optional)
+        id: Device ID.
+        name: Device name.
+        model: Device model.
+        firmware_version: Firmware version.
+        serial_number: Serial number.
+        mac_address: MAC address; None without one.
+        online: Whether the device is online.
+        extra: Extra information; None without any. from_dict fills it from
+            the entry's own extra key, not from the keys it does not read.
+        product_key: The entry's productKey or product_key; None without one.
+        device_name: The entry's deviceName or device_name, else its name;
+            None without any of them.
+        iot_id: The entry's iotId or iot_id, else its id; None without any of
+            them.
     """
 
     id: str
@@ -465,12 +564,16 @@ class Device:
         carries, else ``firmwareVersion``. ``product_key``, ``device_name``
         and ``iot_id`` take the first truthy value of their camelCase key,
         their snake_case key and, for the last two, ``name`` and ``id``.
+        ``extra`` is the value under ``extra``; no other key is kept.
 
         Args:
-            data: Dictionary holding the device information
+            data: Dictionary holding the device information: an entry of the
+                device list, or to_dict()'s output.
 
         Returns:
-            A Device instance
+            A Device instance. Where the entry has no key for a field, id,
+            name, model, firmware_version and serial_number are "", online is
+            False and the other fields are None.
         """
         product_key = data.get("productKey") or data.get("product_key")
         device_name = data.get("deviceName") or data.get("device_name") or data.get("name")
@@ -493,10 +596,13 @@ class Device:
         )
 
     def to_dict(self) -> dict[str, Any]:
-        """Convert to a dictionary.
+        """Convert to a dictionary keyed by the field names.
 
         Returns:
-            Dictionary holding the device information
+            Dictionary holding the device information: id, name, model,
+            firmware_version, serial_number and online always; mac_address,
+            extra, product_key, device_name and iot_id only when they hold a
+            truthy value.
         """
         result = {
             "id": self.id,
@@ -573,7 +679,14 @@ _DEVICE_STATUS_READ_KEYS = frozenset(
 
 
 def _mower_status(value: Any) -> MowerStatus:
-    """MowerStatus(value), UNKNOWN for a value the enum lacks."""
+    """Read a canonical state as a MowerStatus.
+
+    Args:
+        value: A MowerStatus value such as "mowing", or anything else.
+
+    Returns:
+        MowerStatus(value), UNKNOWN for a value the enum lacks.
+    """
     try:
         return MowerStatus(value)
     except ValueError:
@@ -581,7 +694,14 @@ def _mower_status(value: Any) -> MowerStatus:
 
 
 def _mower_error(value: Any) -> MowerError:
-    """MowerError(value), UNKNOWN for a value the enum lacks."""
+    """Read an error code as a MowerError.
+
+    Args:
+        value: A MowerError value such as "lifted", or anything else.
+
+    Returns:
+        MowerError(value), UNKNOWN for a value the enum lacks.
+    """
     try:
         return MowerError(value)
     except ValueError:
@@ -592,20 +712,33 @@ def _mower_error(value: Any) -> MowerError:
 class DeviceStatus:
     """Device status.
 
+    MowerAPI.async_get_device_statuses reads each entry of the cloud's REST
+    status reply into one with from_dict, and from_state_message builds one
+    from an MQTT state message. REST_STATUS_KNOWN_FIELDS names the keys a REST
+    entry has been seen to carry.
+
     Attributes:
-        device_id: Device ID
-        status: Device status (a MowerStatus value)
+        device_id: Device ID.
+        status: Device status, a MowerStatus; UNKNOWN for a raw state the SDK
+            does not know.
         battery: Battery level in percent, or None when the payload carried no
-            readable value; out-of-range numbers pass through. to_dict emits
-            the None.
-        position: Position (optional, as {"lat": float, "lng": float})
-        error_code: Error code (a MowerError value)
-        error_message: Error message (optional)
-        mowing_time: Duration of the current mowing session in seconds (optional)
-        total_mowing_time: Total mowing time in seconds (optional)
-        signal_strength: Signal strength (optional)
-        timestamp: Timestamp of the status update (optional)
-        extra: Extra information (optional)
+            readable value; out-of-range numbers pass through.
+        position: Position, as {"lat": float, "lng": float}; None without one.
+        error_code: Error code, a MowerError; NONE without an error, UNKNOWN
+            for a code the enum lacks.
+        error_message: Error message; None without one.
+        mowing_time: Duration of the current mowing session in seconds; None
+            without one.
+        total_mowing_time: Total mowing time in seconds; None without one.
+        signal_strength: Signal strength; None without one.
+        timestamp: Timestamp of the status update; None without one.
+            from_dict keeps the payload's value as it is, and
+            from_state_message stores epoch milliseconds; mower_time_ms reads
+            either as epoch milliseconds.
+        extra: Extra information; None without any. from_dict puts here what
+            the payload carries beyond the fields above, its vehicleState key
+            included, and from_state_message the message's raw state, also
+            under "vehicleState".
     """
 
     device_id: str
@@ -624,11 +757,26 @@ class DeviceStatus:
     def from_dict(cls, data: dict[str, Any]) -> "DeviceStatus":
         """Create a DeviceStatus from a dictionary.
 
+        status is the first truthy value of ``status``, ``state`` and
+        ``vehicleState``, read with mower_status_from_raw. battery is read
+        with battery_from_payload. device_id is ``device_id``, else ``id``,
+        else "". error_code is ``error_code`` read as a MowerError: NONE when
+        the key is absent, UNKNOWN for a code the enum lacks. position,
+        error_message, mowing_time, total_mowing_time, signal_strength and
+        timestamp are the values under those keys as given, None when absent.
+
+        extra is a new dict, or None when it would be empty: the entries of
+        the payload's own ``extra`` dict, every payload key that no field
+        reads, and the raw ``vehicleState``, ``capacityRemaining`` and
+        ``descriptiveCapacityRemaining`` when the payload has those keys. The
+        caller's dicts are never written to.
+
         Args:
-            data: Dictionary holding the device status
+            data: Dictionary holding the device status: an entry of the REST
+                status reply, or to_dict()'s output.
 
         Returns:
-            A DeviceStatus instance
+            A DeviceStatus instance.
         """
         status_source = _raw_state(data, ("status", "state", "vehicleState"))
         status = mower_status_from_raw(status_source)
@@ -667,10 +815,14 @@ class DeviceStatus:
         )
 
     def to_dict(self) -> dict[str, Any]:
-        """Convert to a dictionary.
+        """Convert to a dictionary keyed by the field names.
 
         Returns:
-            Dictionary holding the device status
+            Dictionary holding the device status: device_id, status and
+            error_code (the enums as their values) and battery always, a None
+            battery included; position, error_message and extra only when they
+            hold a truthy value; mowing_time, total_mowing_time,
+            signal_strength and timestamp only when they are not None.
         """
         result = {
             "device_id": self.device_id,
@@ -701,18 +853,34 @@ class DeviceStatus:
         fallback_status: MowerStatus | None = None,
         fallback_battery: int | None = None,
     ) -> "DeviceStatus":
-        """A new DeviceStatus from an MQTT state message; the message is not changed.
+        """Build a DeviceStatus from an MQTT state message; the message is not changed.
 
         status is MowerStatus(message.state), UNKNOWN for a value the enum lacks.
         The state channel sends partial messages, so the fallbacks (a consumer's
-        last known values, say) apply only to what the message does not carry:
-        fallback_status when it carries no state (its raw payload has no state,
-        status or vehicleState value, or, for a message built by hand, its state
-        is "unknown"), and fallback_battery when it carries no readable battery.
-        An explicit "unknown" in a payload is kept. timestamp is the message's in
-        milliseconds (mower_time_ms); the error dict's code and message become
-        error_code (UNKNOWN for a code the enum lacks) and error_message; the raw
-        state kept in metrics["raw_state"] becomes extra["vehicleState"].
+        last known values, say) apply only to what the message does not carry.
+        A message carries no state when its raw payload has no state, status or
+        vehicleState value, or, for a message built by hand, when its state is
+        "unknown". An explicit "unknown" in a payload is kept, and so is the
+        UNKNOWN of a state the enum lacks.
+
+        timestamp is the message's in milliseconds (mower_time_ms). The error
+        dict's code (under ``code``, else ``error_code``) and message become
+        error_code (UNKNOWN for a code the enum lacks, NONE without a code) and
+        error_message. position and signal_strength are carried over, and the
+        raw state kept in metrics["raw_state"] becomes extra["vehicleState"].
+        mowing_time and total_mowing_time have no source in a state message
+        and are None.
+
+        Args:
+            message: The state message.
+            fallback_status: The status to use when the message carries no
+                state; None for no fallback.
+            fallback_battery: The battery level to use when the message carries
+                no readable battery; None for no fallback, which leaves battery
+                None.
+
+        Returns:
+            A new DeviceStatus.
         """
         status = _mower_status(message.state)
         if message.raw is not None:
@@ -747,7 +915,49 @@ class DeviceStatus:
 
 @dataclass
 class DeviceStateMessage:
-    """Unified state message from MQTT."""
+    """Unified state message from MQTT.
+
+    NavimowSDK reads each payload of the state channel into one with from_dict
+    and hands those it applies to the on_state callbacks; from_status builds
+    one from a REST DeviceStatus. The state channel sends partial messages, so
+    an optional field the payload does not carry is None; device_id, state,
+    metrics and raw are filled as their entries under Attributes say.
+    STATE_KNOWN_FIELDS names the
+    keys a state payload has been seen to carry: signal_strength, position,
+    error and metrics are read when present, and no mower has been seen to
+    send them.
+
+    Attributes:
+        device_id: The device the message is from. NavimowSDK takes it from
+            the topic when the payload names none; from_dict alone gives ""
+            for a payload without one.
+        timestamp: The mower's time for the state, as the payload gave it, in
+            seconds or milliseconds (mower_time_ms gives epoch milliseconds);
+            None without one.
+        state: The canonical state (see canonical_state): a MowerStatus value
+            for a raw state the SDK knows, any other string as it was sent,
+            and "unknown" when the payload names no state.
+        battery: Battery level in percent, read with battery_from_payload;
+            None when the payload carried no readable value.
+        signal_strength: The payload's signal_strength; None without one.
+        position: The payload's position; None without one.
+        error: The payload's error; None without one. from_status writes it
+            as {"code", "message"}, and DeviceStatus.from_state_message reads
+            a dict with those keys.
+        metrics: A copy of the payload's metrics, with the raw state under
+            "raw_state" when normalisation changed it; None when there is
+            neither.
+        raw: The payload as decoded, for a message made by from_dict; None for
+            one built by hand. Not compared, not in repr and not in to_dict().
+        received_at: When NavimowSDK received the message (UTC), set by
+            NavimowSDK; None for a message built by hand or by from_dict
+            directly, and as given for one built by from_status. Not compared
+            and not in to_dict().
+        original: The payload's bytes exactly as the mower sent them (raw is
+            decoded, with device_id added), set by NavimowSDK; None for a
+            message built by hand or by from_dict directly. Not compared, not
+            in repr and not in to_dict().
+    """
 
     device_id: str
     timestamp: int | None
@@ -757,19 +967,36 @@ class DeviceStateMessage:
     position: dict[str, float] | None = None
     error: dict[str, Any] | None = None
     metrics: dict[str, Any] | None = None
-    # The payload as decoded, for a message made by from_dict; None for one built by
-    # hand. Not compared and not in to_dict().
     raw: dict[str, Any] | None = field(default=None, compare=False, repr=False)
-    # When NavimowSDK received the message (UTC); None for one built by hand. Not
-    # compared and not in to_dict().
     received_at: datetime | None = field(default=None, compare=False)
-    # The payload's bytes exactly as the mower sent them (raw is decoded, with
-    # device_id added), set by NavimowSDK; None for a message built by hand or by
-    # from_dict directly. Not compared and not in to_dict().
     original: bytes | None = field(default=None, compare=False, repr=False)
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "DeviceStateMessage":
+        """Read a state payload.
+
+        The raw state is the first truthy value of ``state``, ``status`` and
+        ``vehicleState``, and state its canonical form (canonical_state).
+        battery is read with battery_from_payload. device_id is "" when the
+        payload has none; timestamp, signal_strength, position and error are
+        the values under those keys as given, None when absent. metrics is a
+        copy of the payload's, so the raw state added to it never reaches the
+        caller's dict: it goes under "raw_state" when it is not None and the
+        canonical state differs from it. raw is a copy of the payload with its
+        own copy of a metrics dict. received_at and original stay None.
+
+        Args:
+            payload: The state payload, as decoded.
+
+        Returns:
+            The message.
+
+        Raises:
+            TypeError: metrics holds something that cannot be read as a dict,
+                such as a number.
+            ValueError: The same, for a value dict() refuses with a
+                ValueError, such as a string.
+        """
         raw_state = _raw_state(payload, ("state", "status", "vehicleState"))
         normalized_state = canonical_state(raw_state)
         # raw is the payload as decoded, with its own copy of a metrics dict.
@@ -797,13 +1024,20 @@ class DeviceStateMessage:
     def from_status(
         cls, status: "DeviceStatus", received_at: datetime | None = None
     ) -> "DeviceStateMessage":
-        """A new state message from a REST DeviceStatus; the status is not changed.
+        """Build a state message from a REST DeviceStatus; the status is not changed.
 
         state is the status's enum value; battery, signal_strength and position
         are carried over; a non-NONE error code becomes {"code", "message"};
         timestamp is the status's in milliseconds (mower_time_ms, None if absent);
-        received_at is as given and raw None. mowing_time, total_mowing_time and
+        metrics, raw and original are None. mowing_time, total_mowing_time and
         extra have no field on a state message and are not carried.
+
+        Args:
+            status: The status to read.
+            received_at: The receipt time to give the message; None for none.
+
+        Returns:
+            A new DeviceStateMessage.
         """
         error = None
         if status.error_code is not MowerError.NONE:
@@ -820,6 +1054,13 @@ class DeviceStateMessage:
         )
 
     def to_dict(self) -> dict[str, Any]:
+        """Convert to a dictionary keyed by the field names.
+
+        Returns:
+            device_id, timestamp, state, battery, signal_strength, position,
+            error and metrics, each always present, None included. raw,
+            received_at and original are left out.
+        """
         return {
             "device_id": self.device_id,
             "timestamp": self.timestamp,
@@ -834,7 +1075,31 @@ class DeviceStateMessage:
 
 @dataclass
 class DeviceEventMessage:
-    """Unified event message from MQTT."""
+    """Unified event message from MQTT.
+
+    NavimowSDK reads each JSON object payload of the event channel into one
+    with from_dict and hands it to the on_event callbacks.
+
+    Attributes:
+        device_id: The device the message is from. NavimowSDK takes it from
+            the topic when the payload names none; from_dict alone gives ""
+            for a payload without one.
+        timestamp: The payload's timestamp, as given; None without one.
+        type: The payload's type; "system" when it names none.
+        event: The payload's event; "" when it names none.
+        level: The payload's level; None without one.
+        message: The payload's message; None without one.
+        params: The payload's params; None without any.
+        raw: The payload as decoded, for a message made by from_dict; None for
+            one built by hand. Not compared, not in repr and not in to_dict().
+        received_at: When NavimowSDK received the message (UTC), set by
+            NavimowSDK; None for a message built by hand or by from_dict
+            directly. Not compared and not in to_dict().
+        original: The payload's bytes exactly as the mower sent them (raw is
+            decoded, with device_id added), set by NavimowSDK; None for a
+            message built by hand or by from_dict directly. Not compared, not
+            in repr and not in to_dict().
+    """
 
     device_id: str
     timestamp: int | None
@@ -843,18 +1108,24 @@ class DeviceEventMessage:
     level: str | None = None
     message: str | None = None
     params: dict[str, Any] | None = None
-    # The payload as decoded, as on DeviceStateMessage.
     raw: dict[str, Any] | None = field(default=None, compare=False, repr=False)
-    # When NavimowSDK received the message (UTC); None for one built by hand. Not
-    # compared and not in to_dict().
     received_at: datetime | None = field(default=None, compare=False)
-    # The payload's bytes exactly as the mower sent them (raw is decoded, with
-    # device_id added), set by NavimowSDK; None for a message built by hand or by
-    # from_dict directly. Not compared and not in to_dict().
     original: bytes | None = field(default=None, compare=False, repr=False)
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "DeviceEventMessage":
+        """Read an event payload.
+
+        Each field is the value under the key of its name, as given. raw is a
+        copy of the payload; received_at and original stay None.
+
+        Args:
+            payload: The event payload, as decoded.
+
+        Returns:
+            The message. Where the payload has no key for a field, device_id
+            and event are "", type is "system" and the other fields are None.
+        """
         return cls(
             device_id=payload.get("device_id", ""),
             timestamp=payload.get("timestamp"),
@@ -867,6 +1138,13 @@ class DeviceEventMessage:
         )
 
     def to_dict(self) -> dict[str, Any]:
+        """Convert to a dictionary keyed by the field names.
+
+        Returns:
+            device_id, timestamp, type, event, level, message and params, each
+            always present, None included. raw, received_at and original are
+            left out.
+        """
         return {
             "device_id": self.device_id,
             "timestamp": self.timestamp,
@@ -880,22 +1158,48 @@ class DeviceEventMessage:
 
 @dataclass
 class DeviceAttributesMessage:
-    """Unified attributes message from MQTT."""
+    """Unified attributes message from MQTT.
+
+    NavimowSDK reads each JSON object payload of the attributes channel into
+    one with from_dict, caches the latest for each device and hands it to the
+    on_attributes callbacks.
+
+    Attributes:
+        device_id: The device the message is from. NavimowSDK takes it from
+            the topic when the payload names none; from_dict alone gives ""
+            for a payload without one.
+        attributes: The payload's attributes; empty when it has none.
+        raw: The payload as decoded, for a message made by from_dict; None for
+            one built by hand. Not compared, not in repr and not in to_dict().
+        received_at: When NavimowSDK received the message (UTC), set by
+            NavimowSDK; None for a message built by hand or by from_dict
+            directly. Not compared and not in to_dict().
+        original: The payload's bytes exactly as the mower sent them (raw is
+            decoded, with device_id added), set by NavimowSDK; None for a
+            message built by hand or by from_dict directly. Not compared, not
+            in repr and not in to_dict().
+    """
 
     device_id: str
     attributes: dict[str, Any]
-    # The payload as decoded, as on DeviceStateMessage.
     raw: dict[str, Any] | None = field(default=None, compare=False, repr=False)
-    # When NavimowSDK received the message (UTC); None for one built by hand. Not
-    # compared and not in to_dict().
     received_at: datetime | None = field(default=None, compare=False)
-    # The payload's bytes exactly as the mower sent them (raw is decoded, with
-    # device_id added), set by NavimowSDK; None for a message built by hand or by
-    # from_dict directly. Not compared and not in to_dict().
     original: bytes | None = field(default=None, compare=False, repr=False)
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "DeviceAttributesMessage":
+        """Read an attributes payload.
+
+        raw is a copy of the payload; received_at and original stay None.
+
+        Args:
+            payload: The attributes payload, as decoded.
+
+        Returns:
+            The message: device_id is the payload's, "" when it has none, and
+            attributes the value under ``attributes``, an empty dict when the
+            key is absent or its value is falsy.
+        """
         return cls(
             device_id=payload.get("device_id", ""),
             attributes=payload.get("attributes", {}) or {},
@@ -903,6 +1207,12 @@ class DeviceAttributesMessage:
         )
 
     def to_dict(self) -> dict[str, Any]:
+        """Convert to a dictionary keyed by the field names.
+
+        Returns:
+            device_id and attributes. raw, received_at and original are left
+            out.
+        """
         return {
             "device_id": self.device_id,
             "attributes": self.attributes,
@@ -911,7 +1221,18 @@ class DeviceAttributesMessage:
 
 @dataclass
 class DeviceCommandMessage:
-    """Unified command message for MQTT publish."""
+    """Unified command message for MQTT publish.
+
+    NavimowSDK builds one for each experimental MQTT command and publishes its
+    to_dict() to the device's command topic, which the broker accepts and no
+    mower has been seen to act on.
+
+    Attributes:
+        id: The command's id; NavimowSDK gives each "cmd-" and a random UUID.
+        device_id: The device the command is for.
+        command: The command's name, such as "start_mowing" or "pause".
+        params: The command's parameters; None for none.
+    """
 
     id: str
     device_id: str
@@ -920,6 +1241,15 @@ class DeviceCommandMessage:
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "DeviceCommandMessage":
+        """Read a command payload, such as to_dict()'s output.
+
+        Args:
+            payload: The command payload, as decoded.
+
+        Returns:
+            The message. Where the payload has no key for a field, id,
+            device_id and command are "" and params is None.
+        """
         return cls(
             id=payload.get("id", ""),
             device_id=payload.get("device_id", ""),
@@ -928,6 +1258,12 @@ class DeviceCommandMessage:
         )
 
     def to_dict(self) -> dict[str, Any]:
+        """Convert to the dictionary that is published.
+
+        Returns:
+            id, device_id, command and params, with params an empty dict when
+            the message has none.
+        """
         return {
             "id": self.id,
             "device_id": self.device_id,
@@ -954,9 +1290,14 @@ _MILLISECONDS_ABOVE = 100_000_000_000
 
 
 def _number(value: Any) -> float | None:
-    """A vendor number (often a string such as "100.00") as a float.
+    """Read a vendor number (often a string such as "100.00") as a float.
 
-    None for a bool, a non-finite value or anything float() cannot read.
+    Args:
+        value: The value to read: a number or a numeric string.
+
+    Returns:
+        The float; None for a bool, a non-finite value or anything float()
+        cannot read.
     """
     if isinstance(value, bool):
         return None
@@ -968,16 +1309,32 @@ def _number(value: Any) -> float | None:
 
 
 def _whole(value: Any) -> int | None:
-    """A vendor integer (an int, a float or a numeric string) as an int, else None."""
+    """Read a vendor integer (an int, a float or a numeric string) as an int.
+
+    Args:
+        value: The value to read.
+
+    Returns:
+        The number _number reads, with any fraction dropped; None when it
+        reads none.
+    """
     number = _number(value)
     return None if number is None else int(number)
 
 
 def mower_time_ms(value: Any) -> int | None:
-    """A mower timestamp as epoch milliseconds, whether it was sent in seconds or milliseconds.
+    """Give a mower timestamp as epoch milliseconds, whether sent in seconds or milliseconds.
 
-    Numbers may arrive as strings. None when the value is absent, unreadable, or
-    not positive.
+    A value above 100,000,000,000 is read as milliseconds, one at or below it
+    as seconds.
+
+    Args:
+        value: The timestamp as the mower sent it; numbers may arrive as
+            strings.
+
+    Returns:
+        The time in epoch milliseconds; None when the value is absent,
+        unreadable, or not positive.
     """
     number = _whole(value)
     if number is None or number <= 0:
@@ -986,16 +1343,43 @@ def mower_time_ms(value: Any) -> int | None:
 
 
 def _status_of(vehicle_state: int | None) -> MowerStatus | None:
+    """Give the MowerStatus a pose code stands for.
+
+    Args:
+        vehicle_state: A pose entry's vehicleState code; None when the pose
+            carried none.
+
+    Returns:
+        The code's status in VEHICLE_STATE_TO_STATUS, UNKNOWN for a code not
+        in the table, and None for None.
+    """
     if vehicle_state is None:
         return None
     return VEHICLE_STATE_TO_STATUS.get(vehicle_state, MowerStatus.UNKNOWN)
 
 
 def _iso(value: datetime | None) -> str | None:
+    """Give a time as an ISO 8601 string.
+
+    Args:
+        value: The time, or None.
+
+    Returns:
+        value.isoformat(), or None for None.
+    """
     return None if value is None else value.isoformat()
 
 
 def _from_iso(value: Any) -> datetime | None:
+    """Read a time from an ISO 8601 string.
+
+    Args:
+        value: The string, as _iso wrote it, or a datetime.
+
+    Returns:
+        A datetime as it is and a string as datetime.fromisoformat reads it;
+        None for a string it cannot read and for any other value.
+    """
     if isinstance(value, datetime):
         return value
     if not isinstance(value, str):
@@ -1039,58 +1423,90 @@ class DeviceLocation:
     """The location channel's merged record for one device, as it stands.
 
     Built by merging the channel's entries one by one (mower_sdk.location): each
-    entry type updates its own fields and leaves the others as they were. Times
-    ending in ``_at`` without ``received`` are mower times in epoch milliseconds;
+    entry type updates its own fields and leaves the others as they were. A
+    field other than device_id, dock_samples and marks is None until an entry
+    has filled it. Times ending in ``_at`` without ``received`` are mower times
+    in epoch milliseconds, None when the entry was sent without a time;
     ``pose_received_at`` and ``delay_received_at`` are the UTC receipt times.
 
-    Pose (type 1 entries): ``x`` and ``y`` in metres on the lawn's local grid
-    (origin near the dock or RTK reference, not latitude and longitude),
-    ``theta`` in radians, ``vehicle_state`` (the pose code, see ``status``),
-    ``pose_at`` and ``pose_received_at``. A pose is replaced whole, so a pose
-    entry without a heading leaves ``theta`` None.
+    The dock fields are learned from pose entries whose code says docked or
+    charging (see LocationDecoder). The estimate is a capped mean: once the cap
+    (200 poses by default) is reached each docked pose moves it by one over the
+    cap of the way, so a dock moved by less than the move distance (1 m by
+    default) is followed only slowly, about 63 % of the way after 200 further
+    docked poses, roughly seventeen hours docked at one pose per five minutes.
+    A dock moved farther than that is picked up after a few docked poses in a
+    row that agree, each within the move distance of their running mean (three
+    by default), and dock_samples then starts again from that count.
 
-    Task (type 2 entries): ``current_zone`` is the partition the mower is in now
-    (it changes once the mower has crossed into the next one), with ``zone_at``;
-    ``route_progress`` is the last route reading seen (0 to 10000, 10000 at the
-    end of the route), with ``progress_at``, kept when a newer task entry omits
-    it. The rest of the latest task entry is replaced whole: ``mowing_percentage``,
-    ``area_m2``, ``week_area_m2``, ``action``, ``sub_action``, ``mow_start_type``,
-    ``map_work_position`` and ``task_at``. ``map_work_position`` is kept as the
-    128-hex-digit string the mower sends: it holds sixteen 32-bit words whose
-    order two readings of captures disagree on, so it is not decoded.
-
-    Target (type 3 entries): ``partition_ids``, None until a target report has
-    arrived and empty for a report with no active target (a mow-all task sends
-    the same empty report as an idle mower; mower_sdk.location.target_zone reads
-    it with the mower's state); ``target_at``, when this set was
-    first reported, and ``target_last_at``, its latest repeat.
-
-    Delay (type 4 entries): ``task_delay`` (a rain or schedule delay) and
-    ``delay_received_at``; the entry carries no time of its own.
-
-    Dock (learned from pose entries whose code says docked or charging, see
-    LocationDecoder): ``dock_x`` and ``dock_y``, the estimated dock position on
-    the same grid as the pose, None until the first such pose; ``dock_theta``,
-    the heading of the latest pose in the estimate (the previous one's when a
-    pose omits it; after a detected move, the latest heading among the poses
-    that showed it, never the old dock's); ``dock_at``, that pose's mower
-    time, None when it was sent without one; ``dock_samples``, how many poses
-    the estimate holds, capped
-    (200 by default), 0 without an estimate. The estimate is a capped mean: once
-    the cap is reached each docked pose moves it by one over the cap of the way,
-    so a dock moved by less than the move distance (1 m by default) is followed
-    only slowly, about 63 % of the way after 200 further docked poses, roughly
-    seventeen hours docked at one pose per five minutes. A dock moved farther
-    than that is picked up after a few docked poses in a row that agree, each
-    within the move distance of their running mean (three by default), and
-    dock_samples then starts again from that count.
-
-    ``marks`` maps the entry types 1, 2 and 3 to the mower time of the newest
-    entry of that type applied, the high-water mark below which a later entry is
-    stale. It is kept apart from the observation times because an entry without
-    a time leaves the time None while the mark must stand. to_dict() and
-    from_dict() carry it, so a record persisted and handed back after a restart
-    keeps rejecting late entries.
+    Attributes:
+        device_id: The device the record is of.
+        x: Pose (type 1 entries): the position's x in metres on the lawn's
+            local grid (origin near the dock or RTK reference, not latitude
+            and longitude). A pose is replaced whole.
+        y: Pose: the position's y in metres on the same grid.
+        theta: Pose: the heading in radians; None when the latest pose entry
+            carried no heading.
+        vehicle_state: Pose: the pose code (see status and
+            VEHICLE_STATE_TO_STATUS); None when the latest pose entry carried
+            none, and a lifted mower sends none.
+        pose_at: Pose: the latest pose entry's mower time; None when it was
+            sent without one.
+        pose_received_at: Pose: when the latest pose entry was received (UTC).
+        current_zone: Task (type 2 entries): the partition the mower is in now
+            (it changes once the mower has crossed into the next one), kept
+            when a newer task entry omits it.
+        zone_at: Task: the mower time of the entry current_zone came from.
+        route_progress: Task: the last route reading seen (0 to 10000, 10000
+            at the end of the route), kept when a newer task entry omits it.
+        progress_at: Task: the mower time of the entry route_progress came
+            from.
+        mowing_percentage: Task: the latest task entry's mowingPercentage.
+            This and the fields down to task_at are replaced whole by each
+            task entry, so one the latest entry did not carry is None.
+        area_m2: Task: the latest task entry's subtotalArea, in square metres.
+        week_area_m2: Task: the latest task entry's mowingWeekArea, in square
+            metres.
+        action: Task: the latest task entry's action, a code.
+        sub_action: Task: the latest task entry's subAction, a code.
+        mow_start_type: Task: the latest task entry's mowStartType, a code.
+        map_work_position: Task: the latest task entry's mapWorkPosition, kept
+            as the 128-hex-digit string the mower sends: it holds sixteen
+            32-bit words whose order two readings of captures disagree on, so
+            it is not decoded.
+        task_at: Task: the latest task entry's mower time; None when it was
+            sent without one.
+        partition_ids: Target (type 3 entries): the targeted partitions. None
+            until a target report has arrived and empty for a report with no
+            active target (a mow-all task sends the same empty report as an
+            idle mower; mower_sdk.location.target_zone reads it with the
+            mower's state).
+        target_at: Target: when this set was first reported, as a mower time.
+        target_last_at: Target: the mower time of the set's latest repeat.
+        task_delay: Delay (type 4 entries): the latest delay entry's taskDelay
+            (a rain or schedule delay).
+        delay_received_at: Delay: when the latest delay entry was received
+            (UTC); the entry carries no time of its own.
+        dock_x: Dock: the estimated dock position's x, on the same grid as the
+            pose; None until the first pose whose code says docked or
+            charging.
+        dock_y: Dock: the estimated dock position's y, as dock_x.
+        dock_theta: Dock: the heading of the latest pose in the estimate (the
+            previous one's when a pose omits it; after a detected move, the
+            latest heading among the poses that showed it, never the old
+            dock's).
+        dock_at: Dock: that pose's mower time, None when it was sent without
+            one.
+        dock_samples: Dock: how many poses the estimate holds, capped (200 by
+            default), 0 without an estimate.
+        marks: The high-water marks: the entry types 1, 2 and 3 mapped to the
+            mower time of the newest entry of that type applied, at or below
+            which a later entry is stale. Kept apart from the observation
+            times because an entry without a time leaves the time None while
+            the mark must stand. to_dict() and from_dict() carry it, so a
+            record persisted and handed back after a restart keeps rejecting
+            late entries. Left out of the hash, since a dict is unhashable;
+            equality compares it.
     """
 
     device_id: str
@@ -1150,9 +1566,13 @@ class DeviceLocation:
         return "none"
 
     def to_dict(self) -> dict[str, Any]:
-        """The record as JSON-ready values.
+        """Give the record as JSON-ready values.
 
-        Times are ISO 8601 strings, partition ids a list, marks keyed by type.
+        Returns:
+            Every field under its own name. The two receipt times are ISO 8601
+            strings, the mower times stay integers, partition_ids is a list
+            and marks is keyed by the entry type as a string. A None stays
+            None.
         """
         data: dict[str, Any] = {}
         for item in fields(self):
@@ -1168,11 +1588,20 @@ class DeviceLocation:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "DeviceLocation":
-        """The record from to_dict()'s output.
+        """Rebuild the record from to_dict()'s output.
 
-        Absent or unreadable values are None, absent marks empty.
+        A number may be a numeric string, and a receipt time an ISO 8601
+        string or a datetime. Keys that name no field are ignored.
 
-        dock_samples is 0 when absent, unreadable or negative.
+        Args:
+            data: The record as to_dict() gave it.
+
+        Returns:
+            The record. Absent or unreadable values are None, absent marks
+            empty. partition_ids keeps the ids that can be read from a list or
+            tuple, and marks the entries whose type and time can be read.
+            dock_samples is 0 when absent, unreadable or negative, and
+            device_id "" when absent.
         """
         values: dict[str, Any] = {}
         for name in _LOCATION_WHOLE_FIELDS:
@@ -1210,13 +1639,39 @@ class DeviceLocation:
 class DeviceLocationMessage:
     """One entry of a location message, decoded, with the merged record as it stood after it.
 
-    ``entry_type`` is 1 (pose), 2 (task), 3 (target) or 4 (delay); ``timestamp``
-    is the entry's mower time in epoch milliseconds (None for a delay entry, or an
-    entry sent without a time); ``received_at`` is the UTC receipt time. The
-    entry's own fields follow, None for those it does not carry (see
-    DeviceLocation for their meaning). ``raw`` is the entry as decoded, and
-    ``location`` the DeviceLocation after this entry was applied, so a consumer
-    acting per entry sees the record at that point, not only after the message.
+    LocationDecoder makes one for each entry it applies, and NavimowSDK hands
+    them to the on_location callbacks. The fields from x to task_delay are the
+    entry's own, None for those it does not carry; DeviceLocation says what
+    each means.
+
+    Attributes:
+        device_id: The device the entry is from.
+        entry_type: 1 (pose), 2 (task), 3 (target) or 4 (delay).
+        timestamp: The entry's mower time in epoch milliseconds; None for a
+            delay entry, or an entry sent without a time.
+        received_at: The UTC receipt time.
+        location: The DeviceLocation after this entry was applied, so a
+            consumer acting per entry sees the record at that point, not only
+            after the message.
+        x: A pose entry's x.
+        y: A pose entry's y.
+        theta: A pose entry's heading; None when it carried none.
+        vehicle_state: A pose entry's code; None when it carried none.
+        current_zone: A task entry's partition; None when the entry did not
+            send its key, which leaves the record's value as it was.
+        route_progress: A task entry's route reading; None when the entry did
+            not send its key, which leaves the record's value as it was.
+        mowing_percentage: A task entry's mowingPercentage.
+        area_m2: A task entry's subtotalArea.
+        week_area_m2: A task entry's mowingWeekArea.
+        action: A task entry's action.
+        sub_action: A task entry's subAction.
+        mow_start_type: A task entry's mowStartType.
+        map_work_position: A task entry's mapWorkPosition.
+        partition_ids: A target entry's partitions, empty when it names none;
+            None for the other entry types.
+        task_delay: A delay entry's taskDelay; None when it is not a boolean.
+        raw: The entry as decoded. Not compared and not in repr.
     """
 
     device_id: str
@@ -1251,17 +1706,39 @@ class DeviceLocationMessage:
 class SkippedLocationEntry:
     """One entry of a location message that was not applied, decoded as far as it goes.
 
-    ``reason`` is why it was skipped: stale (at or below the newest applied time
-    of its type), implausible_time, placeholder (an all-zero pose), unparsable (a
-    pose whose x or y cannot be read) or unknown_type. ``entry_type`` is the
-    type as sent when it is an integer, else None; ``timestamp`` the entry's
-    time as read, which for implausible_time may be zero, negative or far off,
-    and None when the entry has none or it cannot be read. The entry's own
-    fields follow, read the same way as DeviceLocationMessage's and None for
-    those it does not carry (all of them for an unknown type). ``raw`` is the
-    entry as decoded. Nothing in it reached the record, so it carries no
-    DeviceLocation; a consumer that keeps a history can store it marked as
-    skipped.
+    Nothing in it reached the record, so it carries no DeviceLocation; a
+    consumer that keeps a history can store it marked as skipped. The fields
+    from x to task_delay are the entry's own, read the same way as
+    DeviceLocationMessage's and None for those it does not carry (all of them
+    for an unknown type).
+
+    Attributes:
+        device_id: The device the entry is from.
+        entry_type: The type as sent when it is an integer, else None.
+        timestamp: The entry's time as read, which for implausible_time may be
+            zero, negative or far off; None when the entry has none or it
+            cannot be read.
+        reason: Why it was skipped: stale (at or below the newest applied time
+            of its type), implausible_time, placeholder (an all-zero pose: x
+            and y zero, the heading zero, missing or unreadable), unparsable
+            (a pose whose x or y cannot be read) or unknown_type.
+        received_at: The UTC receipt time.
+        x: A pose entry's x; None when it cannot be read.
+        y: A pose entry's y; None when it cannot be read.
+        theta: A pose entry's heading.
+        vehicle_state: A pose entry's code.
+        current_zone: A task entry's partition.
+        route_progress: A task entry's route reading.
+        mowing_percentage: A task entry's mowingPercentage.
+        area_m2: A task entry's subtotalArea.
+        week_area_m2: A task entry's mowingWeekArea.
+        action: A task entry's action.
+        sub_action: A task entry's subAction.
+        mow_start_type: A task entry's mowStartType.
+        map_work_position: A task entry's mapWorkPosition.
+        partition_ids: A target entry's partitions.
+        task_delay: A delay entry's taskDelay.
+        raw: The entry as decoded. Not compared and not in repr.
     """
 
     device_id: str
@@ -1296,16 +1773,29 @@ class SkippedLocationEntry:
 class RejectedMessage:
     """A message NavimowSDK did not apply, or applied with something unknown in it.
 
-    ``reason`` is the deciding one of ``reasons`` (unparsable, implausible_time,
-    unknown_type, unknown_field, stale, placeholder). ``payload`` is the bytes the
-    facade received: the wire bytes for an array, and for an object the MQTT
-    client's re-encoded form with device_id added. Recording it is the
-    consumer's. ``original`` is the bytes exactly as the mower sent them: the
-    same as ``payload`` except for an object the MQTT client re-encoded; it is
-    left out of equality. ``skipped`` lists, for a location message, each
-    entry that was not applied, in the order the decoder met them (empty for
-    the other channels, and for a location message that was unparsable as a
-    whole).
+    NavimowSDK hands one to the on_rejected callbacks. Recording the payload
+    is the consumer's.
+
+    Attributes:
+        channel: The channel the message came on: state, event, attributes or
+            location.
+        topic: The topic the message came on.
+        device_id: The device the message is from.
+        reason: The deciding one of reasons.
+        reasons: Every reason the message earned, of unparsable,
+            implausible_time, unknown_type, unknown_field, stale and
+            placeholder.
+        payload: The bytes the facade received: the wire bytes for anything
+            but a JSON object (an array, say), and for an object the MQTT
+            client's re-encoded form with device_id added.
+        received_at: The UTC receipt time.
+        skipped: For a location message, each entry that was not applied, in
+            the order the decoder met them; empty for the other channels, and
+            for a location message that was unparsable as a whole.
+        original: The bytes exactly as the mower sent them: the same as
+            payload except for an object the MQTT client re-encoded. Left out
+            of equality and of repr. NavimowSDK always sets it; None is for a
+            message built by hand.
     """
 
     channel: str
@@ -1329,7 +1819,24 @@ _LEGACY_NAMES = {
 
 
 def __getattr__(name: str) -> Any:
-    """Serve the names that moved to mower_sdk.legacy, warning once per legacy module."""
+    """Serve the names that moved to mower_sdk.legacy, warning once per legacy module.
+
+    The warning is warn_legacy's DeprecationWarning, given once per process
+    for the legacy module, whichever of its names is asked for first. The name
+    is then stored in this module's globals, so a later access does not come
+    here.
+
+    Args:
+        name: The attribute asked of the module.
+
+    Returns:
+        The class of that name in mower_sdk.legacy.thing_models.
+
+    Raises:
+        AttributeError: name is not one of the moved names.
+        DeprecationWarning: A warnings filter turns the warning into an error
+            (see warn_legacy); nothing is imported or stored then.
+    """
     try:
         legacy_module, attribute = _LEGACY_NAMES[name]
     except KeyError:
