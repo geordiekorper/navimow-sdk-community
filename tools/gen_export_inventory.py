@@ -6,11 +6,12 @@ For every module the inventory records the public classes, functions and
 constants it defines, plus its incidental aliases: names it imports from
 sibling modules, which exist as attributes only because of the import (for
 example ``mower_sdk.mqtt.parse_json``). Each alias carries a policy, ``keep``
-for all of them at the fork point; a later phase that moves code may change a
-policy in a reviewed edit. The package ``__all__`` and every name the package
-``__init__`` imports at top level, listed in ``__all__`` or not, are recorded
-as well. Plain ``import x`` statements and names bound inside ``if`` or
-``try`` blocks are not recorded.
+for all of them at the fork point; a later change that moves code may change
+a policy in a reviewed edit. The package ``__all__`` and every name the
+package ``__init__`` imports at top level from the package or a module
+inside it, listed in ``__all__`` or not, are recorded as well. Plain
+``import x`` statements and names bound inside ``if`` or ``try`` blocks are
+not recorded.
 
 The committed inventory was generated once from the fork point and is not
 regenerated automatically; rerunning this script is a deliberate change:
@@ -38,12 +39,34 @@ Assignment = ast.Assign | ast.AnnAssign
 
 
 def assigned_names(node: Assignment) -> list[str]:
+    """List the names an assignment statement binds.
+
+    Args:
+        node: An assignment, plain or annotated.
+
+    Returns:
+        The identifier of every name found in the statement's targets: each
+        name a plain, chained or unpacking assignment binds, and also any
+        name that appears in an attribute or subscript target.
+    """
     targets = node.targets if isinstance(node, ast.Assign) else [node.target]
     return [sub.id for target in targets for sub in ast.walk(target) if isinstance(sub, ast.Name)]
 
 
 def string_list(node: ast.AST, where: str) -> list[str]:
-    """Return the string literals of the list or tuple assigned to ``__all__``."""
+    """Return the string literals of the list or tuple assigned to ``__all__``.
+
+    Args:
+        node: The value assigned to ``__all__``.
+        where: The file the assignment is in, to name it in the error.
+
+    Returns:
+        The elements that are string literals, in order; an element of any
+        other kind is left out.
+
+    Raises:
+        SystemExit: The value is not a list or tuple literal.
+    """
     if not isinstance(node, (ast.List, ast.Tuple)):
         raise SystemExit(f"{where}: __all__ must be a list or tuple literal")
     return [
@@ -54,7 +77,19 @@ def string_list(node: ast.AST, where: str) -> list[str]:
 
 
 def resolve_source(node: ast.ImportFrom, module_name: str, is_init: bool) -> str:
-    """Absolute name of the module an ``ImportFrom`` reads from."""
+    """Give the absolute name of the module an ``ImportFrom`` reads from.
+
+    Args:
+        node: The import statement.
+        module_name: The dotted name of the module the statement is in.
+        is_init: Whether that module is a package's ``__init__``, in which
+            case a relative import starts from the module's own name and not
+            from its parent's.
+
+    Returns:
+        For an absolute import, the module it names; for a relative one,
+        that name resolved against module_name.
+    """
     if node.level == 0:
         return node.module or ""
     anchor = module_name.split(".") if is_init else module_name.split(".")[:-1]
@@ -63,6 +98,31 @@ def resolve_source(node: ast.ImportFrom, module_name: str, is_init: bool) -> str
 
 
 def collect_module(path: Path, package: str, module_name: str, is_init: bool) -> dict:
+    """Record what one module defines, which package names it imports, and its ``__all__``.
+
+    The file is parsed, not imported, and only its top-level statements are
+    read: nothing inside an ``if``, a ``try`` or any other block.
+
+    Args:
+        path: The module's source file.
+        package: The name of the package the inventory is of.
+        module_name: The module's dotted name.
+        is_init: Whether the file is a package's ``__init__``.
+
+    Returns:
+        A dict of three entries. "defines": each class, function and assigned
+        name that does not start with an underscore, mapped to "class",
+        "function" or "constant", sorted by name. "aliases": each name a
+        ``from`` import binds from the package or a module inside it, one
+        that starts with an underscore included, mapped to its "source"
+        module and the "policy" "keep", sorted by name. "all": the strings
+        of the module's ``__all__``, or None when it assigns none.
+
+    Raises:
+        SystemExit: ``__all__`` is assigned something other than a list or
+            tuple literal.
+        FileNotFoundError: The module's file does not exist.
+    """
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     defines: dict[str, str] = {}
     aliases: dict[str, dict[str, str]] = {}
@@ -90,6 +150,30 @@ def collect_module(path: Path, package: str, module_name: str, is_init: bool) ->
 
 
 def build_inventory(package_dir: Path, ref: str) -> dict:
+    """Build the inventory of a package directory.
+
+    Every .py file under the directory is read, in sorted order, except
+    those under a directory whose name starts with a full stop or with
+    __pycache__. A subpackage's ``__init__`` is recorded under the
+    subpackage's name; the package's own ``__init__`` gives the top-level
+    entries and is not listed among the modules.
+
+    Args:
+        package_dir: The package's directory; its name is the package's name.
+        ref: The commit the inventory describes, recorded as it is given.
+
+    Returns:
+        The inventory, as it is written to JSON: "package", "source_ref" and
+        "generator"; "all", the package's ``__all__``; "package_imports",
+        each name the package ``__init__`` imports from the package, mapped
+        to the module it comes from; and "modules", each module's dotted
+        name mapped to its "defines" and "aliases" (see collect_module) and,
+        when the module has one, its "all".
+
+    Raises:
+        SystemExit: The package ``__init__`` assigns no ``__all__``, or an
+            ``__all__`` in the package is not a list or tuple literal.
+    """
     package = package_dir.name
     init = collect_module(package_dir / "__init__.py", package, package, is_init=True)
     if init["all"] is None:
@@ -121,6 +205,15 @@ def build_inventory(package_dir: Path, ref: str) -> dict:
 
 
 def current_ref(package_dir: Path) -> str:
+    """Give the commit checked out where the package directory is.
+
+    Args:
+        package_dir: The directory git is run in.
+
+    Returns:
+        The abbreviated hash of HEAD, or "unknown" when git cannot be run or
+        exits with an error, as it does outside a repository.
+    """
     try:
         out = subprocess.run(
             ["git", "-C", str(package_dir), "rev-parse", "--short", "HEAD"],
@@ -134,6 +227,28 @@ def current_ref(package_dir: Path) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Write the inventory of a package to a JSON file and print what it holds.
+
+    The output file's directory is created when it is missing, and the file
+    is replaced. The summary line (the counts and the ref) goes to standard
+    error.
+
+    Args:
+        argv: The command line without the program's name; None reads
+            sys.argv. --package is the directory to walk (mower_sdk in this
+            repository by default), --output the file to write
+            (tests/upstream_exports.json by default) and --ref the commit to
+            record (by default the HEAD of the repository --package is in).
+
+    Returns:
+        The exit status: 0, the inventory was written.
+
+    Raises:
+        SystemExit: The package ``__init__`` has no ``__all__`` or an
+            ``__all__`` is not a list or tuple literal, with a message and so
+            status 1; or argparse ends the run, with status 2 for a command
+            line that is not valid and status 0 after --help.
+    """
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument(
         "--package", type=Path, default=DEFAULT_PACKAGE, help="package directory to walk"

@@ -120,8 +120,7 @@ convention = "google"
 # Legacy code moved verbatim from upstream keeps only the F rules, so it is
 # never reformatted or modernised here; that keeps merge-back diffs small.
 "mower_sdk/legacy/**" = ["ARG", "B", "SIM", "UP", "E501", "I", "RUF100", "D", "DOC"]
-# The tests and the tools keep the rules for the form of a docstring, not the
-# ones that require one everywhere or hold it to the code.
+# The tests keep the rules for the form of a docstring, not the ones that
+# require one everywhere or hold it to the code.
 "tests/**" = ["D1", "DOC"]
-"tools/**" = ["D1", "DOC"]
-"noxfile.py" = ["D1", "DOC"]
+"tools/tests/**" = ["D1", "DOC"]

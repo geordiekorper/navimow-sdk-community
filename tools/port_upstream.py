@@ -46,9 +46,11 @@ commit by commit instead:
    would conflict without any move. Resolve it, ``git add`` the file and run
    ``git am --continue``; ``git am --abort`` restores the branch.
 
-Exit status: 0 applied (or dry run), 1 ``git am`` stopped on a conflict,
-2 refused because a step touches a mixed file, 3 usage, git error or nothing
-to apply.
+Exit status: 0 applied (or dry run); 1 ``git am`` stopped, as it does on a
+conflict; 2 refused because a step touches a mixed file, and also argparse's
+status for a command line it cannot read; 3 nothing could be applied: git
+could not list the range, the range is empty or changes nothing, or tracked
+files have uncommitted changes.
 """
 
 from __future__ import annotations
@@ -84,7 +86,21 @@ TRAILER_LINE = re.compile(rb"^[A-Za-z][A-Za-z0-9-]*: \S")
 
 
 def git(*args: str, check: bool = True, **kwargs: object) -> subprocess.CompletedProcess[str]:
-    """Run git and capture its output as text; for commit lists, names and status."""
+    """Run git and capture its output as text; for commit lists, names and status.
+
+    Args:
+        *args: git's arguments. The command is run as git -C REPO_ROOT, so
+            it reads this repository whatever the current directory is.
+        check: Whether a nonzero exit status of git is an error.
+        **kwargs: Further keyword arguments for subprocess.run.
+
+    Returns:
+        The completed process, with its standard output and error as text.
+
+    Raises:
+        subprocess.CalledProcessError: check is true and git exits with a
+            nonzero status.
+    """
     return subprocess.run(
         ["git", "-C", str(REPO_ROOT), *args], capture_output=True, text=True, check=check, **kwargs
     )
@@ -93,48 +109,139 @@ def git(*args: str, check: bool = True, **kwargs: object) -> subprocess.Complete
 def git_bytes(
     *args: str, check: bool = True, **kwargs: object
 ) -> subprocess.CompletedProcess[bytes]:
-    """Run git and capture its output as bytes; for anything that carries file content."""
+    """Run git and capture its output as bytes; for anything that carries file content.
+
+    Args:
+        *args: git's arguments. The command is run as git -C REPO_ROOT, so
+            it reads this repository whatever the current directory is.
+        check: Whether a nonzero exit status of git is an error.
+        **kwargs: Further keyword arguments for subprocess.run, such as the
+            input to send to git.
+
+    Returns:
+        The completed process, with its standard output and error as bytes.
+
+    Raises:
+        subprocess.CalledProcessError: check is true and git exits with a
+            nonzero status.
+    """
     return subprocess.run(
         ["git", "-C", str(REPO_ROOT), *args], capture_output=True, check=check, **kwargs
     )
 
 
 def load_map() -> tuple[dict[str, str], list[str]]:
+    """Read the path map, tools/upstream_path_map.json.
+
+    Returns:
+        Two values. The moved files: each file that moved whole into
+        mower_sdk/legacy/, its upstream path mapped to its path here. The
+        mixed files: the paths of the core files whose content was split
+        between core and legacy.
+
+    Raises:
+        FileNotFoundError: The path map is not beside the tool.
+    """
     data = json.loads(MAP_FILE.read_text(encoding="utf-8"))
     return dict(data["moved"]), list(data["mixed"])
 
 
 def encode_map(moved: dict[str, str]) -> dict[bytes, bytes]:
+    """Give the map of moved files as bytes, to match against the bytes of a diff.
+
+    Args:
+        moved: The moved files, old path to new, as load_map returns them.
+
+    Returns:
+        The same map with every path encoded as UTF-8.
+    """
     return {old.encode("utf-8"): new.encode("utf-8") for old, new in moved.items()}
 
 
 def commits_in(range_spec: str) -> list[tuple[str, list[str]]]:
-    """The first-parent line of the range, oldest first, each commit with its parents.
+    """List the first-parent line of the range, oldest first, each commit with its parents.
 
     A merge is one step on that line, ported as its net change against its
     first parent; the commits it merged are not visited.
+
+    Args:
+        range_spec: The commit range, as git rev-list takes it.
+
+    Returns:
+        One pair for each commit on the line: its full hash, and the full
+        hashes of its parents with the first parent first (none for a root
+        commit). Empty when the range holds no commit.
+
+    Raises:
+        subprocess.CalledProcessError: git cannot list the range, an unknown
+            revision for example.
     """
     out = git("rev-list", "--reverse", "--first-parent", "--parents", range_spec).stdout
     return [(fields[0], fields[1:]) for line in out.splitlines() if (fields := line.split())]
 
 
 def trees_of(commit: str, parents: list[str]) -> list[str]:
-    """diff-tree arguments for the commit's change against its first parent."""
+    """Give the diff-tree arguments for the commit's change against its first parent.
+
+    Args:
+        commit: The commit.
+        parents: Its parents, the first parent first; empty for a root commit.
+
+    Returns:
+        The first parent and the commit; for a root commit, --root and the
+        commit, which makes git diff-tree show everything in it as added.
+    """
     return [parents[0], commit] if parents else ["--root", commit]
 
 
 def files_touched(commit: str, parents: list[str]) -> list[str]:
-    """Files the commit changes against its first parent."""
+    """List the files the commit changes against its first parent.
+
+    Args:
+        commit: The commit.
+        parents: Its parents, the first parent first; empty for a root commit.
+
+    Returns:
+        The paths as git diff-tree --name-only prints them, read through
+        every directory. No rename detection is asked for, so a renamed file
+        is listed under both its names. Empty when the commit changes nothing
+        against its first parent.
+
+    Raises:
+        subprocess.CalledProcessError: git cannot read the commit.
+    """
     out = git("diff-tree", "--no-commit-id", "--name-only", "-r", *trees_of(commit, parents)).stdout
     return [line for line in out.splitlines() if line]
 
 
 def merged_commits(parents: list[str]) -> list[str]:
-    """The commits a merge brought in: reachable from its other parents, not from its first."""
+    """List the commits a merge brought in: reachable from its other parents, not from its first.
+
+    Args:
+        parents: The parents of a merge commit, the first parent first.
+
+    Returns:
+        The full hashes of those commits, in the order git rev-list prints
+        them.
+
+    Raises:
+        subprocess.CalledProcessError: git cannot read the parents.
+    """
     return git("rev-list", f"^{parents[0]}", *parents[1:]).stdout.split()
 
 
 def subject(commit: str) -> str:
+    """Give the commit's abbreviated hash and subject, to name it in a line of output.
+
+    Args:
+        commit: The commit.
+
+    Returns:
+        The abbreviated hash, a space and the subject line.
+
+    Raises:
+        subprocess.CalledProcessError: git cannot read the commit.
+    """
     return git("log", "-1", "--format=%h %s", commit).stdout.strip()
 
 
@@ -144,6 +251,14 @@ def split_lines(data: bytes) -> list[bytes]:
     bytes.splitlines would also split on a lone CR, and str.splitlines on
     vertical tabs, form feeds and the like; git treats all of those as
     ordinary content, and splitting on them would throw the hunk counting off.
+
+    Args:
+        data: The bytes to split.
+
+    Returns:
+        The lines in order, each with its LF; the last one has none when the
+        data does not end with an LF. Joined, they are the data again. Empty
+        for empty data.
     """
     pieces = data.split(b"\n")
     lines = [piece + b"\n" for piece in pieces[:-1]]
@@ -155,6 +270,23 @@ def split_lines(data: bytes) -> list[bytes]:
 def rewrite_path_line(
     line: bytes, patterns: list[re.Pattern[bytes]], moved: dict[bytes, bytes]
 ) -> bytes:
+    """Rewrite the moved paths in one header line of a diff.
+
+    The first pattern that matches the line, taken without its line end,
+    decides. The text of its groups named a and b is replaced when it is,
+    byte for byte, a key of moved, and the line is put together again from
+    all the pattern's groups.
+
+    Args:
+        line: One line of a diff, with its line end.
+        patterns: The expressions to try, in order. Each captures the whole
+            line in its groups, and the paths in groups named a and b.
+        moved: The moved files as bytes, old path to new.
+
+    Returns:
+        The line with its moved paths rewritten and its line end as it was;
+        the line unchanged when no pattern matches or it names no moved file.
+    """
     body = line.rstrip(b"\r\n")
     ending = line[len(body) :]
     for pattern in patterns:
@@ -178,6 +310,15 @@ def rewrite_diff(diff: bytes, moved: dict[bytes, bytes]) -> bytes:
     hunk header says how many old and new lines the hunk holds, so hunk bodies
     are copied through by counting, however much a line in them looks like a
     header. Binary patches are copied through to the next section.
+
+    Args:
+        diff: The diff of one commit, as git diff-tree -p prints it.
+        moved: The moved files as bytes, old path to new.
+
+    Returns:
+        The diff with each moved path in a "diff --git", "--- a/", "+++ b/",
+        rename or copy line replaced by its new path, and every other byte as
+        it was.
     """
     out: list[bytes] = []
     state = "header"  # header | hunk | binary
@@ -227,6 +368,16 @@ def mail_for(commit: str) -> bytes:
     The mboxrd form quotes message lines that start with "From ", so the entry
     splits correctly whatever the message holds; git am --patch-format=mboxrd
     unquotes them.
+
+    Args:
+        commit: The commit.
+
+    Returns:
+        The entry as git log --pretty=mboxrd prints it, ending with an LF
+        (one is added when git's output has none).
+
+    Raises:
+        subprocess.CalledProcessError: git cannot read the commit.
     """
     mail = git_bytes("log", "-1", "--pretty=mboxrd", commit).stdout
     return mail if mail.endswith(b"\n") else mail + b"\n"
@@ -238,7 +389,16 @@ def with_trailer(mail: bytes, commit: str) -> bytes:
     Blank lines at the end of the message are dropped, and nothing else of it
     changes. The trailer joins the message's last paragraph when every line of
     it is a trailer already (a Signed-off-by, say), and otherwise stands as a
-    paragraph of its own, which is where git looks for trailers.
+    paragraph of its own, which is where git looks for trailers. When nothing
+    follows the headers, the trailer is the whole body.
+
+    Args:
+        mail: The mbox entry of the commit, as mail_for returns it: the
+            headers, a blank line and the message's body.
+        commit: The upstream commit's hash, for the trailer's value.
+
+    Returns:
+        The entry with the line "Upstream-commit: <commit>" as its last line.
     """
     headers, _, body = mail.partition(b"\n\n")
     body = body.rstrip(b"\n")
@@ -251,14 +411,39 @@ def with_trailer(mail: bytes, commit: str) -> bytes:
 
 
 def diff_for(commit: str, parents: list[str]) -> bytes:
-    """The commit's diff against its first parent, renames detected, binary changes included."""
+    """Give the commit's diff against its first parent, renames detected, binary changes included.
+
+    Args:
+        commit: The commit.
+        parents: Its parents, the first parent first; empty for a root commit.
+
+    Returns:
+        The diff as git diff-tree -p -M --binary prints it.
+
+    Raises:
+        subprocess.CalledProcessError: git cannot read the commit.
+    """
     return git_bytes(
         "diff-tree", "--no-commit-id", "-p", "-M", "--binary", *trees_of(commit, parents)
     ).stdout
 
 
 def patch_for(commit: str, parents: list[str], moved: dict[bytes, bytes]) -> bytes:
-    """One mbox entry: the mail with its trailer, a separator, and the rewritten diff."""
+    """Build one mbox entry: the mail with its trailer, a separator, and the rewritten diff.
+
+    Args:
+        commit: The commit.
+        parents: Its parents, the first parent first; empty for a root commit.
+        moved: The moved files as bytes, old path to new.
+
+    Returns:
+        The entry for git am: the commit's mail ending in the Upstream-commit
+        trailer, a "---" line and a blank line, and the commit's diff with the
+        moved paths rewritten.
+
+    Raises:
+        subprocess.CalledProcessError: git cannot read the commit.
+    """
     return (
         with_trailer(mail_for(commit), commit)
         + b"---\n\n"
@@ -267,6 +452,39 @@ def patch_for(commit: str, parents: list[str], moved: dict[bytes, bytes]) -> byt
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Port the commits of a range, or with --dry-run print the series and apply nothing.
+
+    The module's description gives the procedure. The scan prints a line for
+    each step on the first-parent line of the range, and for a merge the
+    commits it squashes. A refusal and its reason go to standard error. With
+    --dry-run the mbox is written to standard output, and the working tree
+    is not looked at; otherwise the mbox is applied with git am, whose
+    output is passed on.
+
+    Args:
+        argv: The command line without the program's name; None reads
+            sys.argv.
+
+    Returns:
+        The exit status.
+        0: every step was applied, or the dry run printed the series.
+        1: git am exited with an error, as it does when it stops on a
+        conflict; standard error then says how to continue or abort.
+        2: a step touches a mixed file, with or without --dry-run; nothing
+        was applied.
+        3: nothing could be applied. git could not list the range; the range
+        holds no commit; no step on its first-parent line changes anything
+        against its first parent; or, without --dry-run, tracked files have
+        uncommitted changes.
+
+    Raises:
+        SystemExit: The command line is not valid: argparse exits with
+            status 2, the number that otherwise means a mixed file. Also for
+            --help, with status 0.
+        subprocess.CalledProcessError: git fails after the range was listed:
+            reading a commit's files, subject, mail or diff, or the state of
+            the working tree.
+    """
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("range", help="commit range to port, for example 6596aa0..upstream/main")
     parser.add_argument(

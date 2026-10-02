@@ -1,11 +1,12 @@
-"""The package's docstrings have the form its lint rules cannot check.
+"""The docstrings have the form the lint rules cannot check.
 
 ruff holds a docstring to the code where it has a rule: an Args section names
 every argument, a returned value and a raised exception are documented. It has
 no rule that a function with parameters has an Args section at all, nor that a
 private function or a method of a private class has a docstring. These tests
-add both, for every class, function and method of the live path. Legacy code,
-moved verbatim from upstream, is left as upstream documented it.
+add both, for every class, function and method of the live path, and of the
+tools and noxfile.py where the tests run beside them. Legacy code, moved
+verbatim from upstream, is left as upstream documented it.
 
 A function defined inside another function is not held to this: it is part of
 its parent's body. One defined under an if, a try, a with or a loop at module
@@ -17,9 +18,12 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import pytest
+
 import mower_sdk
 
 PACKAGE = Path(mower_sdk.__file__).resolve().parent
+REPOSITORY = Path(__file__).resolve().parent.parent
 
 Function = ast.FunctionDef | ast.AsyncFunctionDef
 
@@ -86,6 +90,17 @@ def test_the_live_path_has_no_gap() -> None:
         path.stem for path in modules
     }
     found = [gap for path in modules for gap in gaps(path.stem, path.read_text(encoding="utf-8"))]
+    assert found == []
+
+
+def test_the_tools_have_no_gap() -> None:
+    tools = sorted((REPOSITORY / "tools").glob("*.py"))
+    if not tools:
+        # The wheel check runs a copy of tests/ outside the checkout, without tools/.
+        pytest.skip("the tools are not next to the tests")
+    assert {"gatelib", "gitlint_rules", "port_upstream"} <= {path.stem for path in tools}
+    files = [*tools, REPOSITORY / "noxfile.py"]
+    found = [gap for path in files for gap in gaps(path.stem, path.read_text(encoding="utf-8"))]
     assert found == []
 
 

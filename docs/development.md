@@ -102,8 +102,9 @@ git config blame.ignoreRevsFile .git-blame-ignore-revs
 
 ### Docstrings
 
-Every class, function and method of the package outside `mower_sdk/legacy/`
-has a docstring, private ones included, in the Google form:
+Every class, function and method of the package outside `mower_sdk/legacy/`,
+of the tools and of `noxfile.py` has a docstring, private ones included, in
+the Google form:
 
 ```python
 def get_cached_state_age(self, device_id: str) -> float | None:
@@ -145,8 +146,8 @@ or yield). ruff still marks the `DOC` rules as preview, so `pyproject.toml`
 switches preview mode on for those rules by name and for no others; a ruff
 upgrade may change what they report. `tests/test_docstrings.py` adds the two
 checks ruff has no rule for: that a private function has a docstring, and
-that a function with arguments has an `Args` section at all. The tests and the
-tools keep only the rules for a docstring's form.
+that a function with arguments has an `Args` section at all. The tests, here
+and in `tools/tests`, keep only the rules for a docstring's form.
 
 ### Types
 

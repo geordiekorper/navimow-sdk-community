@@ -27,6 +27,24 @@ _WHAT = {"A": "added", "M": "edited", "D": "deleted or moved away", "T": "change
 
 
 def check() -> list[str]:
+    """Find the protected paths that the change being checked touches.
+
+    The change is the staged one, or the one between the two refs of range
+    mode (see gatelib.changed_files). It is read with rename detection off,
+    so a file moved away from a protected path counts as deleted and one
+    moved onto a protected path as added.
+
+    Returns:
+        One finding for each changed path that gatelib.is_protected names:
+        the path, what was done to it (added, edited, deleted or moved away,
+        or changed for a change of type; any other status letter of git's is
+        shown as it is) and what a deliberate exception needs. An empty list
+        when no protected path changed.
+
+    Raises:
+        subprocess.CalledProcessError: git diff fails, as it does on a range
+            ref that does not exist or outside a git repository.
+    """
     return [
         f"{path}: protected from changes ({_WHAT.get(status, status)}); "
         "an exception needs SKIP=no-protected-changes and a Legacy-edit trailer"
@@ -36,6 +54,18 @@ def check() -> list[str]:
 
 
 def main() -> int:
+    """Run the check and print the findings.
+
+    It takes nothing from the command line. Each finding is printed on its
+    own line on standard output.
+
+    Returns:
+        The exit status: 0 when no protected path changed, 1 when at least
+        one did.
+
+    Raises:
+        subprocess.CalledProcessError: git diff fails (see check).
+    """
     findings = check()
     for finding in findings:
         print(finding)
