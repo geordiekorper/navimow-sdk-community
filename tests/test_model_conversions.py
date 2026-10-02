@@ -140,7 +140,8 @@ def test_without_fallbacks_nothing_is_invented() -> None:
     ids=["code", "error_code_key", "unrecognised", "empty", "not_a_dict"],
 )
 def test_the_error_dict_becomes_the_error_code_and_message(error: object, code: MowerError, message: str | None) -> None:
-    status = DeviceStatus.from_state_message(DeviceStateMessage(device_id="d", timestamp=None, state="error", error=error))  # type: ignore[arg-type]
+    state = DeviceStateMessage(device_id="d", timestamp=None, state="error", error=error)  # type: ignore[arg-type]
+    status = DeviceStatus.from_state_message(state)
     assert (status.error_code, status.error_message) == (code, message)
 
 

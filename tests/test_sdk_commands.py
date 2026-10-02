@@ -164,7 +164,11 @@ async def test_command_publishes_a_command_message_while_connected(
 @pytest.mark.parametrize(("method", "args", "command", "params"), COMMANDS)
 @pytest.mark.asyncio
 async def test_command_asks_to_connect_and_raises_while_disconnected(
-    fake_mqtt: type[FakeMQTT], method: str, args: tuple, command: str, params: dict[str, Any]  # noqa: ARG001
+    fake_mqtt: type[FakeMQTT],
+    method: str,
+    args: tuple,
+    command: str,  # noqa: ARG001
+    params: dict[str, Any],  # noqa: ARG001
 ) -> None:
     sdk, mqtt = make(allow_experimental_mqtt_commands=True)
     with pytest.raises(RuntimeError, match="^MQTT not connected$"):
