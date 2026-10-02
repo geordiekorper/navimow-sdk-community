@@ -23,16 +23,12 @@ _WARNING: set[str] = set()  # legacy modules whose first warning is being emitte
 def warn_legacy(legacy_module: str, via: str) -> None:
     """Warn, once per process, that ``legacy_module`` was reached through ``via``.
 
-    ``legacy_module`` is the module's name under ``mower_sdk.legacy`` (for
-    example ``"client"``) and ``via`` the deprecated path the caller used (for
-    example ``"mower_sdk.client"`` or ``"mower_sdk.MowerClient"``).
-
-    The warning says that every name in the legacy module is deprecated,
-    because later names from the same module are silent. It is emitted with
-    ``stacklevel=3``: one frame for this helper and one for the shim body or
-    ``__getattr__`` that called it, so it is attributed to the caller's line;
-    Python skips importlib's bootstrap frames, so a shim executed during an
-    import is attributed to the importing line as well.
+    The DeprecationWarning says that every name in the legacy module is
+    deprecated, because later names from the same module are silent. It is
+    emitted with ``stacklevel=3``: one frame for this helper and one for the
+    shim body or ``__getattr__`` that called it, so it is attributed to the
+    caller's line; Python skips importlib's bootstrap frames, so a shim
+    executed during an import is attributed to the importing line as well.
 
     The check, the warning and the record run under an RLock, so concurrent
     first accesses produce one warning and a warning handler that itself
@@ -44,6 +40,16 @@ def warn_legacy(legacy_module: str, via: str) -> None:
     access raises rather than raising once and passing silently afterwards.
     A module whose warning has already completed, or was ignored by a filter,
     stays silent whatever filter is installed later.
+
+    Args:
+        legacy_module: The module's name under ``mower_sdk.legacy`` (for
+            example ``"client"``).
+        via: The deprecated path the caller used (for example
+            ``"mower_sdk.client"`` or ``"mower_sdk.MowerClient"``).
+
+    Raises:
+        DeprecationWarning: A warnings filter turns the warning into an
+            error. The module is then not recorded as warned.
     """
     with _LOCK:
         if legacy_module in _WARNED or legacy_module in _WARNING:

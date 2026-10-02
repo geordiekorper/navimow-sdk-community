@@ -90,13 +90,28 @@ __version__ = "0.2.0a4"
 def _warn_if_upstream_installed(
     version_of: Callable[[str], str] = importlib.metadata.version,
 ) -> None:
-    """Warn once when the upstream navimow-sdk distribution is listed beside this one.
+    """Warn when the upstream navimow-sdk distribution is listed beside this one.
 
     Both distributions install the mower_sdk package, so whichever was
     installed last owns the files. This check runs only when this package's
     own __init__ is the one loaded; when the upstream distribution was
     installed last, its files replaced this one and nothing here runs.
-    ``version_of`` is importlib.metadata.version, a parameter for the tests.
+
+    The package calls it once, when it is imported. A UserWarning is issued
+    when both navimow-sdk and navimow-sdk-community are listed as installed,
+    and nothing is done when either is missing. The warning names both
+    versions and this package's __version__, and is issued with stacklevel=2,
+    so it is attributed to the line that made the call.
+
+    Args:
+        version_of: The lookup of an installed distribution's version by its
+            name, which raises importlib.metadata.PackageNotFoundError for a
+            distribution that is not installed. It is
+            importlib.metadata.version, a parameter for the tests.
+
+    Raises:
+        UserWarning: Both distributions are installed and the warnings
+            filters turn the warning into an error.
     """
     try:
         upstream = version_of("navimow-sdk")
@@ -199,7 +214,25 @@ _LEGACY_NAMES = {
 
 
 def __getattr__(name: str) -> Any:
-    """Serve the names that moved to mower_sdk.legacy, warning once per legacy module."""
+    """Serve the names that moved to mower_sdk.legacy, warning once per legacy module.
+
+    Python calls it for a name the package does not have. It serves the names
+    in _LEGACY_NAMES on their first access: the DeprecationWarning is issued
+    through warn_legacy before the legacy module is imported, and the value is
+    then stored in this module's globals, so a later access to the same name
+    does not come here.
+
+    Args:
+        name: The attribute asked for.
+
+    Returns:
+        The object of that name in its module under mower_sdk.legacy.
+
+    Raises:
+        AttributeError: name is not one of the names in _LEGACY_NAMES.
+        DeprecationWarning: A warnings filter turns the warning into an error
+            (see warn_legacy); nothing is imported or stored then.
+    """
     try:
         legacy_module, attribute = _LEGACY_NAMES[name]
     except KeyError:
@@ -211,4 +244,10 @@ def __getattr__(name: str) -> Any:
 
 
 def __dir__() -> list[str]:
+    """List the package's names, the lazily served legacy names among them.
+
+    Returns:
+        The names of the module's globals and of _LEGACY_NAMES, sorted, each
+        once, whether or not a legacy name has been accessed yet.
+    """
     return sorted({*globals(), *_LEGACY_NAMES})

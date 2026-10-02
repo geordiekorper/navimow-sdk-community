@@ -36,11 +36,17 @@ class MowerAPIError(Exception):
     still catches every one of them.
 
     Attributes:
-        status_code: HTTP status code (if available)
-        message: Error message
-        error_code: Business error code (if available)
+        message: The error message, without the status code and the error
+            code that str() adds.
+        status_code: The HTTP status code of the reply. MowerAPI also sets it
+            where no reply carried one: 401 when there is no token to send
+            and no request is made, and 404 for a device the status reply did
+            not list. None when the failure has none.
+        error_code: The business error code, a short name for the failure
+            such as a key of ERROR_MESSAGES or the errorCode of a refused
+            command, or None when there is none.
         envelope_code: The reply envelope's code when the cloud refused the
-            request in the envelope (if available); not part of str()
+            request in the envelope, else None; not part of str().
     """
 
     def __init__(
@@ -53,10 +59,11 @@ class MowerAPIError(Exception):
         """Initialize the API exception.
 
         Args:
-            message: Error message
-            status_code: HTTP status code
-            error_code: Business error code
-            envelope_code: The reply envelope's code
+            message: The error message.
+            status_code: The HTTP status code, or the status the failure
+                stands for where no reply carried one, or None without one.
+            error_code: The business error code, or None without one.
+            envelope_code: The reply envelope's code, or None without one.
         """
         super().__init__(message)
         self.message = message
@@ -65,7 +72,13 @@ class MowerAPIError(Exception):
         self.envelope_code = envelope_code
 
     def __str__(self) -> str:
-        """Return the formatted error message."""
+        """Return the formatted error message.
+
+        Returns:
+            The message, then "HTTP <status_code>" and "Error Code:
+            <error_code>" for each of the two that is set (not None, 0 or
+            empty), joined by " | ". The envelope code is left out.
+        """
         parts = [self.message]
         if self.status_code:
             parts.append(f"HTTP {self.status_code}")
@@ -75,7 +88,7 @@ class MowerAPIError(Exception):
 
 
 class MowerTransportError(MowerAPIError):
-    """No usable reply.
+    """Raised when a request brings no usable reply.
 
     A timeout, a connection error, an HTTP 5xx, a status the client cannot use
     (below 200, or a redirect aiohttp did not follow), or a 2xx whose body is
@@ -84,38 +97,65 @@ class MowerTransportError(MowerAPIError):
     For a command, the outcome is unknown rather than refused: the cloud may have
     acted on it. The aiohttp error, TimeoutError, UnicodeDecodeError or
     JSONDecodeError that caused it, if any, is its __cause__.
+
+    Attributes:
+        message: The error message.
+        status_code: The HTTP status code of the reply; None for a timeout or
+            a connection error, which bring no reply.
+        error_code: None as MowerAPI raises it.
+        envelope_code: None as MowerAPI raises it.
     """
 
 
 class MowerAuthRequiredError(MowerAPIError):
-    """The credentials were refused.
+    """Raised when the credentials were refused, or there are none to send.
 
     HTTP 401 or 403, envelope code 4005, or a reply whose desc names
     CODE_OAUTH_INFO_ILLEGAL; or MowerAPI has no token to send, in which case
     no request is made. Refresh or re-authorise, then retry.
+
+    Attributes:
+        message: The error message.
+        status_code: 401 or 403 for an HTTP refusal, 401 when there was no
+            token to send, None for a refusal in the envelope.
+        error_code: "TOKEN_EXPIRED" when there was no token to send, else
+            None.
+        envelope_code: The envelope's code for a refusal in the envelope (None
+            when it cannot be read as an integer), else None.
     """
 
 
 class MowerRateLimitedError(MowerAPIError):
-    """The cloud asked the caller to slow down.
+    """Raised when the cloud asks the caller to slow down.
 
     Envelope code 4001 (its circuit breaker, retry after about a minute) or a
     desc saying "too frequent" or "circuit breaker".
+
+    Attributes:
+        message: The error message.
+        status_code: None as MowerAPI raises it: the refusal is in the
+            envelope of a reply.
+        error_code: None as MowerAPI raises it.
+        envelope_code: The envelope's code, None when it cannot be read as an
+            integer.
     """
 
 
 class MowerMQTTError(Exception):
     """Raised when an MQTT operation fails.
 
+    In this package only the legacy MowerMQTT client raises it, when
+    connecting or subscribing fails.
+
     Attributes:
-        message: Error message
+        message: The error message.
     """
 
     def __init__(self, message: str):
         """Initialize the MQTT exception.
 
         Args:
-            message: Error message
+            message: The error message.
         """
         super().__init__(message)
         self.message = message
@@ -129,10 +169,15 @@ class MowerUnsupportedOperationError(Exception):
     alternative, when one exists.
 
     Attributes:
-        message: Error message
+        message: The error message.
     """
 
     def __init__(self, message: str):
+        """Initialize the unsupported-operation exception.
+
+        Args:
+            message: The error message.
+        """
         super().__init__(message)
         self.message = message
 
@@ -161,7 +206,25 @@ _LEGACY_NAMES = {
 
 
 def __getattr__(name: str) -> Any:
-    """Serve the names that moved to mower_sdk.legacy, warning once per legacy module."""
+    """Serve the names that moved to mower_sdk.legacy, warning once per legacy module.
+
+    Python calls it for a name the module does not have. It serves
+    MowerAuthError and COMMAND_ERRORS on their first access: the
+    DeprecationWarning is issued through warn_legacy before the legacy module
+    is imported, and the value is then stored in this module's globals, so a
+    later access to the same name does not come here.
+
+    Args:
+        name: The attribute asked for.
+
+    Returns:
+        The object of that name in its module under mower_sdk.legacy.
+
+    Raises:
+        AttributeError: name is not one of the names in _LEGACY_NAMES.
+        DeprecationWarning: A warnings filter turns the warning into an error
+            (see warn_legacy); nothing is imported or stored then.
+    """
     try:
         legacy_module, attribute = _LEGACY_NAMES[name]
     except KeyError:
