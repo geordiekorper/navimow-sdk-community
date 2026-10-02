@@ -142,16 +142,16 @@ class VersionInRelease(CommitRule):
 
 
 class ForkAuthorProvenance(CommitRule):
-    """Crediting a fork author means recording the origin in UPSTREAM.md."""
+    """Crediting a fork author means recording the origin in docs/UPSTREAM.md."""
 
     name = "fork-author-provenance"
     id = "UC6"
 
     def validate(self, commit):
         credited = [line for line in _trailers(commit) if _CO_AUTHOR.match(line) and not _ASSISTANT.match(line)]
-        if credited and "UPSTREAM.md" not in _changed_paths(commit):
+        if credited and "docs/UPSTREAM.md" not in _changed_paths(commit):
             return [RuleViolation(
-                self.id, "a fork author is credited but UPSTREAM.md does not record the origin", credited[0],
+                self.id, "a fork author is credited but docs/UPSTREAM.md does not record the origin", credited[0],
             )]
         return []
 
@@ -166,7 +166,8 @@ class LegacyEditTrailer(CommitRule):
     upstream's public names (tests/upstream_exports.json) are not changed;
     the hook no-protected-changes refuses it. A deliberate exception skips
     that hook and carries "Legacy-edit: <reason>", which this rule requires,
-    here and in CI.
+    here and in CI. The folder's README.md is not protected, so a commit that
+    changes only it carries no trailer.
     """
 
     name = "legacy-edit-trailer"

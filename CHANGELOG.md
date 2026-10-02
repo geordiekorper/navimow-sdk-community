@@ -3,9 +3,21 @@
 Notable changes to navimow-sdk-community. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [PEP 440](https://peps.python.org/pep-0440/). The import name is `mower_sdk`
-throughout.
+throughout. From 0.2.0a5 on a version's entries go under five headings only,
+in this order: Changed, Added, Deprecated, Removed, Fixed. Earlier versions
+keep the headings they were released with.
 
 ## [Unreleased]
+
+### Changed
+
+- Package metadata. The classifiers list Python 3.13 and 3.14, which the
+  checks have covered all along. A maintainer is named beside upstream's
+  authors. The `dev` extra installs what the checks use (pytest with
+  pytest-asyncio, nox, pre-commit and ruff) and no longer black and mypy,
+  which nothing ran; the unused `[tool.black]` and `[tool.mypy]` sections are
+  gone. Running the test suite now needs pytest-asyncio 1.0 or later and
+  pytest 8.4 or later.
 
 ## [0.2.0a4] - 2026-10-01
 

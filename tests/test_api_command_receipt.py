@@ -13,7 +13,6 @@ command number only from a recognised key, never a bare scalar from a list.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import dataclasses
 from typing import Any
@@ -77,9 +76,9 @@ def api_with(*responses: FakeResponse) -> tuple[MowerAPI, FakeSession]:
     return MowerAPI(session=session, token="token", base_url=BASE_URL), session  # type: ignore[arg-type]
 
 
-def receipt_for(payload: Any, command: MowerCommand = MowerCommand.START) -> CommandReceipt:
+async def receipt_for(payload: Any, command: MowerCommand = MowerCommand.START) -> CommandReceipt:
     api, _ = api_with(FakeResponse(ok(payload)))
-    return asyncio.run(api.async_send_command_receipt(DEVICE_ID, command))
+    return await api.async_send_command_receipt(DEVICE_ID, command)
 
 
 @pytest.mark.parametrize(
@@ -105,16 +104,18 @@ def receipt_for(payload: Any, command: MowerCommand = MowerCommand.START) -> Com
         "already_in_state",
     ],
 )
-def test_verdict(payload: dict[str, Any], verdict: CommandVerdict) -> None:
-    receipt = receipt_for(payload)
+@pytest.mark.asyncio
+async def test_verdict(payload: dict[str, Any], verdict: CommandVerdict) -> None:
+    receipt = await receipt_for(payload)
     assert receipt.verdict is verdict
     assert receipt.accepted is (verdict is CommandVerdict.ACCEPTED)
     assert receipt.already_in_state is (verdict is CommandVerdict.ALREADY_IN_STATE)
     assert receipt.results == tuple(payload.get("commands", []))
 
 
-def test_receipt_carries_the_device_the_command_and_the_results() -> None:
-    receipt = receipt_for({"commands": [ALREADY, SUCCESS]}, MowerCommand.DOCK)
+@pytest.mark.asyncio
+async def test_receipt_carries_the_device_the_command_and_the_results() -> None:
+    receipt = await receipt_for({"commands": [ALREADY, SUCCESS]}, MowerCommand.DOCK)
     assert receipt == CommandReceipt(
         device_id=DEVICE_ID,
         command=MowerCommand.DOCK,
@@ -143,32 +144,35 @@ def test_receipt_carries_the_device_the_command_and_the_results() -> None:
         "null_payload",
     ],
 )
-def test_a_malformed_command_list_gives_fewer_results_not_an_exception(
+@pytest.mark.asyncio
+async def test_a_malformed_command_list_gives_fewer_results_not_an_exception(
     payload: Any, verdict: CommandVerdict, results: tuple[dict[str, Any], ...]
 ) -> None:
-    receipt = receipt_for(payload)
+    receipt = await receipt_for(payload)
     assert receipt.verdict is verdict
     assert receipt.results == results
     api, _ = api_with(FakeResponse(ok(payload)))
-    raw = asyncio.run(api.async_send_command(DEVICE_ID, MowerCommand.START))
+    raw = await api.async_send_command(DEVICE_ID, MowerCommand.START)
     assert raw == {"payload": payload}
 
 
-def test_receipt_is_hashable_and_equal_receipts_hash_alike() -> None:
-    first = receipt_for({"commands": [SUCCESS]})
-    second = receipt_for({"commands": [SUCCESS]})
+@pytest.mark.asyncio
+async def test_receipt_is_hashable_and_equal_receipts_hash_alike() -> None:
+    first = await receipt_for({"commands": [SUCCESS]})
+    second = await receipt_for({"commands": [SUCCESS]})
     assert first == second
     assert hash(first) == hash(second)
     assert {first, second} == {first}
-    assert receipt_for({"commands": [ALREADY]}) not in {first}
-    only_results_differ = receipt_for({"commands": [SUCCESS, NO_STATUS]})
+    assert await receipt_for({"commands": [ALREADY]}) not in {first}
+    only_results_differ = await receipt_for({"commands": [SUCCESS, NO_STATUS]})
     assert only_results_differ != first
     assert hash(only_results_differ) == hash(first)  # results are left out of the hash
 
 
-def test_receipt_request_is_the_send_commands_request() -> None:
+@pytest.mark.asyncio
+async def test_receipt_request_is_the_send_commands_request() -> None:
     api, session = api_with(FakeResponse(ok({"commands": [SUCCESS]})))
-    asyncio.run(api.async_send_command_receipt(DEVICE_ID, MowerCommand.PAUSE))
+    await api.async_send_command_receipt(DEVICE_ID, MowerCommand.PAUSE)
     (request,) = session.requests
     assert request["method"] == "POST"
     assert request["url"] == f"{BASE_URL}/openapi/smarthome/sendCommands"
@@ -182,22 +186,24 @@ def test_receipt_request_is_the_send_commands_request() -> None:
     }
 
 
-def test_another_error_raises_as_before_and_returns_no_receipt() -> None:
+@pytest.mark.asyncio
+async def test_another_error_raises_as_before_and_returns_no_receipt() -> None:
     payload = {"commands": [ALREADY, {"status": "ERROR", "errorCode": "deviceOffline"}]}
     api, _ = api_with(FakeResponse(ok(payload)), FakeResponse(ok(payload)))
     with pytest.raises(MowerAPIError) as info:
-        asyncio.run(api.async_send_command_receipt(DEVICE_ID, MowerCommand.START))
+        await api.async_send_command_receipt(DEVICE_ID, MowerCommand.START)
     assert info.value.message == f"{ERROR_MESSAGES['COMMAND_FAILED']}: deviceOffline"
     assert info.value.error_code == "deviceOffline"
     with pytest.raises(MowerAPIError) as info:
-        asyncio.run(api.async_send_command(DEVICE_ID, MowerCommand.START))
+        await api.async_send_command(DEVICE_ID, MowerCommand.START)
     assert info.value.error_code == "deviceOffline"
 
 
-def test_an_unknown_command_is_rejected_before_any_request() -> None:
+@pytest.mark.asyncio
+async def test_an_unknown_command_is_rejected_before_any_request() -> None:
     api, session = api_with()
     with pytest.raises(MowerAPIError) as info:
-        asyncio.run(api.async_send_command_receipt(DEVICE_ID, "bogus"))  # type: ignore[arg-type]
+        await api.async_send_command_receipt(DEVICE_ID, "bogus")  # type: ignore[arg-type]
     assert info.value.error_code == "INVALID_COMMAND"
     assert session.requests == []
 
@@ -207,17 +213,19 @@ def test_an_unknown_command_is_rejected_before_any_request() -> None:
     [aiohttp.ClientConnectionError("connection reset"), TimeoutError()],
     ids=["client_error", "timeout"],
 )
-def test_a_transport_error_raises_with_its_cause_and_returns_no_receipt(cause: Exception) -> None:
+@pytest.mark.asyncio
+async def test_a_transport_error_raises_with_its_cause_and_returns_no_receipt(cause: Exception) -> None:
     api, _ = api_with(FakeResponse(error=cause))
     with pytest.raises(MowerAPIError) as info:
-        asyncio.run(api.async_send_command_receipt(DEVICE_ID, MowerCommand.START))
+        await api.async_send_command_receipt(DEVICE_ID, MowerCommand.START)
     assert info.value.__cause__ is cause
 
 
-def test_async_send_command_still_returns_the_raw_data() -> None:
+@pytest.mark.asyncio
+async def test_async_send_command_still_returns_the_raw_data() -> None:
     payload = {"commands": [ALREADY, SUCCESS]}
     api, _ = api_with(FakeResponse(ok(payload)))
-    assert asyncio.run(api.async_send_command(DEVICE_ID, MowerCommand.START)) == {"payload": payload}
+    assert await api.async_send_command(DEVICE_ID, MowerCommand.START) == {"payload": payload}
 
 
 def test_no_synchronous_wrapper_is_added() -> None:
@@ -282,6 +290,7 @@ def test_command_number_extraction(value: Any, expected: str | None) -> None:
     assert _extract_command_number(value) == expected
 
 
-def test_receipt_command_number_comes_from_the_reply() -> None:
-    assert receipt_for({"commands": [{**SUCCESS, "cmdNum": 42}]}).command_number == "42"
-    assert receipt_for({"commands": [SUCCESS]}).command_number is None
+@pytest.mark.asyncio
+async def test_receipt_command_number_comes_from_the_reply() -> None:
+    assert (await receipt_for({"commands": [{**SUCCESS, "cmdNum": 42}]})).command_number == "42"
+    assert (await receipt_for({"commands": [SUCCESS]})).command_number is None

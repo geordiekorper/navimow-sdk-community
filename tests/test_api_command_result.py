@@ -8,7 +8,6 @@ matches, an entry without an id included.
 
 from __future__ import annotations
 
-import asyncio
 import json
 from typing import Any
 
@@ -64,9 +63,9 @@ def api_with(body: Any) -> tuple[MowerAPI, FakeSession]:
     return MowerAPI(session=session, token="token", base_url=BASE_URL), session  # type: ignore[arg-type]
 
 
-def result_for(devices: Any, cmd_num: str | None = None) -> Any:
+async def result_for(devices: Any, cmd_num: str | None = None) -> Any:
     api, _ = api_with(ok({"devices": devices}))
-    return asyncio.run(api.async_get_command_result(DEVICE_ID, cmd_num))
+    return await api.async_get_command_result(DEVICE_ID, cmd_num)
 
 
 @pytest.mark.parametrize(
@@ -78,11 +77,12 @@ def result_for(devices: Any, cmd_num: str | None = None) -> Any:
     ],
     ids=["without_command_number", "with_command_number", "empty_command_number_is_sent"],
 )
-def test_query_names_the_device_and_carries_cmd_num_only_when_given(
+@pytest.mark.asyncio
+async def test_query_names_the_device_and_carries_cmd_num_only_when_given(
     cmd_num: str | None, query: dict[str, str]
 ) -> None:
     api, session = api_with(ok({"devices": [MINE]}))
-    asyncio.run(api.async_get_command_result(DEVICE_ID, cmd_num))
+    await api.async_get_command_result(DEVICE_ID, cmd_num)
     (request,) = session.requests
     assert request["method"] == "POST"
     assert request["url"] == f"{BASE_URL}/openapi/smarthome/responseCommands"
@@ -110,19 +110,22 @@ def test_query_names_the_device_and_carries_cmd_num_only_when_given(
         "non_dict_entry_ignored",
     ],
 )
-def test_the_entry_whose_id_matches_is_returned_else_none(devices: list[Any], expected: Any) -> None:
-    assert result_for(devices) == expected
+@pytest.mark.asyncio
+async def test_the_entry_whose_id_matches_is_returned_else_none(devices: list[Any], expected: Any) -> None:
+    assert await result_for(devices) == expected
 
 
-def test_missing_devices_key_is_none() -> None:
+@pytest.mark.asyncio
+async def test_missing_devices_key_is_none() -> None:
     api, _ = api_with(ok({}))
-    assert asyncio.run(api.async_get_command_result(DEVICE_ID)) is None
+    assert await api.async_get_command_result(DEVICE_ID) is None
 
 
-def test_envelope_failure_raises() -> None:
+@pytest.mark.asyncio
+async def test_envelope_failure_raises() -> None:
     api, _ = api_with({"code": 4005, "desc": "oauth info illegal", "data": {}})
     with pytest.raises(MowerAPIError) as info:
-        asyncio.run(api.async_get_command_result(DEVICE_ID, "7"))
+        await api.async_get_command_result(DEVICE_ID, "7")
     assert info.value.message == f"{ERROR_MESSAGES['API_REQUEST_FAILED']}: oauth info illegal"
 
 

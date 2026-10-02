@@ -13,6 +13,9 @@ license-files = ["LICENSE"]
 authors = [
     {name = "Navimow R&D Team", email = "segwaynavimowapp@gmail.com"}
 ]
+maintainers = [
+    {name = "Geordie Korper"}
+]
 keywords = ["mower", "sdk", "home-assistant", "iot", "mqtt", "oauth2"]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -20,6 +23,8 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: Home Automation",
 ]
@@ -31,11 +36,11 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=7.0.0",
-    "pytest-asyncio>=0.21.0",
-    "black>=23.0.0",
-    "mypy>=1.0.0",
-    "ruff>=0.1.0",
+    "pytest>=8.4",
+    "pytest-asyncio>=1.0",
+    "nox>=2025.5.1",
+    "pre-commit",
+    "ruff",
 ]
 
 [project.urls]
@@ -51,18 +56,16 @@ version = {attr = "mower_sdk.__version__"}
 include = ["mower_sdk*"]
 
 [tool.pytest.ini_options]
-minversion = "7.0"
+# From 8.4 an async test without its marker fails; before, pytest skipped it
+# with a warning and the suite stayed green.
+minversion = "8.4"
 testpaths = ["tests"]
-
-[tool.black]
-line-length = 100
-target-version = ["py311"]
-
-[tool.mypy]
-python_version = "3.11"
-warn_return_any = true
-warn_unused_configs = true
-disallow_untyped_defs = false
+# pytest-asyncio: each async test is marked, and each runs on a loop of its
+# own. Both are the plugin's defaults; the loop scope is set because the
+# plugin warns while it is unset, and the core-isolation run turns warnings
+# into errors.
+asyncio_mode = "strict"
+asyncio_default_fixture_loop_scope = "function"
 
 [tool.ruff]
 line-length = 100

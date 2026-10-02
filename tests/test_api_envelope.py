@@ -15,7 +15,6 @@ endpoints, and that is pinned on purpose rather than corrected here.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import re
@@ -153,10 +152,6 @@ def api_with(*responses: FakeResponse, token: str | None = TOKEN) -> tuple[Mower
     return MowerAPI(session=session, token=token, base_url=BASE_URL), session  # type: ignore[arg-type]
 
 
-def run(coro: Any) -> Any:
-    return asyncio.run(coro)
-
-
 # One entry per endpoint: name, arguments, expected method, expected path and
 # expected request body.
 ENDPOINTS = [
@@ -212,9 +207,10 @@ ENDPOINT_NAMES = [
 
 
 @pytest.mark.parametrize(("name", "args", "method", "path", "body"), ENDPOINTS)
-def test_request_shape(name: str, args: tuple, method: str, path: str, body: Any) -> None:
+@pytest.mark.asyncio
+async def test_request_shape(name: str, args: tuple, method: str, path: str, body: Any) -> None:
     api, session = api_with(FakeResponse(ok({})))
-    run(getattr(api, name)(*args))
+    await getattr(api, name)(*args)
 
     (request,) = session.requests
     assert request["method"] == method
@@ -225,18 +221,20 @@ def test_request_shape(name: str, args: tuple, method: str, path: str, body: Any
     uuid.UUID(request["headers"]["requestId"])  # a fresh request id per call
 
 
-def test_base_url_and_endpoint_are_joined_with_one_slash() -> None:
+@pytest.mark.asyncio
+async def test_base_url_and_endpoint_are_joined_with_one_slash() -> None:
     session = FakeSession(FakeResponse(ok({})))
     api = MowerAPI(session=session, token=TOKEN, base_url="https://host/prefix///")  # type: ignore[arg-type]
-    run(api.async_get_devices())
+    await api.async_get_devices()
     assert session.requests[0]["url"] == "https://host/prefix/openapi/smarthome/authList"
 
 
-def test_get_devices_success() -> None:
+@pytest.mark.asyncio
+async def test_get_devices_success() -> None:
     api, _ = api_with(
         FakeResponse(ok({"devices": [{"id": DEVICE_ID, "name": "Lawn", "model": "i105"}]}))
     )
-    devices = run(api.async_get_devices())
+    devices = await api.async_get_devices()
     assert devices == [
         Device(
             id=DEVICE_ID,
@@ -250,13 +248,15 @@ def test_get_devices_success() -> None:
     ]
 
 
-def test_get_mqtt_user_info_returns_the_whole_data_object() -> None:
+@pytest.mark.asyncio
+async def test_get_mqtt_user_info_returns_the_whole_data_object() -> None:
     data = {"mqttHost": "wss://broker.example.invalid", "userName": "u", "pwdInfo": "p"}
     api, _ = api_with(FakeResponse({"code": 1, "desc": "success", "data": data}))
-    assert run(api.async_get_mqtt_user_info()) == data
+    assert await api.async_get_mqtt_user_info() == data
 
 
-def test_get_device_statuses_success_keys_by_device_id_and_drops_entries_without_one() -> None:
+@pytest.mark.asyncio
+async def test_get_device_statuses_success_keys_by_device_id_and_drops_entries_without_one() -> None:
     api, _ = api_with(
         FakeResponse(
             ok(
@@ -273,7 +273,7 @@ def test_get_device_statuses_success_keys_by_device_id_and_drops_entries_without
             )
         )
     )
-    statuses = run(api.async_get_device_statuses([DEVICE_ID]))
+    statuses = await api.async_get_device_statuses([DEVICE_ID])
     assert statuses == {
         DEVICE_ID: DeviceStatus(
             device_id=DEVICE_ID,
@@ -288,16 +288,18 @@ def test_get_device_statuses_success_keys_by_device_id_and_drops_entries_without
     }
 
 
-def test_send_command_success_returns_the_whole_data_object() -> None:
+@pytest.mark.asyncio
+async def test_send_command_success_returns_the_whole_data_object() -> None:
     payload = {"commands": [{"devices": [{"id": DEVICE_ID}], "status": "SUCCESS"}]}
     api, _ = api_with(FakeResponse(ok(payload)))
-    assert run(api.async_send_command(DEVICE_ID, MowerCommand.START)) == {"payload": payload}
+    assert await api.async_send_command(DEVICE_ID, MowerCommand.START) == {"payload": payload}
 
 
-def test_query_command_results_success_returns_the_devices_list() -> None:
+@pytest.mark.asyncio
+async def test_query_command_results_success_returns_the_devices_list() -> None:
     devices = [{"id": DEVICE_ID, "cmdNum": "7", "status": "SUCCESS"}]
     api, _ = api_with(FakeResponse(ok({"devices": devices})))
-    assert run(api.async_query_command_results([{"id": DEVICE_ID, "cmdNum": "7"}])) == devices
+    assert await api.async_query_command_results([{"id": DEVICE_ID, "cmdNum": "7"}]) == devices
 
 
 @pytest.mark.parametrize(
@@ -316,16 +318,18 @@ def test_query_command_results_success_returns_the_devices_list() -> None:
         (MowerCommand.DOCK, {"command": "action.devices.commands.Dock"}),
     ],
 )
-def test_send_command_mapping(command: MowerCommand, execution: dict[str, Any]) -> None:
+@pytest.mark.asyncio
+async def test_send_command_mapping(command: MowerCommand, execution: dict[str, Any]) -> None:
     api, session = api_with(FakeResponse(ok({"commands": []})))
-    run(api.async_send_command(DEVICE_ID, command))
+    await api.async_send_command(DEVICE_ID, command)
     assert session.requests[0]["json"]["commands"][0]["execution"] == execution
 
 
-def test_send_command_rejects_an_unknown_command_before_any_request() -> None:
+@pytest.mark.asyncio
+async def test_send_command_rejects_an_unknown_command_before_any_request() -> None:
     api, session = api_with()
     with pytest.raises(MowerAPIError) as info:
-        run(api.async_send_command(DEVICE_ID, "bogus"))  # type: ignore[arg-type]
+        await api.async_send_command(DEVICE_ID, "bogus")  # type: ignore[arg-type]
     assert info.value.message == ERROR_MESSAGES["INVALID_COMMAND"]
     assert info.value.status_code is None
     assert info.value.error_code == "INVALID_COMMAND"
@@ -333,10 +337,11 @@ def test_send_command_rejects_an_unknown_command_before_any_request() -> None:
 
 
 @pytest.mark.parametrize(("name", "args"), ENDPOINT_NAMES)
-def test_code_other_than_one_raises_with_desc(name: str, args: tuple) -> None:
+@pytest.mark.asyncio
+async def test_code_other_than_one_raises_with_desc(name: str, args: tuple) -> None:
     api, _ = api_with(FakeResponse({"code": 4005, "desc": "oauth info illegal", "data": {}}))
     with pytest.raises(MowerAPIError) as info:
-        run(getattr(api, name)(*args))
+        await getattr(api, name)(*args)
     assert info.value.message == f"{ERROR_MESSAGES['API_REQUEST_FAILED']}: oauth info illegal"
     assert str(info.value) == info.value.message
     assert info.value.status_code is None
@@ -344,10 +349,11 @@ def test_code_other_than_one_raises_with_desc(name: str, args: tuple) -> None:
 
 
 @pytest.mark.parametrize(("name", "args"), ENDPOINT_NAMES)
-def test_missing_code_counts_as_failure(name: str, args: tuple) -> None:
+@pytest.mark.asyncio
+async def test_missing_code_counts_as_failure(name: str, args: tuple) -> None:
     api, _ = api_with(FakeResponse({"data": {"payload": {}}}))
     with pytest.raises(MowerAPIError) as info:
-        run(getattr(api, name)(*args))
+        await getattr(api, name)(*args)
     assert info.value.message == f"{ERROR_MESSAGES['API_REQUEST_FAILED']}: None"
 
 
@@ -363,13 +369,15 @@ MISSING_DATA_RESULTS = [
 
 
 @pytest.mark.parametrize(("name", "args", "expected"), MISSING_DATA_RESULTS)
-def test_missing_data_key_is_an_empty_result(name: str, args: tuple, expected: Any) -> None:
+@pytest.mark.asyncio
+async def test_missing_data_key_is_an_empty_result(name: str, args: tuple, expected: Any) -> None:
     api, _ = api_with(FakeResponse({"code": 1, "desc": "success"}))
-    assert run(getattr(api, name)(*args)) == expected
+    assert await getattr(api, name)(*args) == expected
 
 
 @pytest.mark.parametrize(("name", "args"), ENDPOINT_NAMES)
-def test_explicit_null_data_is_passed_through_as_none(name: str, args: tuple) -> None:
+@pytest.mark.asyncio
+async def test_explicit_null_data_is_passed_through_as_none(name: str, args: tuple) -> None:
     """``response.get("data", {})`` returns None for an explicit null, unlike a missing key.
 
     async_get_mqtt_user_info returns that None; async_get_devices and
@@ -379,17 +387,18 @@ def test_explicit_null_data_is_passed_through_as_none(name: str, args: tuple) ->
     """
     api, _ = api_with(FakeResponse({"code": 1, "desc": "success", "data": None}))
     if name == "async_get_mqtt_user_info":
-        assert run(getattr(api, name)(*args)) is None
+        assert await getattr(api, name)(*args) is None
     elif name == "async_get_devices":
-        assert run(getattr(api, name)(*args)) == []
+        assert await getattr(api, name)(*args) == []
     elif name == "async_get_device_statuses":
-        assert run(getattr(api, name)(*args)) == {}
+        assert await getattr(api, name)(*args) == {}
     else:
         with pytest.raises(AttributeError):
-            run(getattr(api, name)(*args))
+            await getattr(api, name)(*args)
 
 
-def test_already_in_state_is_not_an_error() -> None:
+@pytest.mark.asyncio
+async def test_already_in_state_is_not_an_error() -> None:
     payload = {
         "commands": [
             {"devices": [{"id": DEVICE_ID}], "status": "ERROR", "errorCode": "alreadyInState"},
@@ -397,7 +406,7 @@ def test_already_in_state_is_not_an_error() -> None:
         ]
     }
     api, _ = api_with(FakeResponse(ok(payload)))
-    assert run(api.async_send_command(DEVICE_ID, MowerCommand.START)) == {"payload": payload}
+    assert await api.async_send_command(DEVICE_ID, MowerCommand.START) == {"payload": payload}
 
 
 @pytest.mark.parametrize(
@@ -409,66 +418,73 @@ def test_already_in_state_is_not_an_error() -> None:
     ],
     ids=["named", "missing_code", "empty_code"],
 )
-def test_command_error_raises(result: dict[str, Any], error_code: str) -> None:
+@pytest.mark.asyncio
+async def test_command_error_raises(result: dict[str, Any], error_code: str) -> None:
     payload = {"commands": [{"status": "ERROR", "errorCode": "alreadyInState"}, result]}
     api, _ = api_with(FakeResponse(ok(payload)))
     with pytest.raises(MowerAPIError) as info:
-        run(api.async_send_command(DEVICE_ID, MowerCommand.START))
+        await api.async_send_command(DEVICE_ID, MowerCommand.START)
     assert info.value.message == f"{ERROR_MESSAGES['COMMAND_FAILED']}: {error_code}"
     assert info.value.status_code is None
     assert info.value.error_code == error_code
     assert str(info.value) == f"{info.value.message} | Error Code: {error_code}"
 
 
-def test_http_error_status_raises_with_the_body_text() -> None:
+@pytest.mark.asyncio
+async def test_http_error_status_raises_with_the_body_text() -> None:
     api, _ = api_with(FakeResponse(status=500, body=b"upstream exploded", content_type="text/plain"))
     with pytest.raises(MowerAPIError) as info:
-        run(api.async_get_devices())
+        await api.async_get_devices()
     assert info.value.message == f"{ERROR_MESSAGES['API_REQUEST_FAILED']}: upstream exploded"
     assert info.value.status_code == 500
     assert info.value.error_code is None
     assert str(info.value) == f"{info.value.message} | HTTP 500"
 
 
-def test_aiohttp_client_error_is_wrapped() -> None:
+@pytest.mark.asyncio
+async def test_aiohttp_client_error_is_wrapped() -> None:
     cause = aiohttp.ClientConnectionError("connection refused")
     api, _ = api_with(FakeResponse(error=cause))
     with pytest.raises(MowerAPIError) as info:
-        run(api.async_get_mqtt_user_info())
+        await api.async_get_mqtt_user_info()
     assert info.value.message == f"{ERROR_MESSAGES['API_REQUEST_FAILED']}: connection refused"
     assert info.value.status_code is None
     assert info.value.__cause__ is cause
 
 
 @pytest.mark.parametrize(("name", "args"), ENDPOINT_NAMES)
-def test_every_request_carries_the_default_timeout(name: str, args: tuple) -> None:
+@pytest.mark.asyncio
+async def test_every_request_carries_the_default_timeout(name: str, args: tuple) -> None:
     api, session = api_with(FakeResponse(ok({})))
-    run(getattr(api, name)(*args))
+    await getattr(api, name)(*args)
     assert session.requests[0]["timeout"] == aiohttp.ClientTimeout(total=20.0)
 
 
-def test_a_custom_request_timeout_is_passed() -> None:
+@pytest.mark.asyncio
+async def test_a_custom_request_timeout_is_passed() -> None:
     session = FakeSession(FakeResponse(ok({})))
     api = MowerAPI(session=session, token=TOKEN, base_url=BASE_URL, request_timeout=5)  # type: ignore[arg-type]
-    run(api.async_get_devices())
+    await api.async_get_devices()
     assert session.requests[0]["timeout"] == aiohttp.ClientTimeout(total=5)
 
 
-def test_request_timeout_none_passes_no_timeout_keyword() -> None:
+@pytest.mark.asyncio
+async def test_request_timeout_none_passes_no_timeout_keyword() -> None:
     """Without the keyword aiohttp applies the session's own timeout policy."""
     session = FakeSession(FakeResponse(ok({})))
     api = MowerAPI(session=session, token=TOKEN, base_url=BASE_URL, request_timeout=None)  # type: ignore[arg-type]
-    run(api.async_get_devices())
+    await api.async_get_devices()
     assert session.requests[0]["timeout"] is NOT_PASSED
 
 
-def test_timeout_is_wrapped_with_its_cause() -> None:
+@pytest.mark.asyncio
+async def test_timeout_is_wrapped_with_its_cause() -> None:
     # aiohttp raises asyncio.TimeoutError when a ClientTimeout expires; from
     # Python 3.11 that name is the builtin TimeoutError.
     cause = TimeoutError()
     api, _ = api_with(FakeResponse(error=cause))
     with pytest.raises(MowerAPIError) as info:
-        run(api.async_get_devices())
+        await api.async_get_devices()
     assert info.value.message == f"{ERROR_MESSAGES['API_REQUEST_FAILED']}: TimeoutError"
     assert info.value.status_code is None
     assert info.value.error_code is None
@@ -476,10 +492,11 @@ def test_timeout_is_wrapped_with_its_cause() -> None:
 
 
 @pytest.mark.parametrize("token", ["", None])
-def test_missing_token_is_auth_required_before_any_request(token: str | None) -> None:
+@pytest.mark.asyncio
+async def test_missing_token_is_auth_required_before_any_request(token: str | None) -> None:
     api, session = api_with(token=token)
     with pytest.raises(MowerAuthRequiredError) as info:
-        run(api.async_get_devices())
+        await api.async_get_devices()
     assert isinstance(info.value, MowerAPIError)
     assert not isinstance(info.value, MowerTransportError)
     assert info.value.message == ERROR_MESSAGES["TOKEN_EXPIRED"]
@@ -488,23 +505,26 @@ def test_missing_token_is_auth_required_before_any_request(token: str | None) ->
     assert session.requests == []
 
 
-def test_set_token_changes_the_authorization_header() -> None:
+@pytest.mark.asyncio
+async def test_set_token_changes_the_authorization_header() -> None:
     api, session = api_with(FakeResponse(ok({})))
     api.set_token("token-456")
-    run(api.async_get_devices())
+    await api.async_get_devices()
     assert session.requests[0]["headers"]["Authorization"] == "Bearer token-456"
 
 
-def test_empty_inputs_make_no_request() -> None:
+@pytest.mark.asyncio
+async def test_empty_inputs_make_no_request() -> None:
     api, session = api_with()
-    assert run(api.async_get_device_statuses([])) == {}
-    assert run(api.async_query_command_results([])) == []
+    assert await api.async_get_device_statuses([]) == {}
+    assert await api.async_query_command_results([]) == []
     assert session.requests == []
 
 
-def test_get_device_status_returns_the_matching_status() -> None:
+@pytest.mark.asyncio
+async def test_get_device_status_returns_the_matching_status() -> None:
     api, _ = api_with(FakeResponse(ok({"devices": [{"id": DEVICE_ID, "vehicleState": "isRunning"}]})))
-    status = run(api.async_get_device_status(DEVICE_ID))
+    status = await api.async_get_device_status(DEVICE_ID)
     assert status.device_id == DEVICE_ID
     assert status.status is MowerStatus.MOWING
 
@@ -515,10 +535,11 @@ def assert_device_not_found(error: MowerAPIError) -> None:
     assert error.error_code == "DEVICE_NOT_FOUND"
 
 
-def test_get_device_status_maps_http_404_to_device_not_found() -> None:
+@pytest.mark.asyncio
+async def test_get_device_status_maps_http_404_to_device_not_found() -> None:
     api, _ = api_with(FakeResponse(status=404, body=b"no such vehicle", content_type="text/plain"))
     with pytest.raises(MowerAPIError) as info:
-        run(api.async_get_device_status(DEVICE_ID))
+        await api.async_get_device_status(DEVICE_ID)
     assert_device_not_found(info.value)
     cause = info.value.__cause__
     assert isinstance(cause, MowerAPIError)
@@ -527,27 +548,30 @@ def test_get_device_status_maps_http_404_to_device_not_found() -> None:
 
 
 @pytest.mark.parametrize("data", [None, {"payload": None}, {"payload": {"devices": None}}], ids=["data", "payload", "devices"])
-def test_get_device_status_with_null_entries_is_device_not_found(data: dict[str, Any] | None) -> None:
+@pytest.mark.asyncio
+async def test_get_device_status_with_null_entries_is_device_not_found(data: dict[str, Any] | None) -> None:
     api, _ = api_with(FakeResponse({"code": 1, "desc": "success", "data": data}))
     with pytest.raises(MowerAPIError) as info:
-        run(api.async_get_device_status(DEVICE_ID))
+        await api.async_get_device_status(DEVICE_ID)
     assert_device_not_found(info.value)
 
 
-def test_get_device_status_missing_from_the_reply_is_device_not_found() -> None:
+@pytest.mark.asyncio
+async def test_get_device_status_missing_from_the_reply_is_device_not_found() -> None:
     api, _ = api_with(FakeResponse(ok({"devices": [{"id": "someone-else"}]})))
     with pytest.raises(MowerAPIError) as info:
-        run(api.async_get_device_status(DEVICE_ID))
+        await api.async_get_device_status(DEVICE_ID)
     assert_device_not_found(info.value)
     # The inner DEVICE_NOT_FOUND error is caught by the 404 branch and re-raised from itself.
     assert isinstance(info.value.__cause__, MowerAPIError)
     assert_device_not_found(info.value.__cause__)
 
 
-def test_get_device_status_passes_other_errors_through() -> None:
+@pytest.mark.asyncio
+async def test_get_device_status_passes_other_errors_through() -> None:
     api, _ = api_with(FakeResponse(status=500, body=b"upstream exploded", content_type="text/plain"))
     with pytest.raises(MowerAPIError) as info:
-        run(api.async_get_device_status(DEVICE_ID))
+        await api.async_get_device_status(DEVICE_ID)
     assert info.value.status_code == 500
     assert info.value.error_code is None
     assert info.value.message == f"{ERROR_MESSAGES['API_REQUEST_FAILED']}: upstream exploded"
@@ -638,12 +662,13 @@ HTML = b"<html><body><h1>502 Bad Gateway</h1></body></html>"
         pytest.param(FakeResponse({"desc": "nope"}), MowerAPIError, f"{FAILED}: nope", None, None, id="no_code"),
     ],
 )
-def test_each_failure_kind_raises_its_class(
+@pytest.mark.asyncio
+async def test_each_failure_kind_raises_its_class(
     response: FakeResponse, cls: type[MowerAPIError], message: str, status_code: int | None, envelope_code: int | None
 ) -> None:
     api, _ = api_with(response)
     with pytest.raises(MowerAPIError) as info:  # except MowerAPIError still catches every kind
-        run(api.async_get_devices())
+        await api.async_get_devices()
     assert type(info.value) is cls
     assert info.value.message == message
     assert info.value.status_code == status_code
@@ -659,29 +684,31 @@ def test_each_failure_kind_raises_its_class(
     ids=["timeout", "payload_error"],
 )
 @pytest.mark.parametrize("status", [200, 404], ids=["ok", "not_found"])
-def test_a_failure_while_reading_the_body_is_a_transport_error_whatever_the_status(
+@pytest.mark.asyncio
+async def test_a_failure_while_reading_the_body_is_a_transport_error_whatever_the_status(
     cause: Exception, status: int
 ) -> None:
     api, _ = api_with(FakeResponse(ok({}), status=status, read_error=cause))
     with pytest.raises(MowerTransportError) as info:
-        run(api.async_get_devices())
+        await api.async_get_devices()
     assert info.value.__cause__ is cause
     assert info.value.status_code is None
     api, _ = api_with(FakeResponse(ok({}), status=status, read_error=cause))
     with pytest.raises(MowerTransportError) as info:  # not translated to DEVICE_NOT_FOUND
-        run(api.async_get_device_status(DEVICE_ID))
+        await api.async_get_device_status(DEVICE_ID)
     assert info.value.error_code is None
 
 
-def test_an_http_error_body_is_cut_at_500_characters_with_a_marker() -> None:
+@pytest.mark.asyncio
+async def test_an_http_error_body_is_cut_at_500_characters_with_a_marker() -> None:
     body = "x" * 2000
     api, _ = api_with(FakeResponse(status=500, body=body.encode(), content_type="text/plain"))
     with pytest.raises(MowerTransportError) as info:
-        run(api.async_get_devices())
+        await api.async_get_devices()
     assert info.value.message == f"{FAILED}: {'x' * 500}… [truncated, 2000 characters]"
     api, _ = api_with(FakeResponse(status=400, body=b"y" * 500, content_type="text/plain"))
     with pytest.raises(MowerAPIError) as info:
-        run(api.async_get_devices())
+        await api.async_get_devices()
     assert info.value.message == f"{FAILED}: {'y' * 500}"
 
 
@@ -697,12 +724,13 @@ def test_an_http_error_body_is_cut_at_500_characters_with_a_marker() -> None:
         pytest.param(b"null", "application/json", None, "reply is not a JSON object", id="null"),
     ],
 )
-def test_a_2xx_body_that_is_not_a_json_object_is_a_transport_error(
+@pytest.mark.asyncio
+async def test_a_2xx_body_that_is_not_a_json_object_is_a_transport_error(
     body: bytes, content_type: str, cause: type[Exception] | None, message: str
 ) -> None:
     api, _ = api_with(FakeResponse(body=body, content_type=content_type))
     with pytest.raises(MowerTransportError) as info:
-        run(api.async_get_devices())
+        await api.async_get_devices()
     assert info.value.message == f"{FAILED}: {message}"
     assert info.value.status_code == 200
     if cause is None:
@@ -711,19 +739,21 @@ def test_a_2xx_body_that_is_not_a_json_object_is_a_transport_error(
         assert isinstance(info.value.__cause__, cause)
 
 
-def test_a_2xx_json_object_is_read_whatever_its_content_type() -> None:
+@pytest.mark.asyncio
+async def test_a_2xx_json_object_is_read_whatever_its_content_type() -> None:
     api, _ = api_with(FakeResponse(body=json.dumps(ok({"devices": [{"id": DEVICE_ID}]})).encode(), content_type="text/html"))
-    assert [device.id for device in run(api.async_get_devices())] == [DEVICE_ID]
+    assert [device.id for device in await api.async_get_devices()] == [DEVICE_ID]
 
 
-def test_a_404_still_becomes_device_not_found_and_a_5xx_does_not() -> None:
+@pytest.mark.asyncio
+async def test_a_404_still_becomes_device_not_found_and_a_5xx_does_not() -> None:
     api, _ = api_with(FakeResponse(status=404, body=HTML, content_type="text/html"))
     with pytest.raises(MowerAPIError) as info:
-        run(api.async_get_device_status(DEVICE_ID))
+        await api.async_get_device_status(DEVICE_ID)
     assert info.value.error_code == "DEVICE_NOT_FOUND"
     api, _ = api_with(FakeResponse(status=503, body=b"down", content_type="text/plain"))
     with pytest.raises(MowerTransportError):
-        run(api.async_get_device_status(DEVICE_ID))
+        await api.async_get_device_status(DEVICE_ID)
 
 
 def test_the_error_classes_are_mower_api_errors_and_exported() -> None:
@@ -745,18 +775,20 @@ X430_ENTRY = {
 }
 
 
-def test_the_raw_status_entries_come_back_as_the_cloud_sent_them() -> None:
+@pytest.mark.asyncio
+async def test_the_raw_status_entries_come_back_as_the_cloud_sent_them() -> None:
     api, session = api_with(FakeResponse(ok({"devices": [X430_ENTRY, "not a dict", {"vehicleState": "isRunning"}]})))
-    entries = run(api.async_get_vehicle_status_raw([DEVICE_ID, "dev-2"]))
+    entries = await api.async_get_vehicle_status_raw([DEVICE_ID, "dev-2"])
     assert entries == [X430_ENTRY, {"vehicleState": "isRunning"}]
     (request,) = session.requests
     assert (request["method"], request["url"]) == ("POST", BASE_URL.rstrip("/") + "/openapi/smarthome/getVehicleStatus")
     assert request["json"] == {"devices": [{"id": DEVICE_ID}, {"id": "dev-2"}]}
 
 
-def test_no_ids_make_no_raw_status_request() -> None:
+@pytest.mark.asyncio
+async def test_no_ids_make_no_raw_status_request() -> None:
     api, session = api_with()
-    assert run(api.async_get_vehicle_status_raw([])) == []
+    assert await api.async_get_vehicle_status_raw([]) == []
     assert session.requests == []
 
 
@@ -771,9 +803,10 @@ def test_no_ids_make_no_raw_status_request() -> None:
         "data_a_number", "payload_a_number", "devices_a_number", "devices_an_object",
     ],
 )
-def test_a_reply_without_entries_is_an_empty_list(data: dict[str, Any] | None) -> None:
+@pytest.mark.asyncio
+async def test_a_reply_without_entries_is_an_empty_list(data: dict[str, Any] | None) -> None:
     api, _ = api_with(FakeResponse({"code": 1, "desc": "success", "data": data}))
-    assert run(api.async_get_vehicle_status_raw([DEVICE_ID])) == []
+    assert await api.async_get_vehicle_status_raw([DEVICE_ID]) == []
 
 
 @pytest.mark.parametrize("call", ["async_get_devices", "async_get_devices_raw"])
@@ -788,11 +821,12 @@ def test_a_reply_without_entries_is_an_empty_list(data: dict[str, Any] | None) -
         "data_a_number", "payload_a_number", "devices_a_number", "devices_an_object",
     ],
 )
-def test_a_device_list_without_entries_is_an_empty_list(
+@pytest.mark.asyncio
+async def test_a_device_list_without_entries_is_an_empty_list(
     call: str, data: dict[str, Any] | None
 ) -> None:
     api, _ = api_with(FakeResponse({"code": 1, "desc": "success", "data": data}))
-    assert run(getattr(api, call)()) == []
+    assert await getattr(api, call)() == []
 
 
 DEVICE_ENTRY = {
@@ -804,28 +838,31 @@ DEVICE_ENTRY = {
 }
 
 
-def test_the_raw_device_list_is_the_entries_as_sent() -> None:
+@pytest.mark.asyncio
+async def test_the_raw_device_list_is_the_entries_as_sent() -> None:
     api, session = api_with(FakeResponse(ok({"devices": ["not a dict", DEVICE_ENTRY, None]})))
-    assert run(api.async_get_devices_raw()) == [DEVICE_ENTRY]
+    assert await api.async_get_devices_raw() == [DEVICE_ENTRY]
     assert session.requests[0]["method"] == "GET"
     assert session.requests[0]["url"].endswith("/openapi/smarthome/authList")
 
 
-def test_the_typed_devices_are_read_from_the_raw_entries() -> None:
+@pytest.mark.asyncio
+async def test_the_typed_devices_are_read_from_the_raw_entries() -> None:
     api, _ = api_with(FakeResponse(ok({"devices": [DEVICE_ENTRY, "not a dict"]})))
-    assert run(api.async_get_devices()) == [Device.from_dict(DEVICE_ENTRY)]
+    assert await api.async_get_devices() == [Device.from_dict(DEVICE_ENTRY)]
 
 
 @pytest.mark.parametrize(
     "entry", [{"name": "No id"}, {"id": None, "name": "Null id"}, {"id": "", "name": "Empty id"}],
     ids=["missing", "null", "empty"],
 )
-def test_a_typed_device_without_an_id_is_skipped_and_logged(
+@pytest.mark.asyncio
+async def test_a_typed_device_without_an_id_is_skipped_and_logged(
     entry: dict[str, Any], caplog: pytest.LogCaptureFixture
 ) -> None:
     api, _ = api_with(FakeResponse(ok({"devices": [entry, DEVICE_ENTRY]})))
     with caplog.at_level(logging.WARNING, logger="mower_sdk.api"):
-        devices = run(api.async_get_devices())
+        devices = await api.async_get_devices()
     assert [device.id for device in devices] == [DEVICE_ID]
     assert [record.getMessage() for record in caplog.records] == [
         f"Skipping a device entry without an id (keys: {sorted(entry)})"
@@ -836,34 +873,39 @@ def test_a_typed_device_without_an_id_is_skipped_and_logged(
     "entry", [{"name": "No id"}, {"id": None, "name": "Null id"}, {"id": "", "name": "Empty id"}],
     ids=["missing", "null", "empty"],
 )
-def test_a_raw_device_without_an_id_is_kept(
+@pytest.mark.asyncio
+async def test_a_raw_device_without_an_id_is_kept(
     entry: dict[str, Any], caplog: pytest.LogCaptureFixture
 ) -> None:
     api, _ = api_with(FakeResponse(ok({"devices": [entry, DEVICE_ENTRY]})))
     with caplog.at_level(logging.WARNING, logger="mower_sdk.api"):
-        assert run(api.async_get_devices_raw()) == [entry, DEVICE_ENTRY]
+        assert await api.async_get_devices_raw() == [entry, DEVICE_ENTRY]
     assert caplog.records == []
 
 
-def test_a_refused_raw_device_request_raises_like_the_others() -> None:
+@pytest.mark.asyncio
+async def test_a_refused_raw_device_request_raises_like_the_others() -> None:
     api, _ = api_with(FakeResponse({"code": 4005, "desc": "token expired"}))
     with pytest.raises(MowerAuthRequiredError):
-        run(api.async_get_devices_raw())
+        await api.async_get_devices_raw()
 
 
-def test_the_typed_statuses_are_read_from_the_raw_entries() -> None:
+@pytest.mark.asyncio
+async def test_the_typed_statuses_are_read_from_the_raw_entries() -> None:
     api, _ = api_with(FakeResponse(ok({"devices": [X430_ENTRY]})))
-    statuses = run(api.async_get_device_statuses([DEVICE_ID]))
+    statuses = await api.async_get_device_statuses([DEVICE_ID])
     assert statuses[DEVICE_ID].battery == 88
     assert statuses[DEVICE_ID].extra["newField"] == {"nested": [1, 2]}
 
 
-def test_a_refused_raw_status_request_raises_like_the_others() -> None:
+@pytest.mark.asyncio
+async def test_a_refused_raw_status_request_raises_like_the_others() -> None:
     api, _ = api_with(FakeResponse({"code": 4005, "desc": "token expired"}))
     with pytest.raises(MowerAuthRequiredError):
-        run(api.async_get_vehicle_status_raw([DEVICE_ID]))
+        await api.async_get_vehicle_status_raw([DEVICE_ID])
 
 
-def test_the_typed_statuses_skip_an_entry_that_is_not_a_dict() -> None:
+@pytest.mark.asyncio
+async def test_the_typed_statuses_skip_an_entry_that_is_not_a_dict() -> None:
     api, _ = api_with(FakeResponse(ok({"devices": ["not a dict", X430_ENTRY, None]})))
-    assert list(run(api.async_get_device_statuses([DEVICE_ID]))) == [DEVICE_ID]
+    assert list(await api.async_get_device_statuses([DEVICE_ID])) == [DEVICE_ID]

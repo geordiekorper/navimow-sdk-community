@@ -42,6 +42,27 @@ def test_deleting_legacy_code_or_the_inventory_is_refused(sdk: Path) -> None:
     ]
 
 
+def test_the_legacy_readme_is_added_edited_and_deleted_freely(sdk: Path) -> None:
+    stage(sdk, "mower_sdk/legacy/README.md", "# Legacy\n")
+    assert check_protected_paths.check() == []
+    run("git", "commit", "-q", "-m", "docs: readme", cwd=sdk)
+    stage(sdk, "mower_sdk/legacy/README.md", "# Legacy\n\nMore.\n")
+    assert check_protected_paths.check() == []
+    run("git", "rm", "-q", "-f", "mower_sdk/legacy/README.md", cwd=sdk)
+    assert check_protected_paths.check() == []
+
+
+def test_the_readme_does_not_carry_a_change_to_legacy_code(sdk: Path) -> None:
+    stage(sdk, "mower_sdk/legacy/README.md", "# Legacy\n")
+    stage(sdk, "mower_sdk/legacy/client.py", "OLD = 2\n")
+    assert [f.split(":")[0] for f in check_protected_paths.check()] == ["mower_sdk/legacy/client.py"]
+
+
+def test_moving_legacy_code_onto_the_readme_is_refused(sdk: Path) -> None:
+    run("git", "mv", "mower_sdk/legacy/client.py", "mower_sdk/legacy/README.md", cwd=sdk)
+    assert [f.split(":")[0] for f in check_protected_paths.check()] == ["mower_sdk/legacy/client.py"]
+
+
 def test_only_the_inventory_itself_is_protected(sdk: Path) -> None:
     stage(sdk, "tests/upstream_exports.json.bak", "{}\n")
     run("git", "commit", "-q", "-m", "chore: backup", cwd=sdk)
@@ -68,6 +89,14 @@ def test_range_mode_checks_the_commits_between_refs(sdk: Path, monkeypatch: pyte
     ("path", "protected"),
     [
         ("mower_sdk/legacy/client.py", True),
+        ("mower_sdk/legacy/__init__.py", True),
+        # The folder's own README, and nothing that only resembles it.
+        ("mower_sdk/legacy/README.md", False),
+        ("mower_sdk/legacy/readme.md", True),
+        ("mower_sdk/legacy/README.py", True),
+        ("mower_sdk/legacy/README.md.py", True),
+        ("mower_sdk/legacy/NOTES.md", True),
+        ("mower_sdk/legacy/sub/README.md", True),
         ("mower_sdk/mqtt.py", False),
         ("tests/upstream_exports.json", True),
         ("tests/test_upstream_exports.py", False),
@@ -88,10 +117,23 @@ def test_the_hook_reads_the_change_on_every_commit() -> None:
 @pytest.mark.parametrize(
     ("line", "refused"),
     [
-        ("import pytest_" + "asyncio", True),
-        ("@pytest.mark." + "asyncio", True),
-        ("from unittest import " + "mock", True),
-        ("import unittest." + "mock", True),
+        # The async plugin was refused once; async tests use it now.
+        ("import pytest_asyncio", False),
+        ("@pytest.mark.asyncio", False),
+        ("client = " + "Mock()", True),
+        ("client = mock.Magic" + "Mock(spec=Client)", True),
+        ("send = Async" + "Mock(return_value=None)", True),
+        ("NonCallable" + "Mock()", True),
+        ("NonCallableMagic" + "Mock()", True),
+        ("type(api).token = Property" + "Mock(return_value='t')", True),
+        ("client = create_" + "autospec(Client)", True),
+        # Only the Mock classes: the rest of unittest.mock, and a fake, pass.
+        ("from unittest import mock", False),
+        ("import unittest.mock", False),
+        ("with mock.patch.object(api, 'send', fake_send):", False),
+        ("monkeypatch.setattr(mqtt_module.mqtt_client, 'Client', FakeClient)", False),
+        ("class FakeClient:", False),
+        ("# Mocking the broker is not needed here", False),
         ("asyncio.run(main())", False),
         ("import unittest", False),
     ],

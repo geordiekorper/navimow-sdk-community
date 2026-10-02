@@ -77,16 +77,22 @@ repos:
       # inventory of upstream's public names are not changed. A deliberate
       # exception is committed with SKIP=no-protected-changes and a
       # "Legacy-edit: <reason>" trailer, which gitlint requires for any change
-      # to these paths, here and per commit in CI.
+      # to these paths, here and per commit in CI. The folder's README.md is
+      # the one path there that is not protected.
       - id: no-protected-changes
         name: code moved from upstream and the export inventory are not changed
         entry: python tools/check_protected_paths.py
         language: python
         pass_filenames: false
         always_run: true
-      # Tests are plain asyncio.run tests with recording fakes.
+      # Tests stand in for aiohttp, paho and the MQTT client with recording
+      # fakes, small classes with real methods, and not with Mock objects. A
+      # fake has only the methods written for it, so code that calls one it
+      # lacks, or with arguments it does not take, fails the test; a Mock
+      # accepts any call, so the test would pass. Only the Mock classes are
+      # refused, not the rest of unittest.mock.
       - id: test-style
-        name: tests use asyncio.run and recording fakes, not async plugins or mocks
+        name: tests use recording fakes, not Mock objects
         language: pygrep
-        entry: '\bpytest_asyncio\b|\bpytest\.mark\.asyncio\b|\bunittest\.mock\b|from unittest import mock\b'
+        entry: '\b(?:NonCallable)?(?:Magic|Async|Property)?Mock\b|\bcreate_autospec\b'
         files: ^tests/.*\.py$

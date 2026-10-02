@@ -180,15 +180,17 @@ class ReplyingAPI(MowerAPI):
         return self.reply
 
 
-def test_the_api_reads_the_credential_reply_into_connection_info() -> None:
+@pytest.mark.asyncio
+async def test_the_api_reads_the_credential_reply_into_connection_info() -> None:
     reply = {"mqttHost": f"wss://{HOST}", "mqttUrl": "/mqtt/12345", "userName": 12345, "pwdInfo": "secret"}
-    info = asyncio.run(ReplyingAPI(reply).async_get_mqtt_connection_info())
+    info = await ReplyingAPI(reply).async_get_mqtt_connection_info()
     assert info == MqttConnectionInfo(HOST, 443, "/mqtt/12345", "12345", "secret")
 
 
-def test_the_api_raises_for_a_reply_without_a_broker() -> None:
+@pytest.mark.asyncio
+async def test_the_api_raises_for_a_reply_without_a_broker() -> None:
     with pytest.raises(MowerAPIError, match="no broker"):
-        asyncio.run(ReplyingAPI({"userName": "user"}).async_get_mqtt_connection_info())
+        await ReplyingAPI({"userName": "user"}).async_get_mqtt_connection_info()
 
 
 # ---- the factory --------------------------------------------------------------------------------
@@ -257,25 +259,23 @@ def test_without_an_access_token_no_authorization_is_added_and_the_headers_are_k
     assert bare.mqtt.auth_headers == {}
 
 
-def test_other_options_reach_the_constructor() -> None:
-    async def test() -> None:
-        loop = asyncio.get_running_loop()
-        sdk = NavimowSDK.from_connection_info(
-            INFO,
-            access_token="tok",
-            records=RECORDS,
-            loop=loop,
-            keepalive_seconds=120,
-            subscribe_location=True,
-            extra_topics=["a/b"],
-            reject_late_state=True,
-        )
-        assert sdk.loop is loop
-        assert sdk.mqtt.keepalive_seconds == 120
-        assert (sdk.mqtt.subscribe_location, sdk.mqtt.extra_topics) == (True, ["a/b"])
-        assert sdk._reject_late_state is True
-
-    asyncio.run(test())
+@pytest.mark.asyncio
+async def test_other_options_reach_the_constructor() -> None:
+    loop = asyncio.get_running_loop()
+    sdk = NavimowSDK.from_connection_info(
+        INFO,
+        access_token="tok",
+        records=RECORDS,
+        loop=loop,
+        keepalive_seconds=120,
+        subscribe_location=True,
+        extra_topics=["a/b"],
+        reject_late_state=True,
+    )
+    assert sdk.loop is loop
+    assert sdk.mqtt.keepalive_seconds == 120
+    assert (sdk.mqtt.subscribe_location, sdk.mqtt.extra_topics) == (True, ["a/b"])
+    assert sdk._reject_late_state is True
 
 
 @pytest.mark.parametrize("name", ["broker", "port", "ws_path", "username", "password"])
