@@ -71,6 +71,12 @@ asyncio_default_fixture_loop_scope = "function"
 line-length = 100
 target-version = "py311"
 
+[tool.ruff.format]
+# Legacy code moved verbatim from upstream is never reformatted. Nor are the
+# Python blocks in the documents, which ruff would format too: they are
+# fragments wrapped for reading, and tests run two of the documents as printed.
+exclude = ["mower_sdk/legacy/**", "*.md"]
+
 [tool.ruff.lint]
 # Ruff rule set for the whole tree. CI runs it as a blocking check.
 select = ["F", "ARG", "B", "UP", "SIM"]
