@@ -175,23 +175,28 @@ was measured on a clone of this repository with git 2.55.0.)
    version) is skipped; a range with no such step is "nothing to port" (exit
    status 3). Start the range on the first-parent line of its end, as the
    fork point is.
-2. Otherwise it builds an mbox with one entry per commit: git's own mail
-   header and message (`git log --pretty=mboxrd`), one trailer naming the
-   upstream commit (`Upstream-commit: <sha>`), a `---` separator, and the
-   commit's diff (`git diff-tree -p`) with the `a/` and `b/` paths of the moved
-   files rewritten through `tools/upstream_path_map.json`. The message and the
-   diff come from separate git commands and are handled as bytes, split on LF
-   only, so only diff header lines are ever rewritten; hunk bodies and
-   messages are copied byte for byte, CRLF content included. A message gains
-   the trailer at its end, in place of any blank lines it ended with, which
-   `git am` would drop in any case. The mbox is applied with
-   `git am -3 --keep-cr --patch-format=mboxrd`, so each commit lands in
-   `legacy/` with its author, date, message and bytes, and the shims are
-   untouched.
-3. A conflict stops `git am`. Translated docstrings are the usual cause; that
-   conflict would occur without any move, and the tool does not remove it.
-   Resolve it, `git add` the file and run `git am --continue`;
-   `git am --abort` restores the branch.
+2. Otherwise it ports each step in turn. The commit's diff (`git diff-tree
+   -p`), with the `a/` and `b/` paths of the moved files rewritten through
+   `tools/upstream_path_map.json`, is applied to the index and the working
+   tree with `git apply --3way`, and the result is committed with git's
+   plumbing from the upstream commit object itself: its message byte for
+   byte, with one trailer naming the upstream commit (`Upstream-commit:
+   <sha>`) at its end in place of any blank lines it ended with, and its
+   author and author date; the committer is the user. The diff is handled as
+   bytes, split on LF only, so only its header lines are ever rewritten and
+   file content is copied byte for byte, CRLF content included. No mail
+   format lies between the two commits: `git am` reads its message from one,
+   and would cut it at a `---` line, join a first paragraph of several lines
+   into one, strip a bracketed prefix from the subject or read a body that
+   starts with a `From:` line as a header. So each step lands in `legacy/`
+   with upstream's author, date, message and bytes, and the shims are
+   untouched. A step whose change is already in the tree makes no commit.
+3. A conflict stops the port, with the step's files unmerged. Translated
+   docstrings are the usual cause; that conflict would occur without any
+   move, and the tool does not remove it. Resolve it, `git add` the file and
+   run the tool with `--continue`; `--skip` drops the step and goes on, and
+   `--abort` puts the branch back where the port started. The tool's
+   docstring has the details and the exit statuses.
 
 `python tools/port_upstream.py --dry-run <range>` scans and prints the
 rewritten series without applying it. Port from the last commit already taken

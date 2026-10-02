@@ -216,16 +216,57 @@ def test_crlf_content_is_rewritten_byte_for_byte() -> None:
     )
 
 
+# ---- the trailer, on a message alone -------------------------------------------------------------
+
+
+def test_the_trailer_is_a_paragraph_of_its_own_after_a_body() -> None:
+    message = b"s\n\nWhy.\nAnd: how.\n"
+    assert port_upstream.with_trailer(message, "abc") == message + b"\nUpstream-commit: abc\n"
+
+
+def test_the_trailer_joins_a_trailer_block() -> None:
+    message = (
+        b"s\n\nWhy.\n\nSigned-off-by: U <u@example.invalid>\nReviewed-by: V <v@example.invalid>\n"
+    )
+    assert port_upstream.with_trailer(message, "abc") == message + b"Upstream-commit: abc\n"
+
+
+def test_the_trailer_follows_a_subject_with_no_body() -> None:
+    assert port_upstream.with_trailer(b"s\n", "abc") == b"s\n\nUpstream-commit: abc\n"
+
+
+def test_a_title_in_the_shape_of_a_trailer_is_not_a_trailer_block() -> None:
+    """Git never reads trailers from the first paragraph, so the trailer gets its own."""
+    assert port_upstream.with_trailer(b"fix: repair the client\n", "abc") == (
+        b"fix: repair the client\n\nUpstream-commit: abc\n"
+    )
+    assert port_upstream.with_trailer(b"fix: repair\n\nSigned-off-by: U <u@x>\n", "abc") == (
+        b"fix: repair\n\nSigned-off-by: U <u@x>\nUpstream-commit: abc\n"
+    )
+
+
+def test_the_trailer_is_the_whole_of_an_empty_message() -> None:
+    assert port_upstream.with_trailer(b"", "abc") == b"Upstream-commit: abc\n"
+
+
+def test_blank_lines_at_the_end_of_a_message_do_not_separate_the_trailer_twice() -> None:
+    assert port_upstream.with_trailer(b"s\n\nWhy.\n\n\n", "abc") == (
+        b"s\n\nWhy.\n\nUpstream-commit: abc\n"
+    )
+
+
 # ---- the scan and the port, on a temporary repository -----------------------------------------
 
 GIT_ENV = {
     "GIT_AUTHOR_NAME": "Upstream",
     "GIT_AUTHOR_EMAIL": "upstream@example.invalid",
-    "GIT_COMMITTER_NAME": "Upstream",
-    "GIT_COMMITTER_EMAIL": "upstream@example.invalid",
+    "GIT_COMMITTER_NAME": "Porter",
+    "GIT_COMMITTER_EMAIL": "porter@example.invalid",
     "GIT_CONFIG_GLOBAL": os.devnull,
     "GIT_CONFIG_NOSYSTEM": "1",
 }
+# The author date of the side edit, so the port's copy of it can be checked.
+SIDE_EDIT_DATE = "1700000000 +0200"
 DUP_BASE = """\
 TCP = {
     "a": 1,
@@ -249,16 +290,26 @@ WSS = {
 def make():
     pass
 """
-PATHOLOGICAL_MESSAGE = """\
-quoted edit
-
-The message quotes a patch, a separator and a From line:
- mower_sdk/client.py | 1 +
----
-diff --git a/mower_sdk/client.py b/mower_sdk/client.py
---- a/mower_sdk/client.py
-From here on, nothing.
-"""
+# Every shape git am reshapes or cuts: a bracketed subject prefix, a first paragraph
+# of two lines, a body starting with header-like lines, trailing whitespace, a
+# quoted patch with its separator, a run of blank lines, a CR, a "From " line
+# and a blank line at the end.
+PATHOLOGICAL_MESSAGE = (
+    b"[WIP] quoted edit\n"
+    b"on a second subject line\n"
+    b"\n"
+    b"From: not a header\n"
+    b"Date: not a header either\n"
+    b"The message quotes a patch, a separator and a From line:  \n"
+    b" mower_sdk/client.py | 1 +\n"
+    b"---\n"
+    b"diff --git a/mower_sdk/client.py b/mower_sdk/client.py\n"
+    b"--- a/mower_sdk/client.py\n"
+    b"\n"
+    b"\n"
+    b"From here on, nothing.\r\n"
+    b"\n"
+)
 
 
 @pytest.fixture
@@ -273,8 +324,12 @@ def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
                   \-- dup-b --/
        \-- dup-b --/
        \-- crlf-edit   (a CRLF file)
-       \-- quoted-edit  (a commit whose message looks like a patch)
+       \-- quoted-edit  (a commit whose message holds every shape git am would alter)
+       \-- latin-edit   (a commit with an encoding header)
+       \-- fix-edit     (a commit whose whole message is one trailer-shaped line)
        \-- fork: client.py moved to legacy/client.py with a shim, as this repository did
+
+    side-edit has a second commit, side-edit-2, which adds a file.
     """
     # A git hook or alias exports GIT_DIR, GIT_INDEX_FILE and the like; left in
     # place they would point every command below at the caller's repository.
@@ -284,10 +339,14 @@ def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     for name, value in GIT_ENV.items():
         monkeypatch.setenv(name, value)
 
-    def run(*args: str) -> str:
+    def run(*args: str, data: bytes | None = None) -> str:
         return subprocess.run(
-            ["git", "-C", str(tmp_path), *args], capture_output=True, text=True, check=True
-        ).stdout.strip()
+            ["git", "-C", str(tmp_path), *args],
+            input=data,
+            capture_output=True,
+            check=True,
+            text=data is None,
+        ).stdout
 
     def write(path: str, text: str) -> None:
         target = tmp_path / path
@@ -304,14 +363,20 @@ def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
     run("checkout", "-q", "-b", "side", "base")
     write("mower_sdk/client.py", "class MowerClient:\n    token_updates = 0\n")
+    monkeypatch.setenv("GIT_AUTHOR_DATE", SIDE_EDIT_DATE)
     run("commit", "-q", "-am", "side edit")
+    monkeypatch.delenv("GIT_AUTHOR_DATE")
     run("tag", "side-edit")
+    write("notes.txt", "added upstream\n")
+    run("add", "-A")
+    run("commit", "-q", "-m", "side edit two")
+    run("tag", "side-edit-2")
 
     run("checkout", "-q", "main")
     write("mower_sdk/mqtt.py", "class NavimowMQTT:\n    keepalive = 60\n")
     run("commit", "-q", "-am", "core edit")
     run("tag", "core-edit")
-    run("merge", "-q", "--no-ff", "-m", "clean merge", "side")
+    run("merge", "-q", "--no-ff", "-m", "clean merge", "side-edit")
     run("tag", "clean-merge")
 
     run("checkout", "-q", "-b", "side2", "base")
@@ -356,8 +421,18 @@ def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
     run("checkout", "-q", "-b", "quoted", "base")
     write("mower_sdk/client.py", "class MowerClient:\n    quoted = True\n")
-    run("commit", "-q", "-am", PATHOLOGICAL_MESSAGE)
+    run("commit", "-q", "-a", "--cleanup=verbatim", "-F", "-", data=PATHOLOGICAL_MESSAGE)
     run("tag", "quoted-edit")
+
+    run("checkout", "-q", "-b", "latin", "base")
+    write("mower_sdk/client.py", "class MowerClient:\n    latin = True\n")
+    run("-c", "i18n.commitEncoding=ISO-8859-1", "commit", "-q", "-a", "-F", "-", data=b"caf\xe9\n")
+    run("tag", "latin-edit")
+
+    run("checkout", "-q", "-b", "fix", "base")
+    write("mower_sdk/client.py", "class MowerClient:\n    repaired = True\n")
+    run("commit", "-q", "-am", "fix: repair the client")
+    run("tag", "fix-edit")
 
     run("checkout", "-q", "-b", "fork", "base")
     (tmp_path / "mower_sdk" / "legacy").mkdir()
@@ -416,34 +491,26 @@ def sha_of(repo: Path, rev: str) -> bytes:
     return git_out(repo, "rev-parse", rev).strip().encode()
 
 
-# An mbox entry's header lines and the blank line before the message body.
-HEADERS = b"From 1 Mon Sep 17 00:00:00 2001\nFrom: U <u@example.invalid>\nSubject: [PATCH] s\n\n"
+def stored_message(repo: Path, rev: str) -> bytes:
+    """The message bytes of a commit object, after the blank line that ends its headers."""
+    return git_raw(repo, "cat-file", "commit", rev).partition(b"\n\n")[2]
 
 
-def test_the_trailer_is_a_paragraph_of_its_own_after_a_body() -> None:
-    mail = HEADERS + b"Why.\nAnd: how.\n"
-    assert port_upstream.with_trailer(mail, "abc") == mail + b"\nUpstream-commit: abc\n"
+def author_line(repo: Path, rev: str) -> bytes:
+    """The value of a commit object's author header."""
+    headers = git_raw(repo, "cat-file", "commit", rev).partition(b"\n\n")[0]
+    return next(line[7:] for line in headers.split(b"\n") if line.startswith(b"author "))
 
 
-def test_the_trailer_joins_a_trailer_block() -> None:
-    mail = (
-        HEADERS + b"Why.\n\n"
-        b"Signed-off-by: U <u@example.invalid>\nReviewed-by: V <v@example.invalid>\n"
+def rewritten_diff(repo: Path, *trees: str) -> bytes:
+    diff = git_raw(
+        repo, "diff-tree", "--no-commit-id", "-p", "-M", "--binary", "--full-index", *trees
     )
-    assert port_upstream.with_trailer(mail, "abc") == mail + b"Upstream-commit: abc\n"
+    return diff.replace(b"mower_sdk/client.py", b"mower_sdk/legacy/client.py")
 
 
-def test_the_trailer_follows_a_subject_with_no_body() -> None:
-    mail = HEADERS
-    assert port_upstream.with_trailer(mail, "abc") == mail + b"Upstream-commit: abc\n"
-
-
-def test_blank_lines_at_the_end_of_a_message_do_not_separate_the_trailer_twice() -> None:
-    mail = HEADERS + b"Why.\n\n\n"
-    assert (
-        port_upstream.with_trailer(mail, "abc")
-        == mail.rstrip(b"\n") + b"\n\nUpstream-commit: abc\n"
-    )
+def state_dir(repo: Path) -> Path:
+    return repo / ".git" / "port-upstream"
 
 
 def test_commits_in_follows_the_first_parent_line(repo: Path) -> None:
@@ -482,6 +549,17 @@ def test_files_touched_and_merged_commits_are_against_the_first_parent() -> None
     ]
 
 
+def test_commit_object_reads_the_author_the_encoding_and_the_message_as_stored(repo: Path) -> None:
+    author, encoding, message = port_upstream.commit_object("quoted-edit")
+    assert author == author_line(repo, "quoted-edit")
+    assert author.startswith(b"Upstream <upstream@example.invalid> ")
+    assert encoding is None
+    assert message == PATHOLOGICAL_MESSAGE
+    author, encoding, message = port_upstream.commit_object("latin-edit")
+    assert (encoding, message) == (b"ISO-8859-1", b"caf\xe9\n")
+    assert port_upstream.commit_object("side-edit")[0].endswith(SIDE_EDIT_DATE.encode())
+
+
 @pytest.mark.usefixtures("repo")
 def test_scan_refuses_a_mixed_file_before_applying_anything(
     capsys: pytest.CaptureFixture[str],
@@ -503,7 +581,7 @@ def test_a_merge_resolved_by_hand_is_ported_as_its_net_change(
     assert port_upstream.main(["--dry-run", "clean-merge..evil-merge"]) == 0
     out = capsysbinary.readouterr().out
     assert b"squashing 1 commit(s):" in out and b"utils edit" in out
-    assert out.count(b"\nFrom ") + out.startswith(b"From ") == 1
+    assert out.count(b"\ncommit ") + out.startswith(b"commit ") == 1
     assert b"diff --git a/mower_sdk/legacy/utils.py b/mower_sdk/legacy/utils.py\n" in out
     assert b"+    return data or {}  # resolved by hand\n" in out
 
@@ -517,23 +595,25 @@ def test_a_merge_that_kept_its_first_parent_is_skipped(capsys: pytest.CaptureFix
     assert "nothing to port" in captured.err
 
 
-def test_dry_run_is_the_message_its_trailer_and_the_rewritten_diff(
+def test_dry_run_is_the_commit_its_trailer_and_the_rewritten_diff(
     repo: Path, capsysbinary: pytest.CaptureFixture[bytes]
 ) -> None:
     assert port_upstream.main(["--dry-run", "base..side-edit"]) == 0
     out = capsysbinary.readouterr().out
-    mail = git_raw(repo, "log", "-1", "--pretty=mboxrd", "side-edit")
-    trailer = b"Upstream-commit: " + sha_of(repo, "side-edit") + b"\n"
-    diff = git_raw(
-        repo, "diff-tree", "--no-commit-id", "-p", "-M", "--binary", "--root", "side-edit"
-    )
+    sha = sha_of(repo, "side-edit")
     assert out.endswith(
-        mail
-        + trailer
-        + b"---\n\n"
-        + diff.replace(b"mower_sdk/client.py", b"mower_sdk/legacy/client.py")
+        b"commit "
+        + sha
+        + b"\nauthor "
+        + author_line(repo, "side-edit")
+        + b"\n\nside edit\n\nUpstream-commit: "
+        + sha
+        + b"\n\n"
+        + rewritten_diff(repo, "--root", "side-edit")
     )
-    assert out.count(b"\nFrom ") + out.startswith(b"From ") == 1  # one mbox entry
+    assert out.count(b"\ncommit ") + out.startswith(b"commit ") == 1  # one step
+    assert git_out(repo, "status", "--porcelain") == ""
+    assert not state_dir(repo).exists()
 
 
 def test_a_merge_is_ported_as_one_step_with_its_net_change(
@@ -541,26 +621,20 @@ def test_a_merge_is_ported_as_one_step_with_its_net_change(
 ) -> None:
     assert port_upstream.main(["--dry-run", "core-edit..clean-merge"]) == 0
     out = capsysbinary.readouterr().out
-    mail = git_raw(repo, "log", "-1", "--pretty=mboxrd", "clean-merge")
-    trailer = b"Upstream-commit: " + sha_of(repo, "clean-merge") + b"\n"
-    diff = git_raw(
-        repo, "diff-tree", "--no-commit-id", "-p", "-M", "--binary", "core-edit", "clean-merge"
-    )
+    sha = sha_of(repo, "clean-merge")
     assert out.endswith(
-        mail
-        + trailer
-        + b"---\n\n"
-        + diff.replace(b"mower_sdk/client.py", b"mower_sdk/legacy/client.py")
+        b"\n\nclean merge\n\nUpstream-commit: "
+        + sha
+        + b"\n\n"
+        + rewritten_diff(repo, "core-edit", "clean-merge")
     )
-    assert out.count(b"\nFrom ") + out.startswith(b"From ") == 1
+    assert out.count(b"\ncommit ") + out.startswith(b"commit ") == 1
     assert b"squashing 1 commit(s):" in out and b"side edit" in out
 
     git_out(repo, "checkout", "-q", "fork")
     assert port_upstream.main(["core-edit..clean-merge"]) == 0
     assert git_out(repo, "log", "-1", "--format=%an: %s") == "Upstream: clean merge\n"
-    assert git_out(repo, "log", "-1", "--format=%B") == (
-        "clean merge\n\nUpstream-commit: " + sha_of(repo, "clean-merge").decode() + "\n\n"
-    )
+    assert stored_message(repo, "HEAD") == b"clean merge\n\nUpstream-commit: " + sha + b"\n"
     assert (
         git_out(repo, "diff", "--name-only", "fork-move", "HEAD") == "mower_sdk/legacy/client.py\n"
     )
@@ -592,7 +666,7 @@ def test_the_same_insertion_on_both_sides_of_a_merge_is_ported_once(
     assert (
         "merge of the same insertion: no change against its first parent, skipped" in captured.out
     )
-    assert "applied 2 commit(s)" in captured.out
+    assert "applied base..dup-merge" in captured.out
     assert git_out(repo, "log", "--format=%s", "fork-move..HEAD") == (
         "shared insertion, side a\nbase with a second block\n"
     )
@@ -601,16 +675,141 @@ def test_the_same_insertion_on_both_sides_of_a_merge_is_ported_once(
     assert content.count(b"WSS = {") == 1
 
 
-def test_a_message_that_looks_like_a_patch_is_copied_byte_for_byte(
-    repo: Path, capsysbinary: pytest.CaptureFixture[bytes]
+def test_a_message_git_am_would_alter_is_ported_byte_for_byte(repo: Path) -> None:
+    assert stored_message(repo, "quoted-edit") == PATHOLOGICAL_MESSAGE  # stored as written
+    git_out(repo, "checkout", "-q", "fork")
+    assert port_upstream.main(["base..quoted-edit"]) == 0
+    sha = sha_of(repo, "quoted-edit")
+    assert stored_message(repo, "HEAD") == (
+        PATHOLOGICAL_MESSAGE.rstrip(b"\n") + b"\n\nUpstream-commit: " + sha + b"\n"
+    )
+    assert (
+        repo / "mower_sdk/legacy/client.py"
+    ).read_text() == "class MowerClient:\n    quoted = True\n"
+    assert git_out(repo, "status", "--porcelain") == ""
+
+
+def test_a_ported_one_line_message_carries_a_trailer_git_reads(repo: Path) -> None:
+    git_out(repo, "checkout", "-q", "fork")
+    assert port_upstream.main(["base..fix-edit"]) == 0
+    sha = sha_of(repo, "fix-edit")
+    assert (
+        stored_message(repo, "HEAD") == b"fix: repair the client\n\nUpstream-commit: " + sha + b"\n"
+    )
+    trailers = git_out(repo, "log", "-1", "--format=%(trailers:key=Upstream-commit,valueonly)")
+    assert trailers.strip() == sha.decode()
+
+
+def test_a_commits_encoding_header_is_carried_over(repo: Path) -> None:
+    git_out(repo, "checkout", "-q", "fork")
+    assert port_upstream.main(["base..latin-edit"]) == 0
+    headers, _, message = git_raw(repo, "cat-file", "commit", "HEAD").partition(b"\n\n")
+    assert b"\nencoding ISO-8859-1\n" in headers + b"\n"
+    assert message == b"caf\xe9\n\nUpstream-commit: " + sha_of(repo, "latin-edit") + b"\n"
+
+
+def test_a_message_without_an_encoding_header_is_not_labelled_with_the_local_one(
+    repo: Path,
 ) -> None:
-    assert port_upstream.main(["--dry-run", "base..quoted-edit"]) == 0
-    out = capsysbinary.readouterr().out
-    mail = git_raw(repo, "log", "-1", "--pretty=mboxrd", "quoted-edit")
-    assert mail + b"\nUpstream-commit: " + sha_of(repo, "quoted-edit") + b"\n---\n\n" in out
-    body = PATHOLOGICAL_MESSAGE.split("\n", 2)[2].replace("From here", ">From here").encode()
-    assert body in mail  # git's mboxrd quoting is the only change to the message
-    assert out.count(b"diff --git a/mower_sdk/legacy/client.py b/mower_sdk/legacy/client.py") == 1
+    git_out(repo, "config", "i18n.commitEncoding", "ISO-8859-1")
+    git_out(repo, "checkout", "-q", "fork")
+    assert port_upstream.main(["base..side-edit"]) == 0
+    headers = git_raw(repo, "cat-file", "commit", "HEAD").partition(b"\n\n")[0]
+    assert b"\nencoding " not in headers
+
+
+FAKE_GPG = """\
+#!/bin/sh
+# Stands in for gpg: reads the buffer, reports a signature made, prints one.
+cat >/dev/null
+printf '\\n[GNUPG:] SIG_CREATED D 1 8 00 0 0\\n' >&2
+printf -- '-----BEGIN PGP SIGNATURE-----\\n\\nfake\\n-----END PGP SIGNATURE-----\\n'
+"""
+
+
+def test_a_ported_commit_is_signed_when_commit_gpgsign_is_set(repo: Path) -> None:
+    fake = repo / ".git" / "fake-gpg.sh"  # under .git, so git status does not list it
+    fake.write_text(FAKE_GPG)
+    fake.chmod(0o755)
+    git_out(repo, "config", "gpg.program", str(fake))
+    git_out(repo, "config", "commit.gpgsign", "true")
+    git_out(repo, "checkout", "-q", "fork")
+    assert port_upstream.main(["base..side-edit"]) == 0
+    headers = git_raw(repo, "cat-file", "commit", "HEAD").partition(b"\n\n")[0]
+    assert b"\ngpgsig -----BEGIN PGP SIGNATURE-----\n" in headers
+    assert git_out(repo, "log", "-1", "--format=%an: %s") == "Upstream: side edit\n"
+
+
+def failing_signature(repo: Path) -> None:
+    """Make every commit's signature fail: a gpg stand-in that exits 1, with signing on."""
+    fake = repo / ".git" / "failing-gpg.sh"  # under .git, so git status does not list it
+    fake.write_text("#!/bin/sh\nexit 1\n")
+    fake.chmod(0o755)
+    git_out(repo, "config", "gpg.program", str(fake))
+    git_out(repo, "config", "commit.gpgsign", "true")
+
+
+def test_a_commit_git_refuses_stops_the_port_with_the_step_staged_and_continue_retries(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    failing_signature(repo)
+    git_out(repo, "checkout", "-q", "fork")
+    head = git_out(repo, "rev-parse", "HEAD")
+    assert port_upstream.main(["base..side-edit-2"]) == 1
+    err = capsys.readouterr().err
+    assert "gpg failed to sign" in err
+    assert "the port stopped at" in err and "side edit:" in err
+    assert "git could not make the commit; the step is applied and staged" in err
+    assert git_out(repo, "status", "--porcelain") == "M  mower_sdk/legacy/client.py\n"
+    assert git_out(repo, "rev-parse", "HEAD") == head
+    assert port_upstream.main(["base..side-edit-2"]) == 3  # stopped, so refused
+    capsys.readouterr()
+
+    git_out(repo, "config", "commit.gpgsign", "false")
+    assert port_upstream.main(["--continue"]) == 0
+    out = capsys.readouterr().out
+    assert "side edit: ported as" in out and "side edit two: ported as" in out
+    assert git_out(repo, "log", "--format=%an: %s", f"{head.strip()}..HEAD") == (
+        "Upstream: side edit two\nUpstream: side edit\n"
+    )
+    assert git_out(repo, "status", "--porcelain") == ""
+    assert not state_dir(repo).exists()
+
+
+def test_a_commit_git_refuses_can_be_skipped_or_aborted(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    failing_signature(repo)
+    git_out(repo, "checkout", "-q", "fork")
+    head = git_out(repo, "rev-parse", "HEAD")
+    assert port_upstream.main(["base..side-edit"]) == 1
+    assert port_upstream.main(["--abort"]) == 0
+    assert git_out(repo, "rev-parse", "HEAD") == head
+    assert git_out(repo, "status", "--porcelain") == ""
+    assert port_upstream.main(["base..side-edit-2"]) == 1
+    capsys.readouterr()
+    git_out(repo, "config", "commit.gpgsign", "false")
+    assert port_upstream.main(["--skip"]) == 0
+    out = capsys.readouterr().out
+    assert "side edit: skipped" in out and "side edit two: ported as" in out
+    assert git_out(repo, "log", "--format=%s", f"{head.strip()}..HEAD") == "side edit two\n"
+    assert (repo / "mower_sdk/legacy/client.py").read_text() == "class MowerClient:\n    pass\n"
+
+
+def test_no_commit_hook_runs_and_the_reference_transaction_hook_does(repo: Path) -> None:
+    git_out(repo, "checkout", "-q", "fork")
+    hooks = repo / ".git" / "hooks"
+    for name in ("pre-commit", "commit-msg", "applypatch-msg", "pre-applypatch", "post-applypatch"):
+        hook = hooks / name
+        hook.write_text(f"#!/bin/sh\necho {name} >> {repo / 'hooks.log'}\nexit 1\n")
+        hook.chmod(0o755)
+    ref_hook = hooks / "reference-transaction"
+    ref_hook.write_text(f"#!/bin/sh\necho $1 >> {repo / 'refs.log'}\n")
+    ref_hook.chmod(0o755)
+    assert port_upstream.main(["base..side-edit"]) == 0
+    assert git_out(repo, "log", "-1", "--format=%s") == "side edit\n"
+    assert not (repo / "hooks.log").exists()
+    assert "committed" in (repo / "refs.log").read_text()
 
 
 def test_crlf_content_is_ported_byte_for_byte(
@@ -630,11 +829,18 @@ def test_port_applies_the_series_into_legacy_with_upstream_authorship(
 ) -> None:
     git_out(repo, "checkout", "-q", "fork")
     assert port_upstream.main(["base..side-edit"]) == 0
-    assert "applied 1 commit(s)" in capsys.readouterr().out
-    assert (
-        git_out(repo, "log", "-1", "--format=%an <%ae>: %s")
-        == "Upstream <upstream@example.invalid>: side edit\n"
+    out = capsys.readouterr().out
+    assert "side edit: ported as " + git_out(repo, "rev-parse", "--short=7", "HEAD").strip() in out
+    assert "applied base..side-edit" in out
+    assert git_out(repo, "log", "-1", "--format=%an <%ae>|%ad|%cn <%ce>: %s", "--date=raw") == (
+        f"Upstream <upstream@example.invalid>|{SIDE_EDIT_DATE}|Porter <porter@example.invalid>: "
+        "side edit\n"
     )
+    assert stored_message(repo, "HEAD") == (
+        b"side edit\n\nUpstream-commit: " + sha_of(repo, "side-edit") + b"\n"
+    )
+    headers = git_raw(repo, "cat-file", "commit", "HEAD").partition(b"\n\n")[0]
+    assert b"gpgsig" not in headers and b"encoding" not in headers  # unsigned, UTF-8
     assert (
         git_out(repo, "diff", "--name-only", "fork-move", "HEAD") == "mower_sdk/legacy/client.py\n"
     )
@@ -643,29 +849,153 @@ def test_port_applies_the_series_into_legacy_with_upstream_authorship(
     ).read_text() == "class MowerClient:\n    token_updates = 0\n"
     assert (repo / "mower_sdk/client.py").read_text() == "from mower_sdk.legacy.client import *\n"
     assert git_out(repo, "status", "--porcelain") == ""
+    assert not state_dir(repo).exists()
+    assert "port_upstream: " in git_out(repo, "reflog", "-1")
+
+
+def test_a_step_whose_change_is_already_in_the_tree_makes_no_commit(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    git_out(repo, "checkout", "-q", "fork")
+    (repo / "mower_sdk/legacy/client.py").write_text("class MowerClient:\n    token_updates = 0\n")
+    git_out(repo, "commit", "-q", "-am", "fork: the same edit")
+    head = git_out(repo, "rev-parse", "HEAD")
+    assert port_upstream.main(["base..side-edit-2"]) == 0
+    out = capsys.readouterr().out
+    assert "side edit: already in the tree, no commit made" in out
+    assert "side edit two: ported as" in out
+    assert git_out(repo, "log", "--format=%s", f"{head.strip()}..HEAD") == "side edit two\n"
+    assert git_out(repo, "status", "--porcelain") == ""
+
+
+def conflicting_fork(repo: Path) -> str:
+    """Check out the fork with an edit that conflicts with the side edit; return HEAD."""
+    git_out(repo, "checkout", "-q", "fork")
+    (repo / "mower_sdk/legacy/client.py").write_text("class MowerClient:\n    forked = True\n")
+    git_out(repo, "commit", "-q", "-am", "fork: conflicting edit")
+    return git_out(repo, "rev-parse", "HEAD")
 
 
 def test_a_conflict_stops_the_port_and_abort_restores_the_branch(
     repo: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    git_out(repo, "checkout", "-q", "fork")
-    (repo / "mower_sdk/legacy/client.py").write_text("class MowerClient:\n    forked = True\n")
-    git_out(repo, "commit", "-q", "-am", "fork: conflicting edit")
-    head = git_out(repo, "rev-parse", "HEAD")
-    assert port_upstream.main(["base..side-edit"]) == 1
-    assert "git am --continue" in capsys.readouterr().err
-    assert (repo / ".git" / "rebase-apply").is_dir()
+    head = conflicting_fork(repo)
+    assert port_upstream.main(["base..side-edit-2"]) == 1
+    err = capsys.readouterr().err
+    assert "the port stopped at" in err and "side edit:" in err
+    assert "resolve the conflicts, git add each file, and run the tool with --continue" in err
     assert "UU mower_sdk/legacy/client.py" in git_out(repo, "status", "--porcelain")
-    git_out(repo, "am", "--abort")
+    assert git_out(repo, "rev-parse", "HEAD") == head
+    assert (state_dir(repo) / "patch").read_bytes() == rewritten_diff(repo, "base", "side-edit")
+
+    assert port_upstream.main(["base..side-edit-2"]) == 3  # a stopped port is not run over
+    assert "a port is stopped" in capsys.readouterr().err
+
+    assert port_upstream.main(["--abort"]) == 0
+    assert "is aborted" in capsys.readouterr().out
     assert git_out(repo, "rev-parse", "HEAD") == head
     assert git_out(repo, "status", "--porcelain") == ""
+    assert not state_dir(repo).exists()
+
+
+def test_a_resolved_step_is_committed_by_continue_and_the_rest_is_ported(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    head = conflicting_fork(repo)
+    assert port_upstream.main(["base..side-edit-2"]) == 1
+    capsys.readouterr()
+
+    assert port_upstream.main(["--continue"]) == 1  # still unmerged
+    assert "still unmerged" in capsys.readouterr().err
+    assert git_out(repo, "rev-parse", "HEAD") == head
+
+    (repo / "mower_sdk/legacy/client.py").write_text("class MowerClient:\n    token_updates = 0\n")
+    git_out(repo, "add", "mower_sdk/legacy/client.py")
+    assert port_upstream.main(["--continue"]) == 0
+    out = capsys.readouterr().out
+    assert "side edit: ported as" in out and "side edit two: ported as" in out
+    assert "applied base..side-edit-2" in out
+    assert git_out(repo, "log", "--format=%an: %s", f"{head.strip()}..HEAD") == (
+        "Upstream: side edit two\nUpstream: side edit\n"
+    )
+    assert stored_message(repo, "HEAD~1") == (
+        b"side edit\n\nUpstream-commit: " + sha_of(repo, "side-edit") + b"\n"
+    )
+    assert (repo / "notes.txt").read_text() == "added upstream\n"
+    assert git_out(repo, "status", "--porcelain") == ""
+    assert not state_dir(repo).exists()
+
+
+def test_skip_drops_the_stopped_step_and_ports_the_rest(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    head = conflicting_fork(repo)
+    assert port_upstream.main(["base..side-edit-2"]) == 1
+    capsys.readouterr()
+    assert port_upstream.main(["--skip"]) == 0
+    out = capsys.readouterr().out
+    assert "side edit: skipped" in out and "side edit two: ported as" in out
+    assert git_out(repo, "log", "--format=%s", f"{head.strip()}..HEAD") == "side edit two\n"
+    assert (
+        repo / "mower_sdk/legacy/client.py"
+    ).read_text() == "class MowerClient:\n    forked = True\n"
+    assert git_out(repo, "status", "--porcelain") == ""
+    assert not state_dir(repo).exists()
+
+
+def test_continue_refuses_a_resolution_that_stages_nothing(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    head = conflicting_fork(repo)
+    assert port_upstream.main(["base..side-edit"]) == 1
+    git_out(repo, "checkout", "HEAD", "--", "mower_sdk/legacy/client.py")  # resolved to ours
+    assert port_upstream.main(["--continue"]) == 1
+    assert "nothing is staged for" in capsys.readouterr().err
+    assert git_out(repo, "rev-parse", "HEAD") == head
+    assert state_dir(repo).exists()
+
+
+def test_abort_after_head_moved_forgets_the_port_and_resets_nothing(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    conflicting_fork(repo)
+    assert port_upstream.main(["base..side-edit"]) == 1
+    git_out(repo, "checkout", "HEAD", "--", "mower_sdk/legacy/client.py")
+    (repo / "notes.txt").write_text("meanwhile\n")
+    git_out(repo, "add", "-A")
+    git_out(repo, "commit", "-q", "-m", "fork: a commit made meanwhile")
+    moved = git_out(repo, "rev-parse", "HEAD")
+    assert port_upstream.main(["--abort"]) == 1
+    assert "HEAD has moved" in capsys.readouterr().err
+    assert git_out(repo, "rev-parse", "HEAD") == moved
+    assert not state_dir(repo).exists()
 
 
 @pytest.mark.usefixtures("repo")
-def test_a_dirty_tree_is_refused_before_git_am(
+def test_continue_skip_and_abort_need_a_stopped_port(capsys: pytest.CaptureFixture[str]) -> None:
+    for flag in ("--continue", "--skip", "--abort"):
+        assert port_upstream.main([flag]) == 3
+        assert "no port is stopped" in capsys.readouterr().err
+
+
+@pytest.mark.usefixtures("repo")
+def test_a_range_is_required_and_excluded_by_the_resume_flags() -> None:
+    with pytest.raises(SystemExit) as excinfo:
+        port_upstream.main([])
+    assert excinfo.value.code == 2
+    with pytest.raises(SystemExit) as excinfo:
+        port_upstream.main(["--continue", "base..side-edit"])
+    assert excinfo.value.code == 2
+    with pytest.raises(SystemExit) as excinfo:
+        port_upstream.main(["--abort", "--dry-run"])
+    assert excinfo.value.code == 2
+
+
+def test_a_dirty_tree_is_refused_before_anything_is_applied(
     repo: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     git_out(repo, "checkout", "-q", "fork")
     (repo / "mower_sdk/client.py").write_text("# dirty\n")
     assert port_upstream.main(["base..side-edit"]) == 3
     assert "uncommitted changes" in capsys.readouterr().err
+    assert not state_dir(repo).exists()
