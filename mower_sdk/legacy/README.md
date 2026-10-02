@@ -17,8 +17,8 @@ stay.
 | `client` | `MowerClient` | One client over `MowerAPI` and the generation-1 MQTT client. Its device, status and command methods only forward to `MowerAPI`. | `MowerAPI` for REST: `async_get_devices`, `async_get_device_status`, `async_send_command` with `MowerCommand.START`, `PAUSE`, `DOCK` or `RESUME`. `NavimowSDK` for the MQTT feed. |
 | `mqtt_v1` | `MowerMQTT` | The generation-1 MQTT client. It subscribes to placeholder topics, its `async_connect` does nothing and its `async_subscribe_device` blocks until disconnect. It stays on paho's callback API version 1. | `NavimowSDK`, built with `NavimowSDK.from_connection_info(await api.async_get_mqtt_connection_info(), ...)`; `NavimowMQTT` is the client under it. |
 | `navimow` | `Navimow`, `NavimowDeviceManager` | Account manager: builds a `NavimowMQTT` from a `MowerClient`, wraps it in a `NavimowCloud` and keeps one `NavimowCloudDevice` per mower. | `NavimowSDK.from_connection_info(..., records=devices)`. |
-| `cloud` | `NavimowCloud` | Decodes state, event and attributes messages from a `NavimowMQTT` and fans them out through `DataEvent`. | `NavimowSDK.on_state`, `on_event`, `on_attributes`; also `on_location` and `on_rejected`, which have no legacy counterpart. For its connected and disconnected events, `sdk.mqtt.on_connection_event`. |
-| `device` | `NavimowCloudDevice` | Filters a `NavimowCloud`'s messages for one mower and feeds a `StateManager`. | Every message carries `device_id`; filter in the callback. |
+| `cloud` | `NavimowCloud` | Written to decode state, event and attributes messages from a `NavimowMQTT` and fan them out through `DataEvent`. It reads the channel from a topic of the form `navimow/<id>/<channel>`, which is not the form the broker's topics have, so its three message events never fire; only its connection events do. | `NavimowSDK.on_state`, `on_event`, `on_attributes`; also `on_location` and `on_rejected`, which have no legacy counterpart. For its connected and disconnected events, `sdk.mqtt.on_connection_event`. |
+| `device` | `NavimowCloudDevice` | Filters a `NavimowCloud`'s messages for one mower and feeds a `StateManager`, so it receives nothing either. | Every message carries `device_id`; filter in the callback. |
 | `state_manager` | `StateManager` | The last state, attributes and event seen for one mower, with a `DataEvent` for each. | `NavimowSDK.get_cached_state` and `get_cached_attributes`, with `get_cached_state_age`, `get_cached_attributes_age` and `get_cached_state_received_at` to tell a stale reading from a fresh one. The last event is not cached; keep it in the `on_event` callback. |
 | `event` | `Event`, `DataEvent` | Lists of weakly referenced async subscribers. | Nothing: `NavimowSDK` takes plain callbacks. |
 | `thing_models` | `ThingParams`, `ThingStatusMessage`, `ThingPropertiesMessage`, `ThingEventMessage` | Alibaba IoT "Thing" envelopes. Nothing constructs them; the cloud does not send this envelope. | Nothing. The feed carries `DeviceStateMessage`, `DeviceEventMessage` and `DeviceAttributesMessage`. |
@@ -26,7 +26,8 @@ stay.
 | `utils` | `setup_logger`, `parse_json`, `timestamp_to_datetime`, `datetime_to_timestamp` | Small helpers the live path does not use. | The standard library: `logging`, `json`, `datetime`. |
 
 The README's [quick example](../../README.md#quick-example) shows the live
-path end to end.
+path end to end, and [docs/migrating.md](../../docs/migrating.md) has the
+before and after of each class in code.
 
 ## How the old names still work
 

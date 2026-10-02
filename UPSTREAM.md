@@ -3,7 +3,8 @@
 This is the community edition of [segwaynavimow/navimow-sdk](https://github.com/segwaynavimow/navimow-sdk).
 This file is the map for a merge-back: where the fork left upstream, what came
 from other forks and who wrote it, and what has moved. Update it in the same
-commit as the change it records.
+commit as the change it records. Why the fork exists is in
+[docs/why-this-fork.md](docs/why-this-fork.md).
 
 ## Fork point
 
@@ -11,7 +12,7 @@ commit as the change it records.
 |---|---|
 | Fork point | `6596aa0`, the tip of upstream `main`, released to PyPI as navimow-sdk 0.1.2 |
 | Upstream releases | 0.1.0 (2026-03-12), 0.1.1 (2026-04-03), 0.1.2 (2026-04-10) |
-| Upstream activity | none after 2026-04-10 |
+| Upstream commits | none after 2026-04-10 |
 | Distribution name | navimow-sdk-community, was navimow-sdk |
 
 ## Remotes

@@ -4,7 +4,7 @@
   <img src="https://fra-navimow-prod.s3.eu-central-1.amazonaws.com/img/navimowhomeassistant.png" width="600">
 </p>
 
-> **Community edition.** Forked from [segwaynavimow/navimow-sdk](https://github.com/segwaynavimow/navimow-sdk) at 0.1.2 (April 2026), which has had no maintainer activity since. The import name is unchanged: `import mower_sdk`.
+> **Community edition.** Forked from [segwaynavimow/navimow-sdk](https://github.com/segwaynavimow/navimow-sdk) at 0.1.2 (April 2026), whose repository has had no commits since. The import name is unchanged: `import mower_sdk`. [Why this fork exists](https://github.com/geordiekorper/navimow-sdk-community/blob/main/docs/why-this-fork.md).
 
 [![CI](https://github.com/geordiekorper/navimow-sdk-community/actions/workflows/ci.yml/badge.svg)](https://github.com/geordiekorper/navimow-sdk-community/actions/workflows/ci.yml)
 
@@ -30,15 +30,13 @@ Python 3.11 or later. The distribution is published as pre-releases (`0.2.0aN`) 
 final. While no final release exists, `pip install navimow-sdk-community` installs the newest
 pre-release; to pin one, name it (`pip install navimow-sdk-community==0.2.0a3`), and once a final
 release exists, ask for pre-releases explicitly with `pip install --pre navimow-sdk-community`.
-The import name is `mower_sdk`. What changed in each version is in
-[CHANGELOG.md](https://github.com/geordiekorper/navimow-sdk-community/blob/main/CHANGELOG.md),
-and what was taken from other forks of the upstream project is in
-[UPSTREAM.md](https://github.com/geordiekorper/navimow-sdk-community/blob/main/UPSTREAM.md).
+The import name is `mower_sdk`.
 
 > **Switching from the upstream package.** `navimow-sdk` and `navimow-sdk-community` both install
 > the `mower_sdk` package, so they cannot coexist in one environment: whichever was installed last
 > overwrites the other's files. Uninstall the upstream distribution first, or use a fresh
 > environment, and change any requirement on `navimow-sdk` to `navimow-sdk-community`.
+> [docs/migrating.md](https://github.com/geordiekorper/navimow-sdk-community/blob/main/docs/migrating.md) lists what behaves differently afterwards.
 >
 > While both distributions are listed, importing `mower_sdk` emits a `UserWarning` that names both
 > versions. It can only fire when this package's own files are the ones loaded: if `navimow-sdk` was
@@ -324,6 +322,27 @@ The same readers are public for payloads a consumer keeps raw (from
 `RAW_STATE_TO_CANONICAL` is the table behind both, and `battery_from_payload(data)` reads the
 battery percentage from either payload shape.
 
+## Documentation
+
+For someone using the SDK:
+
+- [CHANGELOG.md](https://github.com/geordiekorper/navimow-sdk-community/blob/main/CHANGELOG.md): what changed in each version.
+- [docs/migrating.md](https://github.com/geordiekorper/navimow-sdk-community/blob/main/docs/migrating.md): coming from upstream's `navimow-sdk`, and moving off
+  the deprecated classes.
+- [docs/why-this-fork.md](https://github.com/geordiekorper/navimow-sdk-community/blob/main/docs/why-this-fork.md): why the community edition exists.
+
+For someone working on it:
+
+- [CONTRIBUTING.md](https://github.com/geordiekorper/navimow-sdk-community/blob/main/CONTRIBUTING.md): reporting a problem and proposing a change.
+- [docs/development.md](https://github.com/geordiekorper/navimow-sdk-community/blob/main/docs/development.md): setup, the checks and the commit rules.
+- [docs/architecture.md](https://github.com/geordiekorper/navimow-sdk-community/blob/main/docs/architecture.md): how the SDK works inside.
+- [tests/README.md](https://github.com/geordiekorper/navimow-sdk-community/blob/main/tests/README.md) and [tools/README.md](https://github.com/geordiekorper/navimow-sdk-community/blob/main/tools/README.md): the test suite, and
+  the scripts behind the checks.
+- [mower_sdk/legacy/README.md](https://github.com/geordiekorper/navimow-sdk-community/blob/main/mower_sdk/legacy/README.md): the code kept from upstream and
+  what replaces it.
+- [UPSTREAM.md](https://github.com/geordiekorper/navimow-sdk-community/blob/main/UPSTREAM.md): where the code came from, and what a merge back to upstream needs.
+- [docs/releasing.md](https://github.com/geordiekorper/navimow-sdk-community/blob/main/docs/releasing.md): making a release.
+
 ## Development
 
 ```bash
@@ -332,15 +351,7 @@ pytest
 nox -s tests-3.14
 ```
 
-`pytest` runs the suite in the current environment; the nox sessions run it in fresh ones, as CI
-does: `tests-3.11` to `tests-3.14` on each supported Python, `"bounds(oldest)"` and
-`"bounds(newest)"` against the lowest (Python 3.11, aiohttp 3.9.0, paho-mqtt 2.1.0) and the newest
-supported dependencies, and `lint` for ruff. `nox --list` shows them all. Tests are plain
-`asyncio.run` tests with recording fakes.
-
-## Contributing
-
-Issues and pull requests are welcome at [github.com/geordiekorper/navimow-sdk-community](https://github.com/geordiekorper/navimow-sdk-community/issues).
+[docs/development.md](https://github.com/geordiekorper/navimow-sdk-community/blob/main/docs/development.md) has the rest.
 
 ## License
 
