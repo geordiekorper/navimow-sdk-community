@@ -54,13 +54,19 @@ DEVICES = [
     Device(id=OTHER_ID, name="Orchard", model="X430", firmware_version="1.0", serial_number="SN2"),
 ]
 INFO = MqttConnectionInfo(
-    broker="broker.example.invalid", port=443, ws_path="/mqtt/12345", username="user", password="secret"
+    broker="broker.example.invalid",
+    port=443,
+    ws_path="/mqtt/12345",
+    username="user",
+    password="secret",
 )
 
 
 def fragments() -> dict[str, list[str]]:
     """The Python blocks of the guide's second part, by the heading they stand under."""
-    part = GUIDE.read_text(encoding="utf-8").split("## From the legacy classes to the live path", 1)[1]
+    part = GUIDE.read_text(encoding="utf-8").split(
+        "## From the legacy classes to the live path", 1
+    )[1]
     part = part.split("\n## ", 1)[0]
     found: dict[str, list[str]] = {}
     for section in part.split("\n### ")[1:]:
@@ -95,9 +101,13 @@ async def run_fragment(fragment: str, **given: Any) -> dict[str, Any]:
     """
     namespace: dict[str, Any] = dict(given)
     for name in unsupplied_names(fragment) - set(given):
-        assert hasattr(mower_sdk, name), f"the fragment reads {name}, which the guide does not supply"
+        assert hasattr(mower_sdk, name), (
+            f"the fragment reads {name}, which the guide does not supply"
+        )
         namespace[name] = getattr(mower_sdk, name)
-    source = "async def fragment():\n" + textwrap.indent(fragment, "    ") + "\n    return locals()\n"
+    source = (
+        "async def fragment():\n" + textwrap.indent(fragment, "    ") + "\n    return locals()\n"
+    )
     exec(compile(source, str(GUIDE), "exec"), namespace)  # noqa: S102
     return await namespace["fragment"]()
 
@@ -114,7 +124,9 @@ def facade() -> NavimowSDK:
     return NavimowSDK.from_connection_info(INFO, access_token="token", records=DEVICES)
 
 
-async def deliver(sdk: NavimowSDK, channel: str, payload: dict[str, Any], device_id: str = DEVICE_ID) -> None:
+async def deliver(
+    sdk: NavimowSDK, channel: str, payload: dict[str, Any], device_id: str = DEVICE_ID
+) -> None:
     await sdk._on_mqtt_message(topic(channel, device_id), json.dumps(payload).encode(), device_id)
 
 
@@ -133,7 +145,9 @@ async def test_the_mowermqtt_fragment_passes_one_mowers_state_as_a_device_status
     await deliver(sdk, "state", {"state": "isPaused"})  # cached before the fragment runs
     await deliver(sdk, "attributes", {"attributes": {"a": 1}})
     statuses: list[Any] = []
-    bound = await run_fragment(after("MowerMQTT"), sdk=sdk, device_id=DEVICE_ID, handle_status=statuses.append)
+    bound = await run_fragment(
+        after("MowerMQTT"), sdk=sdk, device_id=DEVICE_ID, handle_status=statuses.append
+    )
     assert sdk.mqtt.client.named("connect_async")
     assert isinstance(bound["state"], DeviceStateMessage)  # the state cache, not the attributes
     assert (bound["state"].device_id, bound["state"].state) == (DEVICE_ID, "paused")
@@ -147,7 +161,9 @@ async def test_the_mowermqtt_fragment_passes_one_mowers_state_as_a_device_status
 
 @pytest.mark.asyncio
 async def test_the_navimow_fragment_builds_a_connecting_facade_and_finds_a_device_by_name() -> None:
-    bound = await run_fragment(after("Navimow and NavimowDeviceManager"), info=INFO, devices=DEVICES)
+    bound = await run_fragment(
+        after("Navimow and NavimowDeviceManager"), info=INFO, devices=DEVICES
+    )
     built = bound["sdk"]
     assert isinstance(built, NavimowSDK)
     assert built.mqtt.records == DEVICES
@@ -209,7 +225,9 @@ async def test_the_cloud_device_fragment_keeps_the_last_event_and_reads_the_cach
     assert (bound["state"].device_id, bound["state"].state) == (DEVICE_ID, "paused")
     assert isinstance(bound["attributes"], DeviceAttributesMessage)
     assert bound["attributes"].device_id == DEVICE_ID
-    assert bound["event"] is None  # the consumer keeps the last event, and none has arrived since it began to
+    assert (
+        bound["event"] is None
+    )  # the consumer keeps the last event, and none has arrived since it began to
 
     await deliver(sdk, "event", {"type": "system", "event": "started"})
     await deliver(sdk, "event", {"type": "system", "event": "other"}, device_id=OTHER_ID)

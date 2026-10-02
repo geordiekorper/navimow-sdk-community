@@ -36,7 +36,11 @@ def _isolated_env(global_config: Path) -> dict[str, str]:
     global hooks path, a commit template, another comment character) must
     not reach the throwaway repositories.
     """
-    return {**gatelib.foreign_env(), "GIT_CONFIG_GLOBAL": str(global_config), "GIT_CONFIG_NOSYSTEM": "1"}
+    return {
+        **gatelib.foreign_env(),
+        "GIT_CONFIG_GLOBAL": str(global_config),
+        "GIT_CONFIG_NOSYSTEM": "1",
+    }
 
 
 @pytest.fixture(scope="session")

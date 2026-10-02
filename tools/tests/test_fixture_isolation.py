@@ -28,8 +28,18 @@ def test_a_hostile_global_config_does_not_reach_the_tests(tmp_path: Path) -> Non
     env = {k: v for k, v in os.environ.items() if k not in ("GIT_CONFIG_GLOBAL", "XDG_CONFIG_HOME")}
     env["HOME"] = str(home)
     proc = subprocess.run(
-        [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
-         str(HERE / "test_check_leaks.py::test_only_added_lines_are_checked_in_staged_mode")],
-        env=env, capture_output=True, text=True, check=False,
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-p",
+            "no:cacheprovider",
+            str(HERE / "test_check_leaks.py::test_only_added_lines_are_checked_in_staged_mode"),
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr

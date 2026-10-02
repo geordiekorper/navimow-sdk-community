@@ -192,7 +192,9 @@ class MqttWatchdog:
         return RebuildRequest(
             reason=f"missed a state change (REST says {rest_state} but MQTT last said {mqtt_state} for {first.name})",
             device_ids=tuple(watched.device_id for watched, *_ in mismatches),
-            reports=tuple((watched.device_id, received_at) for watched, _, _, received_at in mismatches),
+            reports=tuple(
+                (watched.device_id, received_at) for watched, _, _, received_at in mismatches
+            ),
         )
 
     def check_silence(self, inputs: Iterable[WatchInput]) -> RebuildRequest | None:
@@ -226,7 +228,10 @@ class MqttWatchdog:
             # edit is therefore found only by rule 1 or by the keepalive.
             if shown_state == "mapping":
                 continue
-            if shown_state not in MOVING_STATES and _status(watched.rest_state) not in MOVING_STATES:
+            if (
+                shown_state not in MOVING_STATES
+                and _status(watched.rest_state) not in MOVING_STATES
+            ):
                 continue
             # Decision: any location traffic counts, a payload that was rejected or
             # empty included: the question is whether the broker delivers at all, not

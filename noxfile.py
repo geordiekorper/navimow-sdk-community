@@ -65,7 +65,8 @@ def bounds(session: nox.Session, pins: list[str]) -> None:
     session.install("--upgrade", ".", *pins, *TEST_DEPS)
     _remove_build_output()
     session.run(
-        "python", "-c",
+        "python",
+        "-c",
         "import aiohttp, paho.mqtt; "
         "print('aiohttp==' + aiohttp.__version__); print('paho-mqtt==' + paho.mqtt.__version__)",
     )
@@ -94,9 +95,13 @@ def wheel(session: nox.Session) -> None:
     checkout = Path(tempfile.mkdtemp(prefix="navimow-wheel-tests-"))
     try:
         # Without compiled files, which record where they were compiled.
-        shutil.copytree(ROOT / "tests", checkout / "tests", ignore=shutil.ignore_patterns("__pycache__"))
+        shutil.copytree(
+            ROOT / "tests", checkout / "tests", ignore=shutil.ignore_patterns("__pycache__")
+        )
         session.chdir(checkout)
-        session.run(python, "-c", "import mower_sdk; print('importing', mower_sdk.__file__)", external=True)
+        session.run(
+            python, "-c", "import mower_sdk; print('importing', mower_sdk.__file__)", external=True
+        )
         session.run(python, "-m", "pytest", "tests", external=True)
         session.run(python, str(ROOT / "tools" / "check_wheel.py"), "metadata", external=True)
     finally:

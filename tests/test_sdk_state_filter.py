@@ -13,7 +13,12 @@ from typing import Any
 
 import pytest
 
-from mower_sdk.models import DeviceAttributesMessage, DeviceEventMessage, DeviceStateMessage, RejectedMessage
+from mower_sdk.models import (
+    DeviceAttributesMessage,
+    DeviceEventMessage,
+    DeviceStateMessage,
+    RejectedMessage,
+)
 from mower_sdk.sdk import NavimowSDK
 
 from .fakes import DEVICE_ID, T0, FakeClock, topic
@@ -78,7 +83,12 @@ async def test_accepted_messages_advance_the_mark_and_an_older_one_is_stale() ->
     assert [m.timestamp for m in seen.states] == [T - 60_000, T - 30_000, T - 30_000]
     assert sdk.get_cached_state(DEVICE_ID).timestamp == T - 30_000
     (rejection,) = seen.rejected
-    assert (rejection.channel, rejection.reason, rejection.reasons, rejection.payload) == ("state", "stale", ("stale",), data)
+    assert (rejection.channel, rejection.reason, rejection.reasons, rejection.payload) == (
+        "state",
+        "stale",
+        ("stale",),
+        data,
+    )
     assert rejection.received_at == T0
 
 
@@ -91,7 +101,9 @@ async def test_a_timestamp_in_seconds_is_compared_in_milliseconds() -> None:
     assert sdk._state_marks == {DEVICE_ID: (T // 1000) * 1000}
 
 
-@pytest.mark.parametrize("timestamp", [5, 1_500_000_000_000, T + 5 * 60 * 1000 + 1], ids=["1970", "2017", "ahead"])
+@pytest.mark.parametrize(
+    "timestamp", [5, 1_500_000_000_000, T + 5 * 60 * 1000 + 1], ids=["1970", "2017", "ahead"]
+)
 @pytest.mark.asyncio
 async def test_an_implausible_timestamp_is_rejected_and_leaves_the_mark(timestamp: int) -> None:
     sdk, seen = make(reject_late_state=True)
@@ -117,7 +129,11 @@ async def test_a_message_without_a_timestamp_is_applied_and_leaves_the_mark() ->
 async def test_marks_are_per_device() -> None:
     sdk, seen = make(reject_late_state=True)
     await deliver(sdk, "state", state(T))
-    await sdk._on_mqtt_message("/downlink/vehicle/dev-2/realtimeDate/state", json.dumps(state(T - 60_000)).encode(), "dev-2")
+    await sdk._on_mqtt_message(
+        "/downlink/vehicle/dev-2/realtimeDate/state",
+        json.dumps(state(T - 60_000)).encode(),
+        "dev-2",
+    )
     assert seen.rejected == []
     assert sdk._state_marks == {DEVICE_ID: T, "dev-2": T - 60_000}
 
@@ -131,7 +147,9 @@ async def test_an_unknown_field_is_applied_and_reported_and_never_blocks() -> No
 
 
 @pytest.mark.asyncio
-async def test_a_stale_message_with_an_unknown_field_earns_both_is_not_applied_and_names_stale() -> None:
+async def test_a_stale_message_with_an_unknown_field_earns_both_is_not_applied_and_names_stale() -> (
+    None
+):
     sdk, seen = make(reject_late_state=True)
     await deliver(sdk, "state", state(T))
     await deliver(sdk, "state", state(T - 1000, speed=1))
@@ -146,20 +164,35 @@ async def test_a_stale_message_with_an_unknown_field_earns_both_is_not_applied_a
 @pytest.mark.asyncio
 async def test_the_known_state_fields_earn_no_reason() -> None:
     sdk, seen = make()
-    await deliver(sdk, "state", {"state": "isDocked", "vehicleState": "isDocked", "status": "x", "battery": 1,
-                           "capacityRemaining": [], "timestamp": T, "device_id": DEVICE_ID})
+    await deliver(
+        sdk,
+        "state",
+        {
+            "state": "isDocked",
+            "vehicleState": "isDocked",
+            "status": "x",
+            "battery": 1,
+            "capacityRemaining": [],
+            "timestamp": T,
+            "device_id": DEVICE_ID,
+        },
+    )
     assert seen.rejected == []
 
 
 @pytest.mark.parametrize("channel", ["state", "event", "attributes"])
 @pytest.mark.parametrize("payload", [b"not json", b"[1]"], ids=["not_json", "array"])
 @pytest.mark.asyncio
-async def test_a_malformed_payload_on_each_channel_is_reported_with_the_filter_off(channel: str, payload: bytes) -> None:
+async def test_a_malformed_payload_on_each_channel_is_reported_with_the_filter_off(
+    channel: str, payload: bytes
+) -> None:
     sdk, seen = make()
     await deliver(sdk, channel, payload)
     assert (seen.states, seen.events, seen.attributes) == ([], [], [])
     assert sdk.get_cached_state(DEVICE_ID) is None and sdk.get_cached_attributes(DEVICE_ID) is None
-    assert [(r.channel, r.topic, r.reason, r.payload) for r in seen.rejected] == [(channel, topic(channel), "unparsable", payload)]
+    assert [(r.channel, r.topic, r.reason, r.payload) for r in seen.rejected] == [
+        (channel, topic(channel), "unparsable", payload)
+    ]
 
 
 @pytest.mark.parametrize("metrics", [1, "fast", [1, 2]], ids=["number", "string", "list"])
@@ -192,20 +225,33 @@ async def test_a_rejected_state_leaves_the_cache_and_its_times_untouched(clock: 
 
 
 @pytest.mark.asyncio
-async def test_every_delivered_message_carries_its_receipt_time_outside_equality(clock: FakeClock) -> None:
+async def test_every_delivered_message_carries_its_receipt_time_outside_equality(
+    clock: FakeClock,
+) -> None:
     sdk, seen = make()
     await deliver(sdk, "state", state(T))
     clock.wall_now += timedelta(seconds=1)
     await deliver(sdk, "event", {"type": "system", "event": "started"})
     clock.wall_now += timedelta(seconds=1)
     await deliver(sdk, "attributes", {"attributes": {"a": 1}})
-    assert [seen.states[0].received_at, seen.events[0].received_at, seen.attributes[0].received_at] == [
-        T0, T0 + timedelta(seconds=1), T0 + timedelta(seconds=2)
-    ]
-    assert seen.events[0] == DeviceEventMessage(device_id=DEVICE_ID, timestamp=None, type="system", event="started")
+    assert [
+        seen.states[0].received_at,
+        seen.events[0].received_at,
+        seen.attributes[0].received_at,
+    ] == [T0, T0 + timedelta(seconds=1), T0 + timedelta(seconds=2)]
+    assert seen.events[0] == DeviceEventMessage(
+        device_id=DEVICE_ID, timestamp=None, type="system", event="started"
+    )
     for message in (seen.states[0], seen.events[0], seen.attributes[0]):
         assert "received_at" not in message.to_dict()
     assert seen.attributes[0] == DeviceAttributesMessage(device_id=DEVICE_ID, attributes={"a": 1})
-    assert DeviceStateMessage(device_id=DEVICE_ID, timestamp=None, state="docked").received_at is None
-    assert DeviceEventMessage(device_id=DEVICE_ID, timestamp=None, type="system", event="x").received_at is None
+    assert (
+        DeviceStateMessage(device_id=DEVICE_ID, timestamp=None, state="docked").received_at is None
+    )
+    assert (
+        DeviceEventMessage(
+            device_id=DEVICE_ID, timestamp=None, type="system", event="x"
+        ).received_at
+        is None
+    )
     assert DeviceAttributesMessage(device_id=DEVICE_ID, attributes={}).received_at is None

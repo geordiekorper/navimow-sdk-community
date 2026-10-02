@@ -141,7 +141,9 @@ def test_rewrite_touches_only_diff_headers_of_moved_files() -> None:
             b"diff --git a/mower_sdk/navimow.py b/mower_sdk/navimow2.py\n",
             b"diff --git a/mower_sdk/legacy/navimow.py b/mower_sdk/navimow2.py\n",
         )
-        .replace(b"rename from mower_sdk/navimow.py\n", b"rename from mower_sdk/legacy/navimow.py\n")
+        .replace(
+            b"rename from mower_sdk/navimow.py\n", b"rename from mower_sdk/legacy/navimow.py\n"
+        )
         .replace(
             b"diff --git a/mower_sdk/client.py b/mower_sdk/client.py\n"
             b"--- a/mower_sdk/client.py\n+++ b/mower_sdk/client.py\n@@ -1 +1,2 @@\n",
@@ -174,7 +176,9 @@ def test_hunk_counting_treats_a_stripped_context_line_as_context() -> None:
         b"+++ b/mower_sdk/client.py\n"
     )
     rewritten = port_upstream.rewrite_diff(diff, MOVED)
-    assert rewritten.endswith(b"@@ -1,2 +1,2 @@\n\n--- a/mower_sdk/client.py\n+++ b/mower_sdk/client.py\n")
+    assert rewritten.endswith(
+        b"@@ -1,2 +1,2 @@\n\n--- a/mower_sdk/client.py\n+++ b/mower_sdk/client.py\n"
+    )
     assert rewritten.count(b"mower_sdk/legacy/client.py") == 4
 
 
@@ -186,7 +190,8 @@ def test_lines_are_split_on_lf_only() -> None:
     )
     diff = (
         b"diff --git a/x.txt b/x.txt\nnew file mode 100644\nindex 0000000..1111111\n"
-        b"--- /dev/null\n+++ b/x.txt\n@@ -0,0 +1 @@\n+" + body
+        b"--- /dev/null\n+++ b/x.txt\n@@ -0,0 +1 @@\n+"
+        + body
         + b"diff --git a/mower_sdk/client.py b/mower_sdk/client.py\n"
         b"--- a/mower_sdk/client.py\n+++ b/mower_sdk/client.py\n@@ -1 +1 @@\n-a\n+b\n"
     )
@@ -313,7 +318,9 @@ def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     run("commit", "-q", "-am", "utils edit")
     run("checkout", "-q", "main")
     run("merge", "-q", "--no-ff", "--no-commit", "side2")
-    write("mower_sdk/utils.py", "def parse_json(data):\n    return data or {}  # resolved by hand\n")
+    write(
+        "mower_sdk/utils.py", "def parse_json(data):\n    return data or {}  # resolved by hand\n"
+    )
     run("add", "-A")
     run("commit", "-q", "-m", "evil merge")
     run("tag", "evil-merge")
@@ -385,7 +392,10 @@ def test_the_fixture_ignores_git_variables_exported_by_a_caller(
     decoy: tuple[Path, bytes], repo: Path
 ) -> None:
     decoy_git = decoy[0] / ".git"
-    assert git_out(repo, "log", "-1", "--format=%s", "fork-move").strip() == "fork: move client.py to legacy/"
+    assert (
+        git_out(repo, "log", "-1", "--format=%s", "fork-move").strip()
+        == "fork: move client.py to legacy/"
+    )
     assert (decoy_git / "config").read_bytes() == decoy[1]
     assert not (decoy_git / "index").exists()
     assert not list((decoy_git / "refs" / "heads").iterdir())
@@ -425,7 +435,10 @@ def test_the_trailer_follows_a_subject_with_no_body() -> None:
 
 def test_blank_lines_at_the_end_of_a_message_do_not_separate_the_trailer_twice() -> None:
     mail = b"From 1 Mon Sep 17 00:00:00 2001\nFrom: U <u@example.invalid>\nSubject: [PATCH] s\n\nWhy.\n\n\n"
-    assert port_upstream.with_trailer(mail, "abc") == mail.rstrip(b"\n") + b"\n\nUpstream-commit: abc\n"
+    assert (
+        port_upstream.with_trailer(mail, "abc")
+        == mail.rstrip(b"\n") + b"\n\nUpstream-commit: abc\n"
+    )
 
 
 def test_commits_in_follows_the_first_parent_line(repo: Path) -> None:
@@ -445,10 +458,16 @@ def test_files_touched_and_merged_commits_are_against_the_first_parent() -> None
 
     assert port_upstream.files_touched("side-edit", parents("side-edit")) == ["mower_sdk/client.py"]
     assert port_upstream.files_touched("base", []) == [
-        "mower_sdk/client.py", "mower_sdk/mqtt.py", "mower_sdk/utils.py"
+        "mower_sdk/client.py",
+        "mower_sdk/mqtt.py",
+        "mower_sdk/utils.py",
     ]
-    assert port_upstream.files_touched("clean-merge", parents("clean-merge")) == ["mower_sdk/client.py"]
-    assert port_upstream.files_touched("evil-merge", parents("evil-merge")) == ["mower_sdk/utils.py"]
+    assert port_upstream.files_touched("clean-merge", parents("clean-merge")) == [
+        "mower_sdk/client.py"
+    ]
+    assert port_upstream.files_touched("evil-merge", parents("evil-merge")) == [
+        "mower_sdk/utils.py"
+    ]
     assert port_upstream.files_touched("ours-merge", parents("ours-merge")) == []
     assert port_upstream.files_touched("dup-merge", parents("dup-merge")) == []
     (squashed,) = port_upstream.merged_commits(parents("clean-merge"))
@@ -459,11 +478,16 @@ def test_files_touched_and_merged_commits_are_against_the_first_parent() -> None
 
 
 @pytest.mark.usefixtures("repo")
-def test_scan_refuses_a_mixed_file_before_applying_anything(capsys: pytest.CaptureFixture[str]) -> None:
+def test_scan_refuses_a_mixed_file_before_applying_anything(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     assert port_upstream.main(["base..clean-merge"]) == 2
     captured = capsys.readouterr()
     assert "core edit: mower_sdk/mqtt.py" in captured.err
-    assert "clean merge: merge commit, ported as its net change against its first parent, squashing 1 commit(s):" in captured.out
+    assert (
+        "clean merge: merge commit, ported as its net change against its first parent, squashing 1 commit(s):"
+        in captured.out
+    )
     assert "    " in captured.out and "side edit" in captured.out
 
 
@@ -495,8 +519,15 @@ def test_dry_run_is_the_message_its_trailer_and_the_rewritten_diff(
     out = capsysbinary.readouterr().out
     mail = git_raw(repo, "log", "-1", "--pretty=mboxrd", "side-edit")
     trailer = b"Upstream-commit: " + sha_of(repo, "side-edit") + b"\n"
-    diff = git_raw(repo, "diff-tree", "--no-commit-id", "-p", "-M", "--binary", "--root", "side-edit")
-    assert out.endswith(mail + trailer + b"---\n\n" + diff.replace(b"mower_sdk/client.py", b"mower_sdk/legacy/client.py"))
+    diff = git_raw(
+        repo, "diff-tree", "--no-commit-id", "-p", "-M", "--binary", "--root", "side-edit"
+    )
+    assert out.endswith(
+        mail
+        + trailer
+        + b"---\n\n"
+        + diff.replace(b"mower_sdk/client.py", b"mower_sdk/legacy/client.py")
+    )
     assert out.count(b"\nFrom ") + out.startswith(b"From ") == 1  # one mbox entry
 
 
@@ -507,8 +538,15 @@ def test_a_merge_is_ported_as_one_step_with_its_net_change(
     out = capsysbinary.readouterr().out
     mail = git_raw(repo, "log", "-1", "--pretty=mboxrd", "clean-merge")
     trailer = b"Upstream-commit: " + sha_of(repo, "clean-merge") + b"\n"
-    diff = git_raw(repo, "diff-tree", "--no-commit-id", "-p", "-M", "--binary", "core-edit", "clean-merge")
-    assert out.endswith(mail + trailer + b"---\n\n" + diff.replace(b"mower_sdk/client.py", b"mower_sdk/legacy/client.py"))
+    diff = git_raw(
+        repo, "diff-tree", "--no-commit-id", "-p", "-M", "--binary", "core-edit", "clean-merge"
+    )
+    assert out.endswith(
+        mail
+        + trailer
+        + b"---\n\n"
+        + diff.replace(b"mower_sdk/client.py", b"mower_sdk/legacy/client.py")
+    )
     assert out.count(b"\nFrom ") + out.startswith(b"From ") == 1
     assert b"squashing 1 commit(s):" in out and b"side edit" in out
 
@@ -518,8 +556,12 @@ def test_a_merge_is_ported_as_one_step_with_its_net_change(
     assert git_out(repo, "log", "-1", "--format=%B") == (
         "clean merge\n\nUpstream-commit: " + sha_of(repo, "clean-merge").decode() + "\n\n"
     )
-    assert git_out(repo, "diff", "--name-only", "fork-move", "HEAD") == "mower_sdk/legacy/client.py\n"
-    assert (repo / "mower_sdk/legacy/client.py").read_text() == "class MowerClient:\n    token_updates = 0\n"
+    assert (
+        git_out(repo, "diff", "--name-only", "fork-move", "HEAD") == "mower_sdk/legacy/client.py\n"
+    )
+    assert (
+        repo / "mower_sdk/legacy/client.py"
+    ).read_text() == "class MowerClient:\n    token_updates = 0\n"
 
 
 def test_the_same_insertion_on_both_sides_of_a_merge_is_ported_once(
@@ -542,7 +584,9 @@ def test_the_same_insertion_on_both_sides_of_a_merge_is_ported_once(
     git_out(repo, "checkout", "-q", "fork")
     assert port_upstream.main(["base..dup-merge"]) == 0
     captured = capsys.readouterr()
-    assert "merge of the same insertion: no change against its first parent, skipped" in captured.out
+    assert (
+        "merge of the same insertion: no change against its first parent, skipped" in captured.out
+    )
     assert "applied 2 commit(s)" in captured.out
     assert git_out(repo, "log", "--format=%s", "fork-move..HEAD") == (
         "shared insertion, side a\nbase with a second block\n"
@@ -571,7 +615,9 @@ def test_crlf_content_is_ported_byte_for_byte(
     assert b"+    crlf = True\r\n" in capsysbinary.readouterr().out
     git_out(repo, "checkout", "-q", "fork")
     assert port_upstream.main(["base..crlf-edit"]) == 0
-    assert (repo / "mower_sdk/legacy/client.py").read_bytes() == b"class MowerClient:\r\n    crlf = True\r\n"
+    assert (
+        repo / "mower_sdk/legacy/client.py"
+    ).read_bytes() == b"class MowerClient:\r\n    crlf = True\r\n"
 
 
 def test_port_applies_the_series_into_legacy_with_upstream_authorship(
@@ -580,9 +626,16 @@ def test_port_applies_the_series_into_legacy_with_upstream_authorship(
     git_out(repo, "checkout", "-q", "fork")
     assert port_upstream.main(["base..side-edit"]) == 0
     assert "applied 1 commit(s)" in capsys.readouterr().out
-    assert git_out(repo, "log", "-1", "--format=%an <%ae>: %s") == "Upstream <upstream@example.invalid>: side edit\n"
-    assert git_out(repo, "diff", "--name-only", "fork-move", "HEAD") == "mower_sdk/legacy/client.py\n"
-    assert (repo / "mower_sdk/legacy/client.py").read_text() == "class MowerClient:\n    token_updates = 0\n"
+    assert (
+        git_out(repo, "log", "-1", "--format=%an <%ae>: %s")
+        == "Upstream <upstream@example.invalid>: side edit\n"
+    )
+    assert (
+        git_out(repo, "diff", "--name-only", "fork-move", "HEAD") == "mower_sdk/legacy/client.py\n"
+    )
+    assert (
+        repo / "mower_sdk/legacy/client.py"
+    ).read_text() == "class MowerClient:\n    token_updates = 0\n"
     assert (repo / "mower_sdk/client.py").read_text() == "from mower_sdk.legacy.client import *\n"
     assert git_out(repo, "status", "--porcelain") == ""
 

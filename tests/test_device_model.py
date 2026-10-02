@@ -57,7 +57,9 @@ def test_snake_case_keys_are_read() -> None:
 
 
 def test_missing_keys_take_the_defaults() -> None:
-    assert Device.from_dict({}) == Device(id="", name="", model="", firmware_version="", serial_number="")
+    assert Device.from_dict({}) == Device(
+        id="", name="", model="", firmware_version="", serial_number=""
+    )
 
 
 def test_explicit_empty_snake_case_values_are_kept() -> None:
@@ -141,13 +143,27 @@ def test_firmware_version_precedence(payload: dict[str, Any], firmware_version: 
         ({"productKey": "pk", "deviceName": "dn", "iotId": "iid"}, "pk", "dn", "iid"),
         ({"product_key": "pk", "device_name": "dn", "iot_id": "iid"}, "pk", "dn", "iid"),
         (
-            {"productKey": "a", "product_key": "b", "deviceName": "c", "device_name": "d", "iotId": "e", "iot_id": "f"},
+            {
+                "productKey": "a",
+                "product_key": "b",
+                "deviceName": "c",
+                "device_name": "d",
+                "iotId": "e",
+                "iot_id": "f",
+            },
             "a",
             "c",
             "e",
         ),
         (
-            {"productKey": "", "product_key": "b", "deviceName": "", "device_name": "d", "iotId": "", "iot_id": "f"},
+            {
+                "productKey": "",
+                "product_key": "b",
+                "deviceName": "",
+                "device_name": "d",
+                "iotId": "",
+                "iot_id": "f",
+            },
             "b",
             "d",
             "f",
@@ -157,8 +173,21 @@ def test_firmware_version_precedence(payload: dict[str, Any], firmware_version: 
         # empty name or id gives "" rather than None.
         ({"id": "", "name": ""}, None, "", ""),
     ],
-    ids=["camel_case", "snake_case", "camel_case_wins", "empty_camel_case_falls_back", "name_and_id", "empty_name_and_id"],
+    ids=[
+        "camel_case",
+        "snake_case",
+        "camel_case_wins",
+        "empty_camel_case_falls_back",
+        "name_and_id",
+        "empty_name_and_id",
+    ],
 )
-def test_aliyun_fallbacks(payload: dict[str, Any], product_key: str | None, device_name: str | None, iot_id: str | None) -> None:
+def test_aliyun_fallbacks(
+    payload: dict[str, Any], product_key: str | None, device_name: str | None, iot_id: str | None
+) -> None:
     device = Device.from_dict(payload)
-    assert (device.product_key, device.device_name, device.iot_id) == (product_key, device_name, iot_id)
+    assert (device.product_key, device.device_name, device.iot_id) == (
+        product_key,
+        device_name,
+        iot_id,
+    )

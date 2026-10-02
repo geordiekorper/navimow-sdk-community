@@ -43,7 +43,9 @@ def make(**overrides: Any) -> tuple[NavimowSDK, FakeMQTT]:
 async def test_construction_passes_the_parameters_through_and_wires_on_message(
     fake_mqtt: type[FakeMQTT],
 ) -> None:
-    sdk, mqtt = make(username="u", password="p", ws_path="/mqtt", auth_headers={"Authorization": "Bearer t"})
+    sdk, mqtt = make(
+        username="u", password="p", ws_path="/mqtt", auth_headers={"Authorization": "Bearer t"}
+    )
     assert mqtt.kwargs == {
         "broker": "broker.example.invalid",
         "port": 443,
@@ -102,7 +104,9 @@ COMMANDS = [
     pytest.param("start_mowing", (), "start_mowing", {}, id="start_mowing"),
     pytest.param("pause", (), "pause", {}, id="pause"),
     pytest.param("return_to_base", (), "return_to_base", {}, id="return_to_base"),
-    pytest.param("set_blade_height", (30,), "set_blade_height", {"height": 30}, id="set_blade_height"),
+    pytest.param(
+        "set_blade_height", (30,), "set_blade_height", {"height": 30}, id="set_blade_height"
+    ),
 ]
 # What the refusal names as the supported alternative; blade height has none.
 REST_ALTERNATIVE = {
@@ -155,7 +159,12 @@ async def test_command_publishes_a_command_message_while_connected(
     ((name, (device_id, payload)),) = mqtt.calls
     assert name == "publish_command"
     assert device_id == DEVICE_ID
-    assert payload == {"id": payload["id"], "device_id": DEVICE_ID, "command": command, "params": params}
+    assert payload == {
+        "id": payload["id"],
+        "device_id": DEVICE_ID,
+        "command": command,
+        "params": params,
+    }
     assert payload["id"].startswith("cmd-")
     uuid.UUID(payload["id"][len("cmd-") :])  # a fresh id per command
     assert fake_mqtt.instances == [mqtt]
@@ -183,7 +192,11 @@ CHANNELS = [
         "on_state",
         b'{"state": "isRunning", "battery": 80}',
         DeviceStateMessage(
-            device_id=DEVICE_ID, timestamp=None, state="mowing", battery=80, metrics={"raw_state": "isRunning"}
+            device_id=DEVICE_ID,
+            timestamp=None,
+            state="mowing",
+            battery=80,
+            metrics={"raw_state": "isRunning"},
         ),
         id="state",
     ),
@@ -270,7 +283,16 @@ async def test_update_mqtt_credentials_passes_everything_through(fake_mqtt: type
     assert mqtt.calls == [
         (
             "update_credentials",
-            ((), {"username": None, "password": "p", "auth_headers": None, **keep, "force_reconnect": False}),
+            (
+                (),
+                {
+                    "username": None,
+                    "password": "p",
+                    "auth_headers": None,
+                    **keep,
+                    "force_reconnect": False,
+                },
+            ),
         ),
         (
             "update_credentials",
@@ -305,7 +327,9 @@ async def test_update_mqtt_credentials_passes_everything_through(fake_mqtt: type
 
 
 @pytest.mark.asyncio
-async def test_a_command_without_a_known_alternative_gets_a_neutral_refusal(fake_mqtt: type[FakeMQTT]) -> None:
+async def test_a_command_without_a_known_alternative_gets_a_neutral_refusal(
+    fake_mqtt: type[FakeMQTT],
+) -> None:
     sdk, mqtt = make()
     with pytest.raises(MowerUnsupportedOperationError) as info:
         sdk._send_mqtt_command(DEVICE_ID, "set_cutting_pattern", {})

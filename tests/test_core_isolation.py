@@ -211,7 +211,11 @@ print(json.dumps({{
             "ThingStatusMessage",
             "thing_models",
         ),
-        (["mower_sdk.NavimowCloud", "import mower_sdk.cloud", "mower_sdk.cloud.NavimowCloud"], "NavimowCloud", "cloud"),
+        (
+            ["mower_sdk.NavimowCloud", "import mower_sdk.cloud", "mower_sdk.cloud.NavimowCloud"],
+            "NavimowCloud",
+            "cloud",
+        ),
     ],
     ids=["errors", "thing_models", "name_then_shim"],
 )

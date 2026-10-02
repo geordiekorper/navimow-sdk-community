@@ -17,8 +17,15 @@ from conftest import ROOT, run, stage
 
 pytest.importorskip("gitlint")
 
-GITLINT = [sys.executable, "-m", "gitlint.cli", "--config", str(ROOT / ".gitlint"),
-           "--extra-path", str(ROOT / "tools" / "gitlint_rules.py")]
+GITLINT = [
+    sys.executable,
+    "-m",
+    "gitlint.cli",
+    "--config",
+    str(ROOT / ".gitlint"),
+    "--extra-path",
+    str(ROOT / "tools" / "gitlint_rules.py"),
+]
 
 GOOD = """feat(sdk): report the cache age of state messages
 
@@ -49,7 +56,8 @@ def run_gitlint(repo: Path, *args: str) -> str:
     """
     proc = subprocess.run([*GITLINT, *args], cwd=repo, capture_output=True, text=True, check=False)
     unexpected = [
-        line for line in proc.stderr.splitlines()
+        line
+        for line in proc.stderr.splitlines()
         if line.strip() and not _VIOLATION.match(line) and not line.startswith("Commit ")
     ]
     assert not unexpected and not proc.stdout.strip(), proc.stdout + proc.stderr
@@ -125,14 +133,20 @@ def test_a_body_is_required_except_for_reverts_and_releases(repo: Path) -> None:
 
 def test_a_package_change_needs_its_kind_sentence(code: Path, repo: Path) -> None:
     assert "UC3" in lint(code, GOOD.replace("Upstream-suitable. ", ""))
-    prose = GOOD.replace("Upstream-suitable. 12 tests", "Community-only behaviour changed; 12 tests")
+    prose = GOOD.replace(
+        "Upstream-suitable. 12 tests", "Community-only behaviour changed; 12 tests"
+    )
     assert "UC3" in lint(code, prose)
     run("git", "reset", "-q", "mower_sdk/sdk.py", cwd=repo)
     assert "UC3" not in lint(code, GOOD.replace("Upstream-suitable. ", ""))  # no package change
 
 
 @pytest.mark.parametrize(
-    "line", ["Co-authored-by: Fork Author <fork@example.com>", "Co-Authored-By: Claude Opus 5.5 <x@example.com>"]
+    "line",
+    [
+        "Co-authored-by: Fork Author <fork@example.com>",
+        "Co-Authored-By: Claude Opus 5.5 <x@example.com>",
+    ],
 )
 def test_a_co_author_line_in_the_body_is_refused(code: Path, line: str) -> None:
     message = GOOD.replace("Why the change", f"{line}\nWhy the change")
@@ -177,11 +191,25 @@ def test_crediting_a_fork_author_needs_the_provenance_record(code: Path, repo: P
 def test_the_range_form_judges_each_commit_by_its_own_diff(repo: Path) -> None:
     base = run("git", "rev-parse", "HEAD", cwd=repo).strip()
     stage(repo, "mower_sdk/sdk.py", "X = 1\n")
-    run("git", "commit", "-q", "-m", "feat(sdk): x\n\nWhy the change is made, and what it does.", cwd=repo)
+    run(
+        "git",
+        "commit",
+        "-q",
+        "-m",
+        "feat(sdk): x\n\nWhy the change is made, and what it does.",
+        cwd=repo,
+    )
     # A fix without a kind sentence passes only because this commit touches no
     # mower_sdk/ path: a changed-file list shared across the range would fail it.
     stage(repo, "tests/test_x.py", "def test_x():\n    pass\n")
-    run("git", "commit", "-q", "-m", "fix(tests): x\n\nWhy the change is made, and what it does.", cwd=repo)
+    run(
+        "git",
+        "commit",
+        "-q",
+        "-m",
+        "fix(tests): x\n\nWhy the change is made, and what it does.",
+        cwd=repo,
+    )
     assert gitlint(repo, "--commits", f"{base}..HEAD") == ["UC3"]
 
 
@@ -191,9 +219,23 @@ def test_the_range_form_reads_each_commits_own_version_change(repo: Path) -> Non
     stage(repo, "CHANGELOG.md", "# Changelog\n")
     run("git", "commit", "-q", "-m", "chore(release): bump version to 1.0", cwd=repo)
     stage(repo, "mower_sdk/__init__.py", '__version__ = "1.0"\nX = 1\n')  # no version change
-    run("git", "commit", "-q", "-m", "build(sdk): x\n\nWhy the change is made, and what it does.", cwd=repo)
+    run(
+        "git",
+        "commit",
+        "-q",
+        "-m",
+        "build(sdk): x\n\nWhy the change is made, and what it does.",
+        cwd=repo,
+    )
     stage(repo, "mower_sdk/__init__.py", '__version__ = "1.1"\nX = 1\n')
-    run("git", "commit", "-q", "-m", "build(sdk): y\n\nWhy the change is made, and what it does.", cwd=repo)
+    run(
+        "git",
+        "commit",
+        "-q",
+        "-m",
+        "build(sdk): y\n\nWhy the change is made, and what it does.",
+        cwd=repo,
+    )
     last = run("git", "rev-parse", "--short=10", "HEAD", cwd=repo).strip()
     report = run_gitlint(repo, "--commits", f"{base}..HEAD")
     assert rule_ids(report) == ["UC5"]
@@ -221,13 +263,23 @@ def test_the_range_form_applies_every_rule_to_each_commit(repo: Path) -> None:
     def commit(path: str, text: str, message: str) -> None:
         stage(repo, path, text)
         run("git", "commit", "-q", "-m", message, cwd=repo)
-        commits[message.split("\n", 1)[0]] = run("git", "rev-parse", "--short=10", "HEAD", cwd=repo).strip()
+        commits[message.split("\n", 1)[0]] = run(
+            "git", "rev-parse", "--short=10", "HEAD", cwd=repo
+        ).strip()
 
     commit("a.txt", "a\n", f"docs(a): tracker\n\n{body}\n\nRefs: TRK-1")
     commit("b.txt", "b\n", "docs(b): labelled (" + "Q5)\n\n" + body)
-    commit("c.txt", "c\n", f"docs(c): order\n\n{body}\n\nCo-Authored-By: Claude X <x@example.com>\n"
-                            "Co-authored-by: Fork Author <fork@example.com>")
-    commit("d.txt", "d\n", f"docs(d): credit\n\n{body}\n\nCo-authored-by: Fork Author <fork@example.com>")
+    commit(
+        "c.txt",
+        "c\n",
+        f"docs(c): order\n\n{body}\n\nCo-Authored-By: Claude X <x@example.com>\n"
+        "Co-authored-by: Fork Author <fork@example.com>",
+    )
+    commit(
+        "d.txt",
+        "d\n",
+        f"docs(d): credit\n\n{body}\n\nCo-authored-by: Fork Author <fork@example.com>",
+    )
     commit("docs/UPSTREAM.md", "# Provenance\n", f"docs(e): provenance elsewhere\n\n{body}")
     report = run_gitlint(repo, "--commits", f"{base}..HEAD")
     found = per_commit(report)
@@ -253,8 +305,9 @@ LEGACY = "\nLegacy-edit: upstream's fix for a crash, taken as is\n"
         ("none", True, ["UC7"]),
     ],
 )
-def test_a_protected_change_needs_a_legacy_edit_trailer(repo: Path, change: str, trailer: bool,
-                                                         expected: list[str]) -> None:
+def test_a_protected_change_needs_a_legacy_edit_trailer(
+    repo: Path, change: str, trailer: bool, expected: list[str]
+) -> None:
     stage(repo, "mower_sdk/legacy/client.py", "OLD = 1\n")
     stage(repo, "tests/upstream_exports.json", "{}\n")
     run("git", "commit", "-q", "-m", "chore: layout", cwd=repo)
@@ -264,7 +317,9 @@ def test_a_protected_change_needs_a_legacy_edit_trailer(repo: Path, change: str,
         run("git", "rm", "-q", "tests/upstream_exports.json", cwd=repo)
     else:
         stage(repo, "README.md", "# Test\n\nMore.\n")
-    message = "chore(legacy): x\n\nWhy the change is made, and what it does.\n" + (LEGACY if trailer else "")
+    message = "chore(legacy): x\n\nWhy the change is made, and what it does.\n" + (
+        LEGACY if trailer else ""
+    )
     assert lint(repo, message) == expected
 
 
@@ -277,14 +332,17 @@ def test_a_protected_change_needs_a_legacy_edit_trailer(repo: Path, change: str,
         (True, True, []),
     ],
 )
-def test_the_legacy_readme_needs_no_trailer(repo: Path, with_module: bool, trailer: bool,
-                                            expected: list[str]) -> None:
+def test_the_legacy_readme_needs_no_trailer(
+    repo: Path, with_module: bool, trailer: bool, expected: list[str]
+) -> None:
     stage(repo, "mower_sdk/legacy/client.py", "OLD = 1\n")
     run("git", "commit", "-q", "-m", "chore: layout", cwd=repo)
     stage(repo, "mower_sdk/legacy/README.md", "# Legacy\n")
     if with_module:
         stage(repo, "mower_sdk/legacy/client.py", "OLD = 2\n")
-    message = "chore(legacy): x\n\nWhy the change is made, and what it does.\n" + (LEGACY if trailer else "")
+    message = "chore(legacy): x\n\nWhy the change is made, and what it does.\n" + (
+        LEGACY if trailer else ""
+    )
     assert lint(repo, message) == expected
     run("git", "commit", "-q", "-m", message, cwd=repo)
     # The same commit in range mode, as CI lints it.
@@ -297,7 +355,9 @@ def test_moving_code_out_of_legacy_needs_the_trailer(repo: Path, trailer: bool) 
     run("git", "commit", "-q", "-m", "chore: layout", cwd=repo)
     (repo / "mower_sdk" / "core").mkdir()
     run("git", "mv", "mower_sdk/legacy/client.py", "mower_sdk/core/client.py", cwd=repo)
-    message = "chore(legacy): x\n\nWhy the change is made, and what it does.\n" + (LEGACY if trailer else "")
+    message = "chore(legacy): x\n\nWhy the change is made, and what it does.\n" + (
+        LEGACY if trailer else ""
+    )
     assert lint(repo, message) == ([] if trailer else ["UC7"])
     run("git", "commit", "-q", "-m", message, cwd=repo)
     # The same commit in range mode (one commit: gitlint prints no header).
@@ -306,7 +366,9 @@ def test_moving_code_out_of_legacy_needs_the_trailer(repo: Path, trailer: bool) 
 
 def test_a_legacy_edit_trailer_needs_a_reason(repo: Path) -> None:
     stage(repo, "mower_sdk/legacy/client.py", "OLD = 1\n")
-    assert "UC7" in lint(repo, "chore(legacy): x\n\nWhy the change is made, and what it does.\n\nLegacy-edit: \n")
+    assert "UC7" in lint(
+        repo, "chore(legacy): x\n\nWhy the change is made, and what it does.\n\nLegacy-edit: \n"
+    )
 
 
 def test_the_range_form_checks_each_commit_for_its_trailer(repo: Path) -> None:
@@ -336,16 +398,25 @@ PORTED = f"update the client.\n\nUpstream-commit: {UPSTREAM_SHA}\n"  # upstream'
 
 @pytest.mark.parametrize(
     "path",
-    ["mower_sdk/legacy/client.py", "mower_sdk/mqtt.py", "mower_sdk/models.py", "mower_sdk/errors.py"],
+    [
+        "mower_sdk/legacy/client.py",
+        "mower_sdk/mqtt.py",
+        "mower_sdk/models.py",
+        "mower_sdk/errors.py",
+    ],
     ids=["legacy", "mixed-mqtt", "mixed-models", "mixed-errors"],
 )
 def test_a_ported_commit_is_exempt_from_every_rule(repo: Path, path: str) -> None:
     stage(repo, path, "OLD = 2\n")
-    assert {"CT1", "T3"} <= set(lint(repo, "update the client.\n"))  # the same message without the trailer
+    assert {"CT1", "T3"} <= set(
+        lint(repo, "update the client.\n")
+    )  # the same message without the trailer
     assert lint(repo, PORTED) == []
 
 
-def test_a_ported_commit_keeps_its_exemption_when_its_subject_matches_another_ignore_rule(repo: Path) -> None:
+def test_a_ported_commit_keeps_its_exemption_when_its_subject_matches_another_ignore_rule(
+    repo: Path,
+) -> None:
     # chore(release) subjects are exempt from the body rules only; the port's exemption is not narrowed to that.
     stage(repo, "mower_sdk/legacy/client.py", "OLD = 2\n")
     assert lint(repo, f"chore(release): upstream's 1.0.\n\nUpstream-commit: {UPSTREAM_SHA}\n") == []
@@ -356,7 +427,9 @@ def test_a_ported_commit_keeps_its_exemption_when_its_subject_matches_another_ig
     ["mower_sdk/sdk.py", "mower_sdk/legacy/README.md", "tests/upstream_exports.json", "README.md"],
     ids=["live-path", "legacy-readme", "inventory", "document"],
 )
-def test_the_trailer_exempts_nothing_on_a_commit_that_changes_another_path(repo: Path, path: str) -> None:
+def test_the_trailer_exempts_nothing_on_a_commit_that_changes_another_path(
+    repo: Path, path: str
+) -> None:
     stage(repo, "mower_sdk/legacy/client.py", "OLD = 2\n")
     stage(repo, path, "X = 1\n")
     found = lint(repo, PORTED)
@@ -385,7 +458,11 @@ def test_the_exemption_does_not_reach_the_other_commits_of_a_range(repo: Path) -
     """A ported commit between two that break the rules: only those two are reported."""
     base = run("git", "rev-parse", "HEAD", cwd=repo).strip()
     broken = []
-    for content, message in (("OLD = 1\n", "update the client."), ("OLD = 2\n", PORTED), ("OLD = 3\n", "update it again.")):
+    for content, message in (
+        ("OLD = 1\n", "update the client."),
+        ("OLD = 2\n", PORTED),
+        ("OLD = 3\n", "update it again."),
+    ):
         stage(repo, "mower_sdk/legacy/client.py", content)
         run("git", "commit", "-q", "-m", message, cwd=repo)
         if message != PORTED:
@@ -395,7 +472,9 @@ def test_the_exemption_does_not_reach_the_other_commits_of_a_range(repo: Path) -
     assert all({"CT1", "UC7"} <= set(rules) for rules in found.values())
 
 
-def test_a_series_ported_by_the_tool_passes_in_range_mode(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_series_ported_by_the_tool_passes_in_range_mode(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Upstream's commits, ported with tools/port_upstream.py, pass as CI lints them."""
     import port_upstream
 
@@ -428,9 +507,17 @@ def test_a_series_ported_by_the_tool_passes_in_range_mode(repo: Path, monkeypatc
     run("git", "reset", "-q", "--hard", moved, cwd=repo)
 
     assert port_upstream.main(["base..upstream"]) == 0
-    assert run("git", "diff", "--name-only", moved, "HEAD", cwd=repo) == "mower_sdk/legacy/client.py\n"
+    assert (
+        run("git", "diff", "--name-only", moved, "HEAD", cwd=repo) == "mower_sdk/legacy/client.py\n"
+    )
     subjects = run("git", "log", "--format=%an: %s", f"{moved}..HEAD", cwd=repo).splitlines()
     assert subjects == ["Upstream: Count Token Updates", "Upstream: update the client."]
-    trailers = run("git", "log", "--format=%(trailers:key=Upstream-commit,valueonly)", f"{moved}..HEAD", cwd=repo).split()
+    trailers = run(
+        "git",
+        "log",
+        "--format=%(trailers:key=Upstream-commit,valueonly)",
+        f"{moved}..HEAD",
+        cwd=repo,
+    ).split()
     assert trailers == run("git", "rev-list", "base..upstream", cwd=repo).split()
     assert gitlint(repo, "--commits", f"{moved}..HEAD") == []

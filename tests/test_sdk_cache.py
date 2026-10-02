@@ -42,7 +42,9 @@ async def test_no_cached_message_means_no_age_and_no_receipt_time(clock: FakeClo
 
 
 @pytest.mark.asyncio
-async def test_state_and_attributes_ages_are_measured_from_their_own_arrival(clock: FakeClock) -> None:
+async def test_state_and_attributes_ages_are_measured_from_their_own_arrival(
+    clock: FakeClock,
+) -> None:
     sdk = NavimowSDK(broker="broker.example.invalid", port=443)
 
     await deliver(sdk, DEVICE_ID, "state", b'{"state": "isRunning", "battery": 80}')
@@ -63,7 +65,9 @@ async def test_state_and_attributes_ages_are_measured_from_their_own_arrival(clo
 
 
 @pytest.mark.asyncio
-async def test_a_newer_message_replaces_the_age_and_receipt_time_of_its_device_only(clock: FakeClock) -> None:
+async def test_a_newer_message_replaces_the_age_and_receipt_time_of_its_device_only(
+    clock: FakeClock,
+) -> None:
     sdk = NavimowSDK(broker="broker.example.invalid", port=443)
     await deliver(sdk, DEVICE_ID, "state", b'{"state": "isRunning"}')
     clock.monotonic_now += 10

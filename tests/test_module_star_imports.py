@@ -25,7 +25,13 @@ import pytest
 INVENTORY = json.loads(
     Path(__file__).with_name("upstream_exports.json").read_text(encoding="utf-8")
 )
-MODULES = ["mower_sdk.mqtt", "mower_sdk.models", "mower_sdk.errors", "mower_sdk.location", "mower_sdk.watchdog"]
+MODULES = [
+    "mower_sdk.mqtt",
+    "mower_sdk.models",
+    "mower_sdk.errors",
+    "mower_sdk.location",
+    "mower_sdk.watchdog",
+]
 
 # Public names the community edition adds to a module's ``__all__`` beyond the
 # inventory: module name -> the names added. Each addition is listed here in the
@@ -116,7 +122,9 @@ def test_star_import_carries_the_module_attributes(module: str) -> None:
     arrived = star_import(module)
     loaded = importlib.import_module(module)
     for name, value in arrived.items():
-        assert value is getattr(loaded, name), f"{module}.{name} differs from the star-imported object"
+        assert value is getattr(loaded, name), (
+            f"{module}.{name} differs from the star-imported object"
+        )
 
 
 @pytest.mark.parametrize("module", MODULES)

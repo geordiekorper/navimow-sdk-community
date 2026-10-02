@@ -7,7 +7,9 @@ from conftest import ROOT
 
 yaml = pytest.importorskip("yaml")
 
-WORKFLOW = yaml.safe_load((ROOT / ".github" / "workflows" / "publish.yml").read_text(encoding="utf-8"))
+WORKFLOW = yaml.safe_load(
+    (ROOT / ".github" / "workflows" / "publish.yml").read_text(encoding="utf-8")
+)
 JOBS = WORKFLOW["jobs"]
 DOWNLOAD = {"uses": "actions/download-artifact@v8", "with": {"name": "dist", "path": "dist/"}}
 
@@ -32,7 +34,10 @@ def test_pypi_waits_for_testpypi_and_the_approval_of_its_environment() -> None:
     # A failed TestPyPI upload stops the run before PyPI.
     assert job["needs"] == ["build", "testpypi"]
     # The pypi environment's required-reviewer rule is what holds the job.
-    assert job["environment"] == {"name": "pypi", "url": "https://pypi.org/project/navimow-sdk-community/"}
+    assert job["environment"] == {
+        "name": "pypi",
+        "url": "https://pypi.org/project/navimow-sdk-community/",
+    }
     assert job["permissions"] == {"id-token": "write"}
     # The same artifact TestPyPI received, and the default index: PyPI.
     assert job["steps"] == [DOWNLOAD, {"uses": "pypa/gh-action-pypi-publish@release/v1"}]

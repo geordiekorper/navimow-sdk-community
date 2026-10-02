@@ -24,7 +24,6 @@ nox = pytest.importorskip("nox")
 yaml = pytest.importorskip("yaml")
 
 
-
 @functools.cache
 def _noxfile():
     """The noxfile's module, for its constants; loaded once (nox registers sessions on load)."""
@@ -37,8 +36,13 @@ def _noxfile():
 @functools.cache
 def _session_names(noxfile: Path = ROOT / "noxfile.py") -> frozenset[str]:
     """The sessions nox itself discovers in a noxfile (nox --list --json)."""
-    proc = subprocess.run([sys.executable, "-m", "nox", "--list", "--json", "-f", str(noxfile)],
-                          capture_output=True, text=True, check=True, cwd=ROOT)
+    proc = subprocess.run(
+        [sys.executable, "-m", "nox", "--list", "--json", "-f", str(noxfile)],
+        capture_output=True,
+        text=True,
+        check=True,
+        cwd=ROOT,
+    )
     return frozenset(session["session"] for session in json.loads(proc.stdout))
 
 
@@ -48,12 +52,22 @@ def _ci_session_calls() -> list[str]:
     calls = []
     for job in jobs.values():
         matrix = (job.get("strategy") or {}).get("matrix") or {}
-        rows = matrix.get("include") or [{"python-version": v} for v in matrix.get("python-version", [])] or [{}]
+        rows = (
+            matrix.get("include")
+            or [{"python-version": v} for v in matrix.get("python-version", [])]
+            or [{}]
+        )
         for step in job["steps"]:
             for quoted, bare in re.findall(r'nox -s (?:"([^"]+)"|(\S+))', step.get("run", "")):
                 session = quoted or bare
                 for row in rows:
-                    calls.append(re.sub(r"\$\{\{\s*matrix\.([\w-]+)\s*\}\}", lambda m, r=row: str(r[m.group(1)]), session))
+                    calls.append(
+                        re.sub(
+                            r"\$\{\{\s*matrix\.([\w-]+)\s*\}\}",
+                            lambda m, r=row: str(r[m.group(1)]),
+                            session,
+                        )
+                    )
     return calls
 
 
@@ -71,15 +85,19 @@ def test_the_session_names_come_from_nox_itself(tmp_path: Path) -> None:
     # A renamed session function changes what nox lists, and so what the two
     # tests above compare against.
     renamed = tmp_path / "noxfile.py"
-    renamed.write_text((ROOT / "noxfile.py").read_text(encoding="utf-8").replace("def lint(", "def style("),
-                       encoding="utf-8")
+    renamed.write_text(
+        (ROOT / "noxfile.py").read_text(encoding="utf-8").replace("def lint(", "def style("),
+        encoding="utf-8",
+    )
     names = _session_names(renamed)
     assert "lint" not in names and "style" in names
     assert not set(_ci_session_calls()) <= names
 
 
 def test_the_oldest_bound_is_pyprojects_floor() -> None:
-    dependencies = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["dependencies"]
+    dependencies = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"][
+        "dependencies"
+    ]
     floors = {}
     for requirement in dependencies:
         name, floor = re.match(r"^([\w-]+)\s*>=\s*([\w.]+)", requirement).groups()
@@ -96,16 +114,28 @@ def test_tool_versions_match_the_pre_commit_hooks() -> None:
     assert "gitlint==" + revs["gitlint"].lstrip("v") == noxfile.GITLINT
     # The hygiene job installs gitlint itself; the same version.
     install = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"]["hygiene"]["steps"]
-    pins = [word for step in install for word in step.get("run", "").split() if word.startswith("gitlint==")]
+    pins = [
+        word
+        for step in install
+        for word in step.get("run", "").split()
+        if word.startswith("gitlint==")
+    ]
     assert pins == [noxfile.GITLINT]
 
 
 def test_the_nox_jobs_cache_pip_downloads_per_noxfile() -> None:
     jobs = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"]
-    nox_jobs = [job for job in jobs.values()
-                if any("nox -s" in step.get("run", "") for step in job["steps"])]
+    nox_jobs = [
+        job
+        for job in jobs.values()
+        if any("nox -s" in step.get("run", "") for step in job["steps"])
+    ]
     assert nox_jobs
     for job in nox_jobs:
-        (setup,) = [step for step in job["steps"] if str(step.get("uses", "")).startswith("actions/setup-python")]
+        (setup,) = [
+            step
+            for step in job["steps"]
+            if str(step.get("uses", "")).startswith("actions/setup-python")
+        ]
         assert setup["with"]["cache"] == "pip"
         assert setup["with"]["cache-dependency-path"] == "noxfile.py"

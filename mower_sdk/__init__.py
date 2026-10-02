@@ -83,7 +83,9 @@ if TYPE_CHECKING:
 __version__ = "0.2.0a4"
 
 
-def _warn_if_upstream_installed(version_of: Callable[[str], str] = importlib.metadata.version) -> None:
+def _warn_if_upstream_installed(
+    version_of: Callable[[str], str] = importlib.metadata.version,
+) -> None:
     """Warn once when the upstream navimow-sdk distribution is listed beside this one.
 
     Both distributions install the mower_sdk package, so whichever was

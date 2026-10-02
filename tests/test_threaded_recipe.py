@@ -40,7 +40,11 @@ STATE_TOPIC = f"/downlink/vehicle/{DEVICE_ID}/realtimeDate/state"
 
 
 def section() -> str:
-    return README.read_text(encoding="utf-8").split("## Threaded applications", 1)[1].split("\n## ", 1)[0]
+    return (
+        README.read_text(encoding="utf-8")
+        .split("## Threaded applications", 1)[1]
+        .split("\n## ", 1)[0]
+    )
 
 
 def blocks() -> list[str]:
@@ -119,7 +123,12 @@ def fake_paho(fake_paho: type[FakeClient], monkeypatch: pytest.MonkeyPatch) -> t
 DEVICES_REPLY = {"code": 1, "data": {"payload": {"devices": [{"id": DEVICE_ID, "name": "Lawn"}]}}}
 BROKER_REPLY = {
     "code": 1,
-    "data": {"mqttHost": "wss://broker.example.invalid", "mqttUrl": "/mqtt", "userName": "user", "pwdInfo": "secret"},
+    "data": {
+        "mqttHost": "wss://broker.example.invalid",
+        "mqttUrl": "/mqtt",
+        "userName": "user",
+        "pwdInfo": "secret",
+    },
 }
 
 
@@ -169,12 +178,16 @@ def test_the_usage_as_printed_delivers_a_state_message_and_releases_everything(
     message = namespace["message"]
     assert (message.device_id, message.state) == (DEVICE_ID, "docked")
     assert namespace["sdk"].loop is namespace["mowers"].loop
-    assert FakeClient.instances[-1].named("disconnect") and FakeClient.instances[-1].named("loop_stop")
+    assert FakeClient.instances[-1].named("disconnect") and FakeClient.instances[-1].named(
+        "loop_stop"
+    )
     assert_released(namespace)
 
 
 @pytest.mark.usefixtures("fake_paho")
-def test_the_usage_releases_everything_when_a_rest_call_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_the_usage_releases_everything_when_a_rest_call_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     serve(monkeypatch, {"code": 4005, "desc": "token expired"})
     namespace = run_usage()
     assert isinstance(namespace["raised"], MowerAuthRequiredError)
@@ -184,11 +197,15 @@ def test_the_usage_releases_everything_when_a_rest_call_fails(monkeypatch: pytes
 
 
 @pytest.mark.usefixtures("fake_paho")
-def test_the_usage_releases_everything_when_no_state_arrives(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_the_usage_releases_everything_when_no_state_arrives(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     serve(monkeypatch, DEVICES_REPLY, BROKER_REPLY)
     namespace = run_usage(wait=0.1)
     assert isinstance(namespace["raised"], queue.Empty)
-    assert FakeClient.instances[-1].named("disconnect") and FakeClient.instances[-1].named("loop_stop")
+    assert FakeClient.instances[-1].named("disconnect") and FakeClient.instances[-1].named(
+        "loop_stop"
+    )
     assert_released(namespace)
 
 
@@ -210,8 +227,12 @@ def test_the_threaded_recipe_delivers_rest_and_mqtt_to_a_plain_thread() -> None:
         assert session.request_threads == [mowers._thread, mowers._thread]
 
         sdk = NavimowSDK(
-            broker="broker.example.invalid", port=1883, username=info["userName"], password=info["pwdInfo"],
-            records=devices, loop=mowers.loop,
+            broker="broker.example.invalid",
+            port=1883,
+            username=info["userName"],
+            password=info["pwdInfo"],
+            records=devices,
+            loop=mowers.loop,
         )
         assert sdk.loop is mowers.loop
         states: queue.Queue[DeviceStateMessage] = queue.Queue()
@@ -224,7 +245,9 @@ def test_the_threaded_recipe_delivers_rest_and_mqtt_to_a_plain_thread() -> None:
 
         as_paho_thread(sdk.mqtt._on_connect, client, None, {}, SUCCESS, None)
         client.connected = True
-        as_paho_thread(sdk.mqtt._on_message, client, None, FakeMessage(STATE_TOPIC, b'{"state":"isDocked"}'))
+        as_paho_thread(
+            sdk.mqtt._on_message, client, None, FakeMessage(STATE_TOPIC, b'{"state":"isDocked"}')
+        )
         message = states.get(timeout=5)
         assert (message.device_id, message.state) == (DEVICE_ID, "docked")
         assert callback_threads == [mowers._thread]
@@ -261,7 +284,10 @@ def test_run_refuses_to_wait_on_the_loops_own_thread() -> None:
                 return str(exc)
             return "waited"
 
-        assert mowers.run(nested()) == "NavimowThread.run() called on the loop's own thread would wait forever"
+        assert (
+            mowers.run(nested())
+            == "NavimowThread.run() called on the loop's own thread would wait forever"
+        )
         assert mowers.run(answer()) == 42
         assert mowers.call(sum, [1, 2, 3]) == 6
     finally:
@@ -272,13 +298,20 @@ def test_the_recipe_names_the_calls_that_block() -> None:
     text = " ".join(section().split())
     assert "every one of them can block" in text
     for name in (
-        "sdk.connect()", "sdk.disconnect()", "sdk.update_mqtt_credentials()", "sdk.mqtt.rebuild()",
-        "sdk.mqtt.update_credentials()", "`disconnect()` joins paho's network thread", "loop=mowers.loop",
+        "sdk.connect()",
+        "sdk.disconnect()",
+        "sdk.update_mqtt_credentials()",
+        "sdk.mqtt.rebuild()",
+        "sdk.mqtt.update_credentials()",
+        "`disconnect()` joins paho's network thread",
+        "loop=mowers.loop",
     ):
         assert name in text
 
 
-def test_a_timed_out_run_cancels_its_coroutine_and_stop_cancels_the_rest(capfd: pytest.CaptureFixture[str]) -> None:
+def test_a_timed_out_run_cancels_its_coroutine_and_stop_cancels_the_rest(
+    capfd: pytest.CaptureFixture[str],
+) -> None:
     NavimowThread = recipe()["NavimowThread"]
     mowers = NavimowThread()
     cancelled: list[str] = []

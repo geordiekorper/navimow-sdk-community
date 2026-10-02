@@ -30,7 +30,9 @@ def test_editing_or_adding_legacy_code_or_editing_the_inventory_is_refused(sdk: 
     stage(sdk, "tests/upstream_exports.json", '{"a": 1}\n')
     findings = check_protected_paths.check()
     assert sorted(f.split(":")[0] for f in findings) == [
-        "mower_sdk/legacy/client.py", "mower_sdk/legacy/new.py", "tests/upstream_exports.json",
+        "mower_sdk/legacy/client.py",
+        "mower_sdk/legacy/new.py",
+        "tests/upstream_exports.json",
     ]
     assert all("SKIP=no-protected-changes" in f for f in findings)
 
@@ -38,7 +40,8 @@ def test_editing_or_adding_legacy_code_or_editing_the_inventory_is_refused(sdk: 
 def test_deleting_legacy_code_or_the_inventory_is_refused(sdk: Path) -> None:
     run("git", "rm", "-q", "mower_sdk/legacy/client.py", "tests/upstream_exports.json", cwd=sdk)
     assert [f.split(":")[0] for f in check_protected_paths.check()] == [
-        "mower_sdk/legacy/client.py", "tests/upstream_exports.json",
+        "mower_sdk/legacy/client.py",
+        "tests/upstream_exports.json",
     ]
 
 
@@ -55,12 +58,16 @@ def test_the_legacy_readme_is_added_edited_and_deleted_freely(sdk: Path) -> None
 def test_the_readme_does_not_carry_a_change_to_legacy_code(sdk: Path) -> None:
     stage(sdk, "mower_sdk/legacy/README.md", "# Legacy\n")
     stage(sdk, "mower_sdk/legacy/client.py", "OLD = 2\n")
-    assert [f.split(":")[0] for f in check_protected_paths.check()] == ["mower_sdk/legacy/client.py"]
+    assert [f.split(":")[0] for f in check_protected_paths.check()] == [
+        "mower_sdk/legacy/client.py"
+    ]
 
 
 def test_moving_legacy_code_onto_the_readme_is_refused(sdk: Path) -> None:
     run("git", "mv", "mower_sdk/legacy/client.py", "mower_sdk/legacy/README.md", cwd=sdk)
-    assert [f.split(":")[0] for f in check_protected_paths.check()] == ["mower_sdk/legacy/client.py"]
+    assert [f.split(":")[0] for f in check_protected_paths.check()] == [
+        "mower_sdk/legacy/client.py"
+    ]
 
 
 def test_only_the_inventory_itself_is_protected(sdk: Path) -> None:
@@ -73,10 +80,14 @@ def test_only_the_inventory_itself_is_protected(sdk: Path) -> None:
 def test_moving_code_out_of_legacy_is_refused(sdk: Path) -> None:
     (sdk / "src").mkdir(exist_ok=True)
     run("git", "mv", "mower_sdk/legacy/client.py", "src/client.py", cwd=sdk)
-    assert [f.split(":")[0] for f in check_protected_paths.check()] == ["mower_sdk/legacy/client.py"]
+    assert [f.split(":")[0] for f in check_protected_paths.check()] == [
+        "mower_sdk/legacy/client.py"
+    ]
 
 
-def test_range_mode_checks_the_commits_between_refs(sdk: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_range_mode_checks_the_commits_between_refs(
+    sdk: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     base = run("git", "rev-parse", "HEAD", cwd=sdk).strip()
     run("git", "rm", "-q", "mower_sdk/legacy/client.py", cwd=sdk)
     run("git", "commit", "-q", "-m", "chore: x", cwd=sdk)

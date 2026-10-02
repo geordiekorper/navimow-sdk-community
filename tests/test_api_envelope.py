@@ -142,7 +142,9 @@ async def test_get_mqtt_user_info_returns_the_whole_data_object() -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_device_statuses_success_keys_by_device_id_and_drops_entries_without_one() -> None:
+async def test_get_device_statuses_success_keys_by_device_id_and_drops_entries_without_one() -> (
+    None
+):
     api, _ = api_with(
         FakeResponse(
             ok(
@@ -191,8 +193,14 @@ async def test_query_command_results_success_returns_the_devices_list() -> None:
 @pytest.mark.parametrize(
     ("command", "execution"),
     [
-        (MowerCommand.START, {"command": "action.devices.commands.StartStop", "params": {"on": True}}),
-        (MowerCommand.STOP, {"command": "action.devices.commands.StartStop", "params": {"on": False}}),
+        (
+            MowerCommand.START,
+            {"command": "action.devices.commands.StartStop", "params": {"on": True}},
+        ),
+        (
+            MowerCommand.STOP,
+            {"command": "action.devices.commands.StartStop", "params": {"on": False}},
+        ),
         (
             MowerCommand.PAUSE,
             {"command": "action.devices.commands.PauseUnpause", "params": {"on": False}},
@@ -318,7 +326,9 @@ async def test_command_error_raises(result: dict[str, Any], error_code: str) -> 
 
 @pytest.mark.asyncio
 async def test_http_error_status_raises_with_the_body_text() -> None:
-    api, _ = api_with(FakeResponse(status=500, body=b"upstream exploded", content_type="text/plain"))
+    api, _ = api_with(
+        FakeResponse(status=500, body=b"upstream exploded", content_type="text/plain")
+    )
     with pytest.raises(MowerAPIError) as info:
         await api.async_get_devices()
     assert info.value.message == f"{ERROR_MESSAGES['API_REQUEST_FAILED']}: upstream exploded"
@@ -409,7 +419,9 @@ async def test_empty_inputs_make_no_request() -> None:
 
 @pytest.mark.asyncio
 async def test_get_device_status_returns_the_matching_status() -> None:
-    api, _ = api_with(FakeResponse(ok({"devices": [{"id": DEVICE_ID, "vehicleState": "isRunning"}]})))
+    api, _ = api_with(
+        FakeResponse(ok({"devices": [{"id": DEVICE_ID, "vehicleState": "isRunning"}]}))
+    )
     status = await api.async_get_device_status(DEVICE_ID)
     assert status.device_id == DEVICE_ID
     assert status.status is MowerStatus.MOWING
@@ -433,9 +445,15 @@ async def test_get_device_status_maps_http_404_to_device_not_found() -> None:
     assert cause.message == f"{ERROR_MESSAGES['API_REQUEST_FAILED']}: no such vehicle"
 
 
-@pytest.mark.parametrize("data", [None, {"payload": None}, {"payload": {"devices": None}}], ids=["data", "payload", "devices"])
+@pytest.mark.parametrize(
+    "data",
+    [None, {"payload": None}, {"payload": {"devices": None}}],
+    ids=["data", "payload", "devices"],
+)
 @pytest.mark.asyncio
-async def test_get_device_status_with_null_entries_is_device_not_found(data: dict[str, Any] | None) -> None:
+async def test_get_device_status_with_null_entries_is_device_not_found(
+    data: dict[str, Any] | None,
+) -> None:
     api, _ = api_with(FakeResponse({"code": 1, "desc": "success", "data": data}))
     with pytest.raises(MowerAPIError) as info:
         await api.async_get_device_status(DEVICE_ID)
@@ -455,7 +473,9 @@ async def test_get_device_status_missing_from_the_reply_is_device_not_found() ->
 
 @pytest.mark.asyncio
 async def test_get_device_status_passes_other_errors_through() -> None:
-    api, _ = api_with(FakeResponse(status=500, body=b"upstream exploded", content_type="text/plain"))
+    api, _ = api_with(
+        FakeResponse(status=500, body=b"upstream exploded", content_type="text/plain")
+    )
     with pytest.raises(MowerAPIError) as info:
         await api.async_get_device_status(DEVICE_ID)
     assert info.value.status_code == 500
@@ -480,7 +500,14 @@ HTML = b"<html><body><h1>502 Bad Gateway</h1></body></html>"
 @pytest.mark.parametrize(
     ("response", "cls", "message", "status_code", "envelope_code"),
     [
-        pytest.param(FakeResponse(error=TimeoutError()), MowerTransportError, f"{FAILED}: TimeoutError", None, None, id="timeout"),
+        pytest.param(
+            FakeResponse(error=TimeoutError()),
+            MowerTransportError,
+            f"{FAILED}: TimeoutError",
+            None,
+            None,
+            id="timeout",
+        ),
         pytest.param(
             FakeResponse(error=aiohttp.ServerDisconnectedError()),
             MowerTransportError,
@@ -490,51 +517,140 @@ HTML = b"<html><body><h1>502 Bad Gateway</h1></body></html>"
             id="client_error",
         ),
         pytest.param(
-            FakeResponse(status=401, body=b'{"code": 401}'), MowerAuthRequiredError, f'{FAILED}: {{"code": 401}}', 401, None, id="http_401"
+            FakeResponse(status=401, body=b'{"code": 401}'),
+            MowerAuthRequiredError,
+            f'{FAILED}: {{"code": 401}}',
+            401,
+            None,
+            id="http_401",
         ),
         pytest.param(
-            FakeResponse(status=403, body=b"forbidden", content_type="text/plain"), MowerAuthRequiredError, f"{FAILED}: forbidden", 403, None, id="http_403"
+            FakeResponse(status=403, body=b"forbidden", content_type="text/plain"),
+            MowerAuthRequiredError,
+            f"{FAILED}: forbidden",
+            403,
+            None,
+            id="http_403",
         ),
         pytest.param(
-            FakeResponse(status=404, body=b"not found", content_type="text/plain"), MowerAPIError, f"{FAILED}: not found", 404, None, id="http_404"
+            FakeResponse(status=404, body=b"not found", content_type="text/plain"),
+            MowerAPIError,
+            f"{FAILED}: not found",
+            404,
+            None,
+            id="http_404",
         ),
         pytest.param(
-            FakeResponse(status=429, body=b"slow down", content_type="text/plain"), MowerAPIError, f"{FAILED}: slow down", 429, None, id="http_429"
+            FakeResponse(status=429, body=b"slow down", content_type="text/plain"),
+            MowerAPIError,
+            f"{FAILED}: slow down",
+            429,
+            None,
+            id="http_429",
         ),
         pytest.param(
-            FakeResponse(status=500, body=b"exploded", content_type="text/plain"), MowerTransportError, f"{FAILED}: exploded", 500, None, id="http_500"
+            FakeResponse(status=500, body=b"exploded", content_type="text/plain"),
+            MowerTransportError,
+            f"{FAILED}: exploded",
+            500,
+            None,
+            id="http_500",
         ),
         pytest.param(
-            FakeResponse(status=502, body=HTML, content_type="text/html"), MowerTransportError, f"{FAILED}: {HTML.decode()}", 502, None, id="http_502_html"
+            FakeResponse(status=502, body=HTML, content_type="text/html"),
+            MowerTransportError,
+            f"{FAILED}: {HTML.decode()}",
+            502,
+            None,
+            id="http_502_html",
         ),
         pytest.param(
-            FakeResponse(status=401, body=HTML, content_type="text/html"), MowerAuthRequiredError, f"{FAILED}: {HTML.decode()}", 401, None, id="http_401_html"
+            FakeResponse(status=401, body=HTML, content_type="text/html"),
+            MowerAuthRequiredError,
+            f"{FAILED}: {HTML.decode()}",
+            401,
+            None,
+            id="http_401_html",
         ),
         pytest.param(
-            FakeResponse(status=404, body=HTML, content_type="text/html"), MowerAPIError, f"{FAILED}: {HTML.decode()}", 404, None, id="http_404_html"
+            FakeResponse(status=404, body=HTML, content_type="text/html"),
+            MowerAPIError,
+            f"{FAILED}: {HTML.decode()}",
+            404,
+            None,
+            id="http_404_html",
         ),
         pytest.param(
-            FakeResponse(ok({}), status=302), MowerTransportError, f"{FAILED}: " + json.dumps(ok({})), 302, None, id="http_302_json"
-        ),
-        pytest.param(FakeResponse(ok({}), status=304), MowerTransportError, f"{FAILED}: " + json.dumps(ok({})), 304, None, id="http_304"),
-        pytest.param(FakeResponse(status=101, body=b""), MowerTransportError, f"{FAILED}: ", 101, None, id="http_101"),
-        pytest.param(
-            FakeResponse(status=404, body=b"\xffbad", content_type="text/plain"), MowerAPIError, f"{FAILED}: \ufffdbad", 404, None, id="undecodable_body"
-        ),
-        pytest.param(
-            FakeResponse({"code": 4001, "desc": "url Circuit Breaker"}), MowerRateLimitedError, f"{FAILED}: url Circuit Breaker", None, 4001, id="code_4001"
+            FakeResponse(ok({}), status=302),
+            MowerTransportError,
+            f"{FAILED}: " + json.dumps(ok({})),
+            302,
+            None,
+            id="http_302_json",
         ),
         pytest.param(
-            FakeResponse({"code": 500, "desc": "Request too frequent"}), MowerRateLimitedError, f"{FAILED}: Request too frequent", None, 500, id="too_frequent"
+            FakeResponse(ok({}), status=304),
+            MowerTransportError,
+            f"{FAILED}: " + json.dumps(ok({})),
+            304,
+            None,
+            id="http_304",
         ),
         pytest.param(
-            FakeResponse({"code": 7, "desc": "circuit BREAKER open"}), MowerRateLimitedError, f"{FAILED}: circuit BREAKER open", None, 7, id="circuit_breaker"
+            FakeResponse(status=101, body=b""),
+            MowerTransportError,
+            f"{FAILED}: ",
+            101,
+            None,
+            id="http_101",
         ),
         pytest.param(
-            FakeResponse({"code": 4005, "desc": "token expired"}), MowerAuthRequiredError, f"{FAILED}: token expired", None, 4005, id="code_4005"
+            FakeResponse(status=404, body=b"\xffbad", content_type="text/plain"),
+            MowerAPIError,
+            f"{FAILED}: \ufffdbad",
+            404,
+            None,
+            id="undecodable_body",
         ),
         pytest.param(
-            FakeResponse({"code": "4005", "desc": "token expired"}), MowerAuthRequiredError, f"{FAILED}: token expired", None, 4005, id="code_4005_as_string"
+            FakeResponse({"code": 4001, "desc": "url Circuit Breaker"}),
+            MowerRateLimitedError,
+            f"{FAILED}: url Circuit Breaker",
+            None,
+            4001,
+            id="code_4001",
+        ),
+        pytest.param(
+            FakeResponse({"code": 500, "desc": "Request too frequent"}),
+            MowerRateLimitedError,
+            f"{FAILED}: Request too frequent",
+            None,
+            500,
+            id="too_frequent",
+        ),
+        pytest.param(
+            FakeResponse({"code": 7, "desc": "circuit BREAKER open"}),
+            MowerRateLimitedError,
+            f"{FAILED}: circuit BREAKER open",
+            None,
+            7,
+            id="circuit_breaker",
+        ),
+        pytest.param(
+            FakeResponse({"code": 4005, "desc": "token expired"}),
+            MowerAuthRequiredError,
+            f"{FAILED}: token expired",
+            None,
+            4005,
+            id="code_4005",
+        ),
+        pytest.param(
+            FakeResponse({"code": "4005", "desc": "token expired"}),
+            MowerAuthRequiredError,
+            f"{FAILED}: token expired",
+            None,
+            4005,
+            id="code_4005_as_string",
         ),
         pytest.param(
             FakeResponse({"code": 500, "desc": "code_oauth_info_illegal"}),
@@ -544,13 +660,31 @@ HTML = b"<html><body><h1>502 Bad Gateway</h1></body></html>"
             500,
             id="oauth_info_illegal",
         ),
-        pytest.param(FakeResponse({"code": 2, "desc": "nope"}), MowerAPIError, f"{FAILED}: nope", None, 2, id="other_code"),
-        pytest.param(FakeResponse({"desc": "nope"}), MowerAPIError, f"{FAILED}: nope", None, None, id="no_code"),
+        pytest.param(
+            FakeResponse({"code": 2, "desc": "nope"}),
+            MowerAPIError,
+            f"{FAILED}: nope",
+            None,
+            2,
+            id="other_code",
+        ),
+        pytest.param(
+            FakeResponse({"desc": "nope"}),
+            MowerAPIError,
+            f"{FAILED}: nope",
+            None,
+            None,
+            id="no_code",
+        ),
     ],
 )
 @pytest.mark.asyncio
 async def test_each_failure_kind_raises_its_class(
-    response: FakeResponse, cls: type[MowerAPIError], message: str, status_code: int | None, envelope_code: int | None
+    response: FakeResponse,
+    cls: type[MowerAPIError],
+    message: str,
+    status_code: int | None,
+    envelope_code: int | None,
 ) -> None:
     api, _ = api_with(response)
     with pytest.raises(MowerAPIError) as info:  # except MowerAPIError still catches every kind
@@ -602,8 +736,12 @@ async def test_an_http_error_body_is_cut_at_500_characters_with_a_marker() -> No
     ("body", "content_type", "cause", "message"),
     [
         pytest.param(HTML, "text/html", json.JSONDecodeError, "reply is not JSON", id="html"),
-        pytest.param(HTML, "application/json", json.JSONDecodeError, "reply is not JSON", id="not_json"),
-        pytest.param(b"\xff", "application/json", UnicodeDecodeError, "reply is not UTF-8", id="not_utf8"),
+        pytest.param(
+            HTML, "application/json", json.JSONDecodeError, "reply is not JSON", id="not_json"
+        ),
+        pytest.param(
+            b"\xff", "application/json", UnicodeDecodeError, "reply is not UTF-8", id="not_utf8"
+        ),
         pytest.param(b"", "application/json", None, "empty reply", id="empty"),
         pytest.param(b"  ", "application/json", None, "empty reply", id="blank"),
         pytest.param(b"[]", "application/json", None, "reply is not a JSON object", id="array"),
@@ -627,7 +765,11 @@ async def test_a_2xx_body_that_is_not_a_json_object_is_a_transport_error(
 
 @pytest.mark.asyncio
 async def test_a_2xx_json_object_is_read_whatever_its_content_type() -> None:
-    api, _ = api_with(FakeResponse(body=json.dumps(ok({"devices": [{"id": DEVICE_ID}]})).encode(), content_type="text/html"))
+    api, _ = api_with(
+        FakeResponse(
+            body=json.dumps(ok({"devices": [{"id": DEVICE_ID}]})).encode(), content_type="text/html"
+        )
+    )
     assert [device.id for device in await api.async_get_devices()] == [DEVICE_ID]
 
 
@@ -663,11 +805,16 @@ X430_ENTRY = {
 
 @pytest.mark.asyncio
 async def test_the_raw_status_entries_come_back_as_the_cloud_sent_them() -> None:
-    api, session = api_with(FakeResponse(ok({"devices": [X430_ENTRY, "not a dict", {"vehicleState": "isRunning"}]})))
+    api, session = api_with(
+        FakeResponse(ok({"devices": [X430_ENTRY, "not a dict", {"vehicleState": "isRunning"}]}))
+    )
     entries = await api.async_get_vehicle_status_raw([DEVICE_ID, "dev-2"])
     assert entries == [X430_ENTRY, {"vehicleState": "isRunning"}]
     (request,) = session.requests
-    assert (request["method"], request["url"]) == ("POST", BASE_URL.rstrip("/") + "/openapi/smarthome/getVehicleStatus")
+    assert (request["method"], request["url"]) == (
+        "POST",
+        BASE_URL.rstrip("/") + "/openapi/smarthome/getVehicleStatus",
+    )
     assert request["json"] == {"devices": [{"id": DEVICE_ID}, {"id": "dev-2"}]}
 
 
@@ -681,12 +828,26 @@ async def test_no_ids_make_no_raw_status_request() -> None:
 @pytest.mark.parametrize(
     "data",
     [
-        {}, {"payload": {}}, None, {"payload": None}, {"payload": {"devices": None}},
-        42, {"payload": 42}, {"payload": {"devices": 42}}, {"payload": {"devices": {}}},
+        {},
+        {"payload": {}},
+        None,
+        {"payload": None},
+        {"payload": {"devices": None}},
+        42,
+        {"payload": 42},
+        {"payload": {"devices": 42}},
+        {"payload": {"devices": {}}},
     ],
     ids=[
-        "no_payload", "no_devices", "null_data", "null_payload", "null_devices",
-        "data_a_number", "payload_a_number", "devices_a_number", "devices_an_object",
+        "no_payload",
+        "no_devices",
+        "null_data",
+        "null_payload",
+        "null_devices",
+        "data_a_number",
+        "payload_a_number",
+        "devices_a_number",
+        "devices_an_object",
     ],
 )
 @pytest.mark.asyncio
@@ -699,12 +860,26 @@ async def test_a_reply_without_entries_is_an_empty_list(data: dict[str, Any] | N
 @pytest.mark.parametrize(
     "data",
     [
-        {}, {"payload": {}}, None, {"payload": None}, {"payload": {"devices": None}},
-        42, {"payload": 42}, {"payload": {"devices": 42}}, {"payload": {"devices": {}}},
+        {},
+        {"payload": {}},
+        None,
+        {"payload": None},
+        {"payload": {"devices": None}},
+        42,
+        {"payload": 42},
+        {"payload": {"devices": 42}},
+        {"payload": {"devices": {}}},
     ],
     ids=[
-        "no_payload", "no_devices", "null_data", "null_payload", "null_devices",
-        "data_a_number", "payload_a_number", "devices_a_number", "devices_an_object",
+        "no_payload",
+        "no_devices",
+        "null_data",
+        "null_payload",
+        "null_devices",
+        "data_a_number",
+        "payload_a_number",
+        "devices_a_number",
+        "devices_an_object",
     ],
 )
 @pytest.mark.asyncio
@@ -739,7 +914,8 @@ async def test_the_typed_devices_are_read_from_the_raw_entries() -> None:
 
 
 @pytest.mark.parametrize(
-    "entry", [{"name": "No id"}, {"id": None, "name": "Null id"}, {"id": "", "name": "Empty id"}],
+    "entry",
+    [{"name": "No id"}, {"id": None, "name": "Null id"}, {"id": "", "name": "Empty id"}],
     ids=["missing", "null", "empty"],
 )
 @pytest.mark.asyncio
@@ -756,7 +932,8 @@ async def test_a_typed_device_without_an_id_is_skipped_and_logged(
 
 
 @pytest.mark.parametrize(
-    "entry", [{"name": "No id"}, {"id": None, "name": "Null id"}, {"id": "", "name": "Empty id"}],
+    "entry",
+    [{"name": "No id"}, {"id": None, "name": "Null id"}, {"id": "", "name": "Empty id"}],
     ids=["missing", "null", "empty"],
 )
 @pytest.mark.asyncio

@@ -55,7 +55,9 @@ def test_files_in_a_new_untracked_directory_are_found(repo: Path) -> None:
     (repo / "drafts").mkdir()
     (repo / "drafts" / "design-sketch.md").write_text("x", encoding="utf-8")
     stage(repo, "README.md", "# Test\n\nSee design-sketch.md.\n")
-    assert [f.split(": ")[-1] for f in check_leaks.check_files(["README.md"])] == ["design-sketch.md"]
+    assert [f.split(": ")[-1] for f in check_leaks.check_files(["README.md"])] == [
+        "design-sketch.md"
+    ]
 
 
 @pytest.mark.parametrize("tool_dir", [".nox", ".tox"])
@@ -95,7 +97,9 @@ def test_local_patterns_apply_by_scope(repo: Path, tmp_path: Path) -> None:
 
 @pytest.mark.usefixtures("repo")
 def test_a_retired_coauthor_line_is_refused_with_a_clear_message(tmp_path: Path) -> None:
-    (tmp_path / "patterns.txt").write_text("coauthor\tExample Author <author@example.com>\n", encoding="utf-8")
+    (tmp_path / "patterns.txt").write_text(
+        "coauthor\tExample Author <author@example.com>\n", encoding="utf-8"
+    )
     with pytest.raises(SystemExit, match="coauthor lines are no longer read"):
         check_leaks.check_message("MSG", "docs: x\n")
 
@@ -163,7 +167,9 @@ def test_content_mode_reads_whole_files(repo: Path, monkeypatch: pytest.MonkeyPa
     assert len(check_leaks.check_files(["src/module.py"])) == 1
 
 
-def test_range_mode_reads_the_diff_between_refs(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_range_mode_reads_the_diff_between_refs(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     base = run("git", "rev-parse", "HEAD", cwd=repo).strip()
     name = _untracked(repo)
     stage(repo, "src/module.py", f"# see {name}\n")
@@ -180,7 +186,7 @@ def test_an_added_line_that_looks_like_a_diff_header_is_checked(repo: Path) -> N
 
 
 @pytest.mark.parametrize(
-    "path", ["docs/my guide.md", "docs/tab\tname.md", "docs/quote\"name.md", "docs/café.md"]
+    "path", ["docs/my guide.md", "docs/tab\tname.md", 'docs/quote"name.md', "docs/café.md"]
 )
 def test_files_with_awkward_names_are_checked_under_their_own_name(repo: Path, path: str) -> None:
     name = _untracked(repo)
@@ -231,7 +237,9 @@ def test_local_files_under_dot_claude_are_checked_but_nested_worktrees_are_not(r
     (repo / ".claude" / "agents").mkdir(parents=True)
     (repo / ".claude" / "agents" / "review-agent.md").write_text("x", encoding="utf-8")
     (repo / ".claude" / "worktrees" / "wt" / "docs").mkdir(parents=True)
-    (repo / ".claude" / "worktrees" / "wt" / "docs" / "nested-only.md").write_text("x", encoding="utf-8")
+    (repo / ".claude" / "worktrees" / "wt" / "docs" / "nested-only.md").write_text(
+        "x", encoding="utf-8"
+    )
     stage(repo, "README.md", "# Test\n\nSee review-agent.md and nested-only.md.\n")
     findings = check_leaks.check_files(["README.md"])
     assert [f.split(": ")[-1] for f in findings] == ["review-agent.md"]
@@ -269,7 +277,8 @@ def test_the_message_is_checked_for_local_paths_and_untracked_names(repo: Path) 
     home = "/" + "Users/alice/notes"
     findings = check_leaks.check_message("MSG", f"docs: x\n\nSee {home} and {name}.\n")
     assert [f.split(": ", 1)[1] for f in findings] == [
-        "local path: /" + "Users/alice", f"names a file git does not track: {name}",
+        "local path: /" + "Users/alice",
+        f"names a file git does not track: {name}",
     ]
 
 
@@ -329,7 +338,9 @@ def hooked(repo: Path, tmp_path: Path) -> Path:
 
 
 def _commit(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(["git", "commit", "-q", *args], cwd=repo, capture_output=True, text=True, check=False)
+    return subprocess.run(
+        ["git", "commit", "-q", *args], cwd=repo, capture_output=True, text=True, check=False
+    )
 
 
 def test_inside_a_commit_hook_another_worktrees_untracked_file_is_reported(hooked: Path) -> None:

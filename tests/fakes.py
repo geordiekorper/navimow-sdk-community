@@ -210,7 +210,12 @@ class FakeClient:
 
     @property
     def callbacks(self) -> tuple[Any, Any, Any, Any]:
-        return (self.on_connect, self.on_disconnect, self.on_message, getattr(self, "on_connect_fail", None))
+        return (
+            self.on_connect,
+            self.on_disconnect,
+            self.on_message,
+            getattr(self, "on_connect_fail", None),
+        )
 
 
 class FakeReasonCode:

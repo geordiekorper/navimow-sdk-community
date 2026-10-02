@@ -71,7 +71,9 @@ async def test_query_names_the_device_and_carries_cmd_num_only_when_given(
     ],
 )
 @pytest.mark.asyncio
-async def test_the_entry_whose_id_matches_is_returned_else_none(devices: list[Any], expected: Any) -> None:
+async def test_the_entry_whose_id_matches_is_returned_else_none(
+    devices: list[Any], expected: Any
+) -> None:
     assert await result_for(devices) == expected
 
 

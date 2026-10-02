@@ -23,11 +23,16 @@ def base_for(repo: Path, tmp_path: Path, base_ref: str, before: str) -> str:
     github_env = tmp_path / "github_env"
     github_env.write_text("", encoding="utf-8")
     env = {**os.environ, "BASE_REF": base_ref, "BEFORE": before, "GITHUB_ENV": str(github_env)}
-    subprocess.run(["bash", "-e", "-c", STEPS["Find the base of the range"]["run"]],
-                   cwd=repo, env=env, check=True, capture_output=True)
+    subprocess.run(
+        ["bash", "-e", "-c", STEPS["Find the base of the range"]["run"]],
+        cwd=repo,
+        env=env,
+        check=True,
+        capture_output=True,
+    )
     (line,) = github_env.read_text(encoding="utf-8").splitlines()
     assert line.startswith("BASE=")
-    return line[len("BASE="):]
+    return line[len("BASE=") :]
 
 
 @pytest.fixture
@@ -40,7 +45,9 @@ def pushed(repo: Path) -> tuple[Path, str]:
     return repo, before
 
 
-def test_a_pull_request_is_checked_from_its_base_branch(pushed: tuple[Path, str], tmp_path: Path) -> None:
+def test_a_pull_request_is_checked_from_its_base_branch(
+    pushed: tuple[Path, str], tmp_path: Path
+) -> None:
     repo, before = pushed
     assert base_for(repo, tmp_path, "main", before) == "origin/main"
 
@@ -96,7 +103,9 @@ FAKE_PRE_COMMIT = (
 )
 
 
-def test_the_message_step_checks_every_non_merge_commit_and_fails_on_one(repo: Path, tmp_path: Path) -> None:
+def test_the_message_step_checks_every_non_merge_commit_and_fails_on_one(
+    repo: Path, tmp_path: Path
+) -> None:
     base = run("git", "rev-parse", "HEAD", cwd=repo).strip()
     body = "Why the change is made, and what it does."
     stage(repo, "a.txt", "a\n")
@@ -114,18 +123,29 @@ def test_the_message_step_checks_every_non_merge_commit_and_fails_on_one(repo: P
     fake.write_text(FAKE_PRE_COMMIT, encoding="utf-8")
     fake.chmod(0o755)
     calls = tmp_path / "calls"
-    env = {**os.environ, "BASE": base, "RUNNER_TEMP": str(tmp_path), "CALLS": str(calls),
-           "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
+    env = {
+        **os.environ,
+        "BASE": base,
+        "RUNNER_TEMP": str(tmp_path),
+        "CALLS": str(calls),
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+    }
     step = STEPS["Local paths and untracked names in the range's commit messages"]
-    proc = subprocess.run(["bash", "-e", "-c", step["run"]], cwd=repo, env=env, capture_output=True, text=True)
+    proc = subprocess.run(
+        ["bash", "-e", "-c", step["run"]], cwd=repo, env=env, capture_output=True, text=True
+    )
     assert proc.returncode == 1
     assert f"in {bad}" in proc.stdout
     recorded = sorted(calls.read_text(encoding="utf-8").splitlines())
-    assert recorded == sorted(["docs: good|check-message-leaks", "docs: BAD message|check-message-leaks"])
+    assert recorded == sorted(
+        ["docs: good|check-message-leaks", "docs: BAD message|check-message-leaks"]
+    )
 
 
 def test_the_hook_environments_are_cached_per_configuration() -> None:
-    (cache,) = [step for step in JOB["steps"] if str(step.get("uses", "")).startswith("actions/cache@")]
+    (cache,) = [
+        step for step in JOB["steps"] if str(step.get("uses", "")).startswith("actions/cache@")
+    ]
     assert cache["uses"] == "actions/cache@v6"
     assert cache["with"] == {
         "path": "~/.cache/pre-commit",

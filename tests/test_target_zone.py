@@ -30,7 +30,9 @@ def test_none_before_any_target_report(status: Any) -> None:
     assert target_zone(targeting(None), status) is None
 
 
-@pytest.mark.parametrize("status", [None, "docked", "mowing", "returning", MowerStatus.IDLE, "not a state"])
+@pytest.mark.parametrize(
+    "status", [None, "docked", "mowing", "returning", MowerStatus.IDLE, "not a state"]
+)
 def test_a_report_naming_zones_gives_its_first_zone_whatever_the_status(status: Any) -> None:
     assert target_zone(targeting((7, 3)), status) == 7
 
@@ -60,7 +62,10 @@ def test_an_empty_report_is_read_by_the_status(status: Any, zone: TargetZone) ->
 
 
 def test_the_empty_report_cases_cover_every_status() -> None:
-    covered = {status.value if isinstance(status, MowerStatus) else status for status, _ in EMPTY_REPORT_CASES}
+    covered = {
+        status.value if isinstance(status, MowerStatus) else status
+        for status, _ in EMPTY_REPORT_CASES
+    }
     assert {status.value for status in MowerStatus} <= covered
 
 

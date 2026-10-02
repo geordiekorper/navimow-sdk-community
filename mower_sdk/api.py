@@ -42,6 +42,7 @@ def _error_body(body: bytes) -> str:
         return text
     return f"{text[:_ERROR_BODY_LIMIT]}… [truncated, {len(text)} characters]"
 
+
 # The spellings under which a reply might carry its command number.
 _COMMAND_NUMBER_KEYS = (
     "cmdNum",
@@ -323,7 +324,11 @@ class MowerAPI:
         """
         payload = data.get("payload") if isinstance(data, dict) else None
         devices = payload.get("devices") if isinstance(payload, dict) else None
-        return [entry for entry in devices if isinstance(entry, dict)] if isinstance(devices, list) else []
+        return (
+            [entry for entry in devices if isinstance(entry, dict)]
+            if isinstance(devices, list)
+            else []
+        )
 
     async def async_get_devices_raw(self) -> list[dict[str, Any]]:
         """Fetch the device list as the cloud sent it.
@@ -446,9 +451,7 @@ class MowerAPI:
         )
         return self._device_entries(self._unwrap(response))
 
-    async def async_get_device_statuses(
-        self, device_ids: list[str]
-    ) -> dict[str, DeviceStatus]:
+    async def async_get_device_statuses(self, device_ids: list[str]) -> dict[str, DeviceStatus]:
         """Fetch the status of several devices asynchronously.
 
         Args:
@@ -566,11 +569,7 @@ class MowerAPI:
         response = await self._async_request(
             "POST",
             "/openapi/smarthome/sendCommands",
-            data={
-                "commands": [
-                    {"devices": [{"id": device_id}], "execution": execution}
-                ]
-            },
+            data={"commands": [{"devices": [{"id": device_id}], "execution": execution}]},
         )
         data = self._unwrap(response)
         command_results = _command_results(data)
@@ -586,9 +585,7 @@ class MowerAPI:
                 )
         return data, command_results
 
-    async def async_send_command(
-        self, device_id: str, command: MowerCommand
-    ) -> dict[str, Any]:
+    async def async_send_command(self, device_id: str, command: MowerCommand) -> dict[str, Any]:
         """Send a control command asynchronously.
 
         Args:
@@ -643,9 +640,7 @@ class MowerAPI:
             results=tuple(results),
         )
 
-    def send_command(
-        self, device_id: str, command: MowerCommand
-    ) -> dict[str, Any]:
+    def send_command(self, device_id: str, command: MowerCommand) -> dict[str, Any]:
         """Send a control command synchronously.
 
         Deprecated: use async_send_command. This wrapper calls asyncio.run and

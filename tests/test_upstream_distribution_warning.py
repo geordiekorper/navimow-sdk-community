@@ -88,10 +88,17 @@ def test_importing_the_package_warns_from_its_init(tmp_path: Path) -> None:
     package_parent = Path(mower_sdk.__file__).resolve().parent.parent
     env = {**os.environ, "PYTHONPATH": os.pathsep.join([str(tmp_path), str(package_parent)])}
     proc = subprocess.run(
-        [sys.executable, "-c", script], capture_output=True, text=True, env=env, check=False, cwd=tmp_path
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+        cwd=tmp_path,
     )
     assert proc.returncode == 0, proc.stderr
     ((category, message, filename),) = json.loads(proc.stdout.splitlines()[-1])
     assert category == "UserWarning"
-    assert message.startswith("navimow-sdk 0.1.2 is installed beside navimow-sdk-community 0.2.0a9. ")
+    assert message.startswith(
+        "navimow-sdk 0.1.2 is installed beside navimow-sdk-community 0.2.0a9. "
+    )
     assert Path(filename).resolve() == Path(mower_sdk.__file__).resolve()
