@@ -193,6 +193,48 @@ def test_the_formatter_check_fails_on_an_unformatted_file_outside_legacy_and_doc
     assert "guide.md" not in refused.stdout
 
 
+def test_the_types_session_installs_the_package_and_runs_mypy() -> None:
+    noxfile = _noxfile()
+    session = RecordingSession()
+    noxfile.types(session)
+    assert session.installed == [(".", noxfile.MYPY)]
+    assert session.commands == [("mypy",)]
+
+
+def test_the_type_check_fails_on_a_type_error_outside_legacy(tmp_path: Path) -> None:
+    """The command the types session runs, on a small tree with this repository's configuration."""
+    pytest.importorskip("mypy")
+    (tmp_path / "pyproject.toml").write_text(
+        (ROOT / "pyproject.toml").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    wrong = 'COUNT: int = "three"\n'
+    package = tmp_path / "mower_sdk"
+    (package / "legacy").mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "legacy" / "__init__.py").write_text("", encoding="utf-8")
+    (package / "legacy" / "old.py").write_text(wrong, encoding="utf-8")
+    (package / "new.py").write_text("COUNT: int = 3\n", encoding="utf-8")
+
+    def check() -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, "-m", "mypy", "--cache-dir", str(tmp_path / "cache")],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    passed = check()
+    assert passed.returncode == 0, passed.stdout  # the error in legacy code is not reported
+    (package / "new.py").write_text(wrong, encoding="utf-8")
+    refused = check()
+    assert refused.returncode == 1
+    assert "new.py" in refused.stdout and "old.py" not in refused.stdout
+    # Strict mode: a function without annotations is a finding too.
+    (package / "new.py").write_text("def double(value):\n    return value * 2\n", encoding="utf-8")
+    assert check().returncode == 1
+
+
 def test_the_nox_jobs_cache_pip_downloads_per_noxfile() -> None:
     jobs = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"]
     nox_jobs = [

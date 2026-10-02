@@ -12,6 +12,8 @@
                                         another directory; check its metadata
   nox -s lint                           ruff: the rules, then the formatting (both
                                         configured in pyproject.toml)
+  nox -s types                          mypy in strict mode over the package
+                                        (configured in pyproject.toml)
   nox -s tools-3.11 ... tools-3.14      the commit checks' own tests (tools/tests)
 
 Run everything with `nox`; the environments are made with uv when it is
@@ -40,6 +42,7 @@ BOUNDS = {
 # What the suite needs beside the package: async tests are pytest-asyncio tests.
 TEST_DEPS = ["pytest", "pytest-asyncio"]
 RUFF = "ruff==0.16.9"  # the version the ruff hook in .pre-commit-config.yaml uses
+MYPY = "mypy==2.4.0"
 GITLINT = "gitlint==0.19.1"  # the version the gitlint hook uses
 
 
@@ -118,9 +121,17 @@ def lint(session: nox.Session) -> None:
     session.run("ruff", "format", "--check", ".")
 
 
+@nox.session(python="3.14")
+def types(session: nox.Session) -> None:
+    # The package is installed for its dependencies, which carry their own
+    # annotations; mypy reads the package itself from the source tree.
+    session.install(".", MYPY)
+    session.run("mypy")
+
+
 @nox.session(python=PYTHONS)
 def tools(session: nox.Session) -> None:
     # The plugin is installed here too: pyproject.toml sets its options, and
     # pytest warns about options no installed plugin knows.
-    session.install(*TEST_DEPS, "pyyaml", "nox", GITLINT, RUFF)
+    session.install(*TEST_DEPS, "pyyaml", "nox", GITLINT, RUFF, MYPY)
     session.run("python", "-m", "pytest", "tools/tests", "-q", *session.posargs)

@@ -517,7 +517,8 @@ class MowerAPI:
                 envelope code than 1.
         """
         response = await self._async_request("GET", "/openapi/mqtt/userInfo/get/v2")
-        return self._unwrap(response)
+        info: dict[str, Any] = self._unwrap(response)
+        return info
 
     async def async_get_mqtt_connection_info(self) -> MqttConnectionInfo:
         """Fetch the MQTT connection information, read into an MqttConnectionInfo.
@@ -979,7 +980,8 @@ class MowerAPI:
             data={"devices": devices},
         )
         payload = self._unwrap(response).get("payload", {})
-        return payload.get("devices", [])
+        results: list[dict[str, Any]] = payload.get("devices", [])
+        return results
 
     def query_command_results(self, devices: list[dict[str, str]]) -> list[dict[str, Any]]:
         """Query command execution results synchronously (deprecated).

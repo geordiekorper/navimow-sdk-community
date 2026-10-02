@@ -14,10 +14,19 @@ keep the headings they were released with.
 - Package metadata. The classifiers list Python 3.13 and 3.14, which the
   checks have covered all along. A maintainer is named beside upstream's
   authors. The `dev` extra installs what the checks use (pytest with
-  pytest-asyncio, nox, pre-commit and ruff) and no longer black and mypy,
-  which nothing ran; the unused `[tool.black]` and `[tool.mypy]` sections are
-  gone. Running the test suite now needs pytest-asyncio 1.0 or later and
-  pytest 8.4 or later.
+  pytest-asyncio, nox, pre-commit, ruff and mypy) and no longer black, which
+  nothing ran; the unused `[tool.black]` section is gone. Running the test
+  suite now needs pytest-asyncio 1.0 or later and pytest 8.4 or later.
+
+### Added
+
+- **Type information.** The package ships a `py.typed` marker, so a type
+  checker reads the SDK's annotations in a consumer's code. The live path
+  passes mypy in strict mode; `mower_sdk.legacy` is not checked. Two
+  annotations became more exact on the way: the hooks of `NavimowMQTT`
+  (`on_connected`, `on_message` and the others) are annotated as returning a
+  coroutine, which is what the client has always required of them, and the
+  paho callbacks carry paho's types.
 
 ## [0.2.0a4] - 2026-10-01
 

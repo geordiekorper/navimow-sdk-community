@@ -27,6 +27,7 @@ classifiers = [
     "Programming Language :: Python :: 3.14",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: Home Automation",
+    "Typing :: Typed",
 ]
 
 dependencies = [
@@ -41,6 +42,7 @@ dev = [
     "nox>=2025.5.1",
     "pre-commit",
     "ruff",
+    "mypy",
 ]
 
 [project.urls]
@@ -66,6 +68,19 @@ testpaths = ["tests"]
 # into errors.
 asyncio_mode = "strict"
 asyncio_default_fixture_loop_scope = "function"
+
+[tool.mypy]
+# The package is type-checked in strict mode, read as the oldest supported
+# Python reads it. nox -s types runs it, and so does CI.
+python_version = "3.11"
+strict = true
+files = ["mower_sdk"]
+
+[[tool.mypy.overrides]]
+# Legacy code moved verbatim from upstream is not edited, so what the checker
+# finds in it cannot be corrected here.
+module = "mower_sdk.legacy.*"
+ignore_errors = true
 
 [tool.ruff]
 line-length = 100

@@ -772,17 +772,17 @@ class NavimowSDK:
             self._on_state_payload(topic, payload, payload_dict, received_at)
             return
         if channel == "event":
-            msg = DeviceEventMessage.from_dict(payload_dict)
-            msg.received_at = received_at
-            msg.original = _original_payload(payload)
-            self._dispatch(self._event_callbacks, msg, channel)
+            event = DeviceEventMessage.from_dict(payload_dict)
+            event.received_at = received_at
+            event.original = _original_payload(payload)
+            self._dispatch(self._event_callbacks, event, channel)
             return
-        msg = DeviceAttributesMessage.from_dict(payload_dict)
-        msg.received_at = received_at
-        msg.original = _original_payload(payload)
-        self._attributes_cache[msg.device_id] = msg
-        self._attributes_cache_updated_at[msg.device_id] = time.monotonic()
-        self._dispatch(self._attributes_callbacks, msg, channel)
+        attributes = DeviceAttributesMessage.from_dict(payload_dict)
+        attributes.received_at = received_at
+        attributes.original = _original_payload(payload)
+        self._attributes_cache[attributes.device_id] = attributes
+        self._attributes_cache_updated_at[attributes.device_id] = time.monotonic()
+        self._dispatch(self._attributes_callbacks, attributes, channel)
 
     def _on_state_payload(
         self, topic: str, payload: bytes, payload_dict: dict[str, Any], received_at: datetime
