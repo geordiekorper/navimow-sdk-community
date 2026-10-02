@@ -139,8 +139,9 @@ pass, not only the last.
 - **Both dependency bounds.** A commit leaves the suite passing on
   `bounds(oldest)` and `bounds(newest)`.
 - **The record.** A change a consumer can see gets an entry under
-  `[Unreleased]` in `CHANGELOG.md`. Work taken from another fork gets its row
-  in `UPSTREAM.md`. Both go in the commit that makes the change.
+  `[Unreleased]` in `CHANGELOG.md`, under one of the headings the file's
+  opening names. Work taken from another fork gets its row in `UPSTREAM.md`.
+  Both go in the commit that makes the change.
 - **One concern per commit.** A behaviour change and the test that pins it go
   together; an unrelated tidy-up is its own commit.
 - **Decisions are written where they are taken.** Where the code takes one

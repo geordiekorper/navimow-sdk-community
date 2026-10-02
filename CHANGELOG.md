@@ -3,7 +3,9 @@
 Notable changes to navimow-sdk-community. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [PEP 440](https://peps.python.org/pep-0440/). The import name is `mower_sdk`
-throughout.
+throughout. From 0.2.0a5 on a version's entries go under five headings only,
+in this order: Changed, Added, Deprecated, Removed, Fixed. Earlier versions
+keep the headings they were released with.
 
 ## [Unreleased]
 
