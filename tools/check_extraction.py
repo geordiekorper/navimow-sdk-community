@@ -42,6 +42,25 @@ EXTRACTIONS: dict[str, tuple[str, list[str]]] = {
 
 
 def source_at(rev: str | None, path: str) -> str:
+    """The text of one of the repository's files, in the working tree or at a commit.
+
+    The repository is the one this script is in (REPO_ROOT), whatever the
+    current directory.
+
+    Args:
+        rev: The commit to read the file from, in any form git accepts; None
+            reads the working tree.
+        path: The file's path relative to the repository's top directory.
+
+    Returns:
+        The file's text: read as UTF-8 from the working tree, or what
+        `git show <rev>:<path>` prints.
+
+    Raises:
+        subprocess.CalledProcessError: rev is given and git cannot show the
+            file: there is no such commit, or no such path in it.
+        FileNotFoundError: rev is None and the working tree has no such file.
+    """
     if rev is None:
         return (REPO_ROOT / path).read_text(encoding="utf-8")
     return subprocess.run(
@@ -53,6 +72,26 @@ def source_at(rev: str | None, path: str) -> str:
 
 
 def top_level_node(tree: ast.Module, name: str, where: str) -> ast.AST:
+    """Find the top-level definition of a name in a parsed module.
+
+    A definition is a class, a function or an async function of that name,
+    or an assignment statement whose targets, counting only the ones that are
+    plain names, are that name alone. An annotated assignment is not found,
+    and neither is an assignment that unpacks into the name or that assigns
+    to another name as well.
+
+    Args:
+        tree: The parsed module.
+        name: The name to find.
+        where: What to call the module in the error message.
+
+    Returns:
+        The first such statement in the module's body.
+
+    Raises:
+        SystemExit: The module has no top-level definition of the name. The
+            message names the module, as where gives it, and the name.
+    """
     for node in tree.body:
         if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
             if node.name == name:
@@ -65,6 +104,33 @@ def top_level_node(tree: ast.Module, name: str, where: str) -> ast.AST:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Compare every extracted definition with its original and print the outcome.
+
+    For each file in EXTRACTIONS the extracted file is read from the commit
+    --target names, or from the working tree without it, and the core module
+    it came from is read from the commit --base names, HEAD by default. The
+    two nodes of each name are compared as ast.dump prints them. Each name
+    gets one line on standard output, "ok" or "DIFF"; a DIFF is followed by a
+    unified diff of the two dumps, the original first.
+
+    Args:
+        argv: The command line's arguments, without the program's name; None
+            reads them from sys.argv.
+
+    Returns:
+        The exit status: 0 when every extracted node is identical to its
+        original (a closing line on standard output says so), 1 when at
+        least one differs (their number is printed on standard error).
+
+    Raises:
+        SystemExit: argparse ends the run (status 2 for arguments it does not
+            accept, 0 after --help); or one of the two files has no top-level
+            definition of a name (see top_level_node).
+        subprocess.CalledProcessError: git cannot show a file at the base or
+            the target commit (see source_at).
+        FileNotFoundError: No --target is given and the working tree lacks an
+            extracted file.
+    """
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument(
         "--base", default="HEAD", help="commit holding the pre-extraction core modules"
