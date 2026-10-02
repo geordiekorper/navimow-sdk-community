@@ -176,15 +176,18 @@ was measured on a clone of this repository with git 2.55.0.)
    status 3). Start the range on the first-parent line of its end, as the
    fork point is.
 2. Otherwise it builds an mbox with one entry per commit: git's own mail
-   header and message (`git log --pretty=mboxrd`), a `---` separator, and the
+   header and message (`git log --pretty=mboxrd`), one trailer naming the
+   upstream commit (`Upstream-commit: <sha>`), a `---` separator, and the
    commit's diff (`git diff-tree -p`) with the `a/` and `b/` paths of the moved
    files rewritten through `tools/upstream_path_map.json`. The message and the
    diff come from separate git commands and are handled as bytes, split on LF
    only, so only diff header lines are ever rewritten; hunk bodies and
-   messages are copied byte for byte, CRLF content included. The mbox is
-   applied with `git am -3 --keep-cr --patch-format=mboxrd`, so each commit
-   lands in `legacy/` with its author, date, message and bytes, and the shims
-   are untouched.
+   messages are copied byte for byte, CRLF content included. A message gains
+   the trailer at its end, in place of any blank lines it ended with, which
+   `git am` would drop in any case. The mbox is applied with
+   `git am -3 --keep-cr --patch-format=mboxrd`, so each commit lands in
+   `legacy/` with its author, date, message and bytes, and the shims are
+   untouched.
 3. A conflict stops `git am`. Translated docstrings are the usual cause; that
    conflict would occur without any move, and the tool does not remove it.
    Resolve it, `git add` the file and run `git am --continue`;
@@ -199,9 +202,18 @@ git fetch upstream
 python tools/port_upstream.py 6596aa0..upstream/main
 ```
 
-The ported commits keep upstream's authorship, so git history records the
+The ported commits keep upstream's authorship, and each names the commit it
+came from in its `Upstream-commit` trailer, so git history records the
 provenance; note the last ported upstream commit here when a port is made.
 The map must be extended in the same commit as any later move.
+
+A ported commit keeps upstream's message, which follows none of this
+project's [commit-message rules](development.md#commit-messages), so the
+rules do not apply to a commit that carries the trailer. That holds only for
+a commit that changes the code moved from upstream and nothing else: files
+under `mower_sdk/legacy/` other than its README, and the three mixed files,
+for a hunk applied by hand from a commit the tool refused. On a commit that
+changes any other path the trailer exempts nothing and is refused itself.
 
 ## Rules that keep a merge-back possible
 

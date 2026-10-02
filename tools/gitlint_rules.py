@@ -6,11 +6,12 @@ gitlint's built-in and contrib rules cover the subject and body format
 
 from __future__ import annotations
 
+import json
 import re
 import sys
 from pathlib import Path
 
-from gitlint.rules import CommitRule, RuleViolation
+from gitlint.rules import CommitRule, ConfigurationRule, RuleViolation
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -20,6 +21,7 @@ _TYPE = re.compile(r"^(\w+)(?:\([^)]*\))?!?: ")
 _KIND = re.compile(r"^(?:Upstream-suitable\.|Community-only\.|Fork-only[.:])(?:\s|$)")
 _CO_AUTHOR = re.compile(r"^Co-authored-by: ", re.IGNORECASE)
 _ASSISTANT = re.compile(r"^Co-Authored-By: Claude\b", re.IGNORECASE)
+_PORTED = re.compile(r"^Upstream-commit: [0-9a-f]{40}$")
 _LABEL_SUFFIX = re.compile(r"\s\((?:[A-Z]{1,2}\d{1,2}(?:[-.]\d+)?|P\d+-C\d+|[A-Z]\d+(?:, ?[A-Z]\d+)+)\)$")
 
 
@@ -49,6 +51,69 @@ def _diff(commit, path: str) -> str:
     """The change to ``path``: the staged one, or the commit's own when linting a range."""
     args = ["show", "--format=", commit.sha] if commit.sha else ["diff", "--cached"]
     return gatelib.git(*args, "--", path, cwd=commit.context.repository_path, check=False)
+
+
+def _is_ported(commit) -> bool:
+    """The commit carries the trailer tools/port_upstream.py gives each commit it ports."""
+    return any(_PORTED.match(line) for line in _trailers(commit))
+
+
+def _outside_a_port(commit) -> list[str]:
+    """The paths the commit changes that a port of upstream's code cannot change.
+
+    A port changes the code moved from upstream, which is the protected part
+    of mower_sdk/legacy/, and at most the files whose content was split
+    between the live path and legacy (the "mixed" files of
+    tools/upstream_path_map.json), where upstream's hunks are applied by hand.
+    """
+    path_map = json.loads((Path(__file__).resolve().parent / "upstream_path_map.json").read_text(encoding="utf-8"))
+    mixed = set(path_map["mixed"])
+    return [
+        path for path in _changed_paths(commit)
+        if not (path.startswith(gatelib.LEGACY_DIR) and gatelib.is_protected(path)) and path not in mixed
+    ]
+
+
+class PortedCommit(ConfigurationRule):
+    """A commit ported from upstream keeps upstream's message, so no rule applies to it.
+
+    tools/port_upstream.py marks each commit it ports with an
+    "Upstream-commit: <sha>" trailer and otherwise leaves upstream's message
+    as it is: its subject is not a conventional commit, and it has no
+    Legacy-edit trailer. The trailer exempts a commit only when the commit
+    changes something and nothing outside what a port can change (see
+    _outside_a_port), so it cannot be added to another commit to skip the
+    rules; PortedCommitScope reports that use.
+    """
+
+    name = "ported-commit"
+    id = "UC8"
+
+    def apply(self, config, commit):
+        if _is_ported(commit) and _changed_paths(commit) and not _outside_a_port(commit):
+            config.ignore = "all"
+
+
+class PortedCommitScope(CommitRule):
+    """The Upstream-commit trailer is only for a commit that changes upstream's code."""
+
+    name = "ported-commit-scope"
+    id = "UC9"
+
+    def validate(self, commit):
+        if not _is_ported(commit):
+            return []
+        outside = _outside_a_port(commit)
+        if outside:
+            return [RuleViolation(
+                self.id,
+                "an Upstream-commit trailer is for a commit that changes only code moved from upstream "
+                f"(mower_sdk/legacy/ and the mixed files), and this one changes {outside[0]}",
+                None, 1,
+            )]
+        if not _changed_paths(commit):
+            return [RuleViolation(self.id, "an Upstream-commit trailer on a commit that changes nothing", None, 1)]
+        return []
 
 
 class NoTrackerTrailer(CommitRule):

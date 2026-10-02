@@ -132,6 +132,9 @@ pass, not only the last.
   `CHANGELOG.md`: see [releasing.md](releasing.md).
 - A change to a protected path needs a `Legacy-edit: <reason>` trailer: see
   the legacy [README](../mower_sdk/legacy/README.md#changing-something-here).
+- None of these rules applies to a commit ported from upstream, which keeps
+  upstream's message and carries an `Upstream-commit: <sha>` trailer: see
+  [UPSTREAM.md](UPSTREAM.md#porting-upstream-commits).
 
 ## What a change has to keep
 

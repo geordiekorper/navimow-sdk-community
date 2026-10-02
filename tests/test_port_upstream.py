@@ -401,6 +401,33 @@ def git_raw(repo: Path, *args: str) -> bytes:
     return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, check=True).stdout
 
 
+def sha_of(repo: Path, rev: str) -> bytes:
+    return git_out(repo, "rev-parse", rev).strip().encode()
+
+
+def test_the_trailer_is_a_paragraph_of_its_own_after_a_body() -> None:
+    mail = b"From 1 Mon Sep 17 00:00:00 2001\nFrom: U <u@example.invalid>\nSubject: [PATCH] s\n\nWhy.\nAnd: how.\n"
+    assert port_upstream.with_trailer(mail, "abc") == mail + b"\nUpstream-commit: abc\n"
+
+
+def test_the_trailer_joins_a_trailer_block() -> None:
+    mail = (
+        b"From 1 Mon Sep 17 00:00:00 2001\nFrom: U <u@example.invalid>\nSubject: [PATCH] s\n\nWhy.\n\n"
+        b"Signed-off-by: U <u@example.invalid>\nReviewed-by: V <v@example.invalid>\n"
+    )
+    assert port_upstream.with_trailer(mail, "abc") == mail + b"Upstream-commit: abc\n"
+
+
+def test_the_trailer_follows_a_subject_with_no_body() -> None:
+    mail = b"From 1 Mon Sep 17 00:00:00 2001\nFrom: U <u@example.invalid>\nSubject: [PATCH] s\n\n"
+    assert port_upstream.with_trailer(mail, "abc") == mail + b"Upstream-commit: abc\n"
+
+
+def test_blank_lines_at_the_end_of_a_message_do_not_separate_the_trailer_twice() -> None:
+    mail = b"From 1 Mon Sep 17 00:00:00 2001\nFrom: U <u@example.invalid>\nSubject: [PATCH] s\n\nWhy.\n\n\n"
+    assert port_upstream.with_trailer(mail, "abc") == mail.rstrip(b"\n") + b"\n\nUpstream-commit: abc\n"
+
+
 def test_commits_in_follows_the_first_parent_line(repo: Path) -> None:
     commits = port_upstream.commits_in("base..clean-merge")
     assert [git_out(repo, "log", "-1", "--format=%s", sha).strip() for sha, _ in commits] == [
@@ -461,14 +488,15 @@ def test_a_merge_that_kept_its_first_parent_is_skipped(capsys: pytest.CaptureFix
     assert "nothing to port" in captured.err
 
 
-def test_dry_run_is_the_message_then_the_rewritten_diff(
+def test_dry_run_is_the_message_its_trailer_and_the_rewritten_diff(
     repo: Path, capsysbinary: pytest.CaptureFixture[bytes]
 ) -> None:
     assert port_upstream.main(["--dry-run", "base..side-edit"]) == 0
     out = capsysbinary.readouterr().out
     mail = git_raw(repo, "log", "-1", "--pretty=mboxrd", "side-edit")
+    trailer = b"Upstream-commit: " + sha_of(repo, "side-edit") + b"\n"
     diff = git_raw(repo, "diff-tree", "--no-commit-id", "-p", "-M", "--binary", "--root", "side-edit")
-    assert out.endswith(mail + b"---\n\n" + diff.replace(b"mower_sdk/client.py", b"mower_sdk/legacy/client.py"))
+    assert out.endswith(mail + trailer + b"---\n\n" + diff.replace(b"mower_sdk/client.py", b"mower_sdk/legacy/client.py"))
     assert out.count(b"\nFrom ") + out.startswith(b"From ") == 1  # one mbox entry
 
 
@@ -478,14 +506,18 @@ def test_a_merge_is_ported_as_one_step_with_its_net_change(
     assert port_upstream.main(["--dry-run", "core-edit..clean-merge"]) == 0
     out = capsysbinary.readouterr().out
     mail = git_raw(repo, "log", "-1", "--pretty=mboxrd", "clean-merge")
+    trailer = b"Upstream-commit: " + sha_of(repo, "clean-merge") + b"\n"
     diff = git_raw(repo, "diff-tree", "--no-commit-id", "-p", "-M", "--binary", "core-edit", "clean-merge")
-    assert out.endswith(mail + b"---\n\n" + diff.replace(b"mower_sdk/client.py", b"mower_sdk/legacy/client.py"))
+    assert out.endswith(mail + trailer + b"---\n\n" + diff.replace(b"mower_sdk/client.py", b"mower_sdk/legacy/client.py"))
     assert out.count(b"\nFrom ") + out.startswith(b"From ") == 1
     assert b"squashing 1 commit(s):" in out and b"side edit" in out
 
     git_out(repo, "checkout", "-q", "fork")
     assert port_upstream.main(["core-edit..clean-merge"]) == 0
     assert git_out(repo, "log", "-1", "--format=%an: %s") == "Upstream: clean merge\n"
+    assert git_out(repo, "log", "-1", "--format=%B") == (
+        "clean merge\n\nUpstream-commit: " + sha_of(repo, "clean-merge").decode() + "\n\n"
+    )
     assert git_out(repo, "diff", "--name-only", "fork-move", "HEAD") == "mower_sdk/legacy/client.py\n"
     assert (repo / "mower_sdk/legacy/client.py").read_text() == "class MowerClient:\n    token_updates = 0\n"
 
@@ -526,7 +558,7 @@ def test_a_message_that_looks_like_a_patch_is_copied_byte_for_byte(
     assert port_upstream.main(["--dry-run", "base..quoted-edit"]) == 0
     out = capsysbinary.readouterr().out
     mail = git_raw(repo, "log", "-1", "--pretty=mboxrd", "quoted-edit")
-    assert mail in out
+    assert mail + b"\nUpstream-commit: " + sha_of(repo, "quoted-edit") + b"\n---\n\n" in out
     body = PATHOLOGICAL_MESSAGE.split("\n", 2)[2].replace("From here", ">From here").encode()
     assert body in mail  # git's mboxrd quoting is the only change to the message
     assert out.count(b"diff --git a/mower_sdk/legacy/client.py b/mower_sdk/legacy/client.py") == 1

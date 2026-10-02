@@ -326,3 +326,111 @@ def test_a_revert_commit_is_linted(repo: Path) -> None:
     assert "CT1" in lint(repo, 'Revert "feat(sdk): x"\n\nThis reverts commit 0123456789abcdef.\n')
     assert lint(repo, "revert: feat(sdk): x\n\nThis reverts commit 0123456789abcdef.\n") == []
     assert lint(repo, "revert: feat(sdk): x\n") == []  # no body needed
+
+
+# ---- commits ported from upstream -----------------------------------------------------------------
+
+UPSTREAM_SHA = "0123456789abcdef0123456789abcdef01234567"
+PORTED = f"update the client.\n\nUpstream-commit: {UPSTREAM_SHA}\n"  # upstream's message: no rule would pass it
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["mower_sdk/legacy/client.py", "mower_sdk/mqtt.py", "mower_sdk/models.py", "mower_sdk/errors.py"],
+    ids=["legacy", "mixed-mqtt", "mixed-models", "mixed-errors"],
+)
+def test_a_ported_commit_is_exempt_from_every_rule(repo: Path, path: str) -> None:
+    stage(repo, path, "OLD = 2\n")
+    assert {"CT1", "T3"} <= set(lint(repo, "update the client.\n"))  # the same message without the trailer
+    assert lint(repo, PORTED) == []
+
+
+def test_a_ported_commit_keeps_its_exemption_when_its_subject_matches_another_ignore_rule(repo: Path) -> None:
+    # chore(release) subjects are exempt from the body rules only; the port's exemption is not narrowed to that.
+    stage(repo, "mower_sdk/legacy/client.py", "OLD = 2\n")
+    assert lint(repo, f"chore(release): upstream's 1.0.\n\nUpstream-commit: {UPSTREAM_SHA}\n") == []
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["mower_sdk/sdk.py", "mower_sdk/legacy/README.md", "tests/upstream_exports.json", "README.md"],
+    ids=["live-path", "legacy-readme", "inventory", "document"],
+)
+def test_the_trailer_exempts_nothing_on_a_commit_that_changes_another_path(repo: Path, path: str) -> None:
+    stage(repo, "mower_sdk/legacy/client.py", "OLD = 2\n")
+    stage(repo, path, "X = 1\n")
+    found = lint(repo, PORTED)
+    assert {"UC9", "CT1", "T3"} <= set(found)
+
+
+def test_the_trailer_exempts_nothing_on_a_commit_that_changes_nothing(repo: Path) -> None:
+    assert {"UC9", "CT1"} <= set(lint(repo, PORTED))
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "update the client.\n\nUpstream-commit: 0123456\n",
+        f"update the client.\n\nUpstream-commit: {UPSTREAM_SHA}\n\nMore text after it.\n",
+        f"update the client.\n\nupstream-commit: {UPSTREAM_SHA}\n",
+    ],
+    ids=["short-sha", "not-in-the-trailer-block", "another-spelling"],
+)
+def test_only_the_trailer_as_the_tool_writes_it_exempts(repo: Path, message: str) -> None:
+    stage(repo, "mower_sdk/legacy/client.py", "OLD = 2\n")
+    assert "CT1" in lint(repo, message)
+
+
+def test_the_exemption_does_not_reach_the_other_commits_of_a_range(repo: Path) -> None:
+    """A ported commit between two that break the rules: only those two are reported."""
+    base = run("git", "rev-parse", "HEAD", cwd=repo).strip()
+    broken = []
+    for content, message in (("OLD = 1\n", "update the client."), ("OLD = 2\n", PORTED), ("OLD = 3\n", "update it again.")):
+        stage(repo, "mower_sdk/legacy/client.py", content)
+        run("git", "commit", "-q", "-m", message, cwd=repo)
+        if message != PORTED:
+            broken.append(run("git", "rev-parse", "--short=10", "HEAD", cwd=repo).strip())
+    found = per_commit(run_gitlint(repo, "--commits", f"{base}..HEAD"))
+    assert sorted(found) == sorted(broken)  # the one before the ported commit and the one after it
+    assert all({"CT1", "UC7"} <= set(rules) for rules in found.values())
+
+
+def test_a_series_ported_by_the_tool_passes_in_range_mode(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Upstream's commits, ported with tools/port_upstream.py, pass as CI lints them."""
+    import port_upstream
+
+    stage(repo, "mower_sdk/client.py", "class MowerClient:\n    pass\n")
+    run("git", "commit", "-q", "-m", "chore: upstream's layout", cwd=repo)
+    run("git", "tag", "base", cwd=repo)
+
+    upstream = ["-c", "user.name=Upstream", "-c", "user.email=upstream@example.invalid"]
+    run("git", "checkout", "-q", "-b", "upstream", cwd=repo)
+    stage(repo, "mower_sdk/client.py", "class MowerClient:\n    token = None\n")
+    run("git", *upstream, "commit", "-q", "-m", "update the client.", cwd=repo)
+    stage(repo, "mower_sdk/client.py", "class MowerClient:\n    token = None\n    updates = 0\n")
+    signed = "Count Token Updates\n\nx\n\nSigned-off-by: Upstream <upstream@example.invalid>"
+    run("git", *upstream, "commit", "-q", "-m", signed, cwd=repo)
+
+    run("git", "checkout", "-q", "-b", "fork", "base", cwd=repo)
+    (repo / "mower_sdk" / "legacy").mkdir()
+    run("git", "mv", "mower_sdk/client.py", "mower_sdk/legacy/client.py", cwd=repo)
+    stage(repo, "mower_sdk/client.py", "from mower_sdk.legacy.client import *\n")
+    run("git", "commit", "-q", "-m", "refactor: move client.py to legacy/", cwd=repo)
+    moved = run("git", "rev-parse", "HEAD", cwd=repo).strip()
+    monkeypatch.setattr(port_upstream, "REPO_ROOT", repo)
+
+    # Without the trailer the ported commits break the rules: upstream's subjects, no Legacy-edit trailer.
+    with monkeypatch.context() as unmarked:
+        unmarked.setattr(port_upstream, "with_trailer", lambda mail, _commit: mail)
+        assert port_upstream.main(["base..upstream"]) == 0
+    found = per_commit(run_gitlint(repo, "--commits", f"{moved}..HEAD"))
+    assert len(found) == 2 and all({"CT1", "UC7"} <= set(rules) for rules in found.values())
+    run("git", "reset", "-q", "--hard", moved, cwd=repo)
+
+    assert port_upstream.main(["base..upstream"]) == 0
+    assert run("git", "diff", "--name-only", moved, "HEAD", cwd=repo) == "mower_sdk/legacy/client.py\n"
+    subjects = run("git", "log", "--format=%an: %s", f"{moved}..HEAD", cwd=repo).splitlines()
+    assert subjects == ["Upstream: Count Token Updates", "Upstream: update the client."]
+    trailers = run("git", "log", "--format=%(trailers:key=Upstream-commit,valueonly)", f"{moved}..HEAD", cwd=repo).split()
+    assert trailers == run("git", "rev-list", "base..upstream", cwd=repo).split()
+    assert gitlint(repo, "--commits", f"{moved}..HEAD") == []
