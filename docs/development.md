@@ -53,6 +53,7 @@ Every check CI runs is a nox session, so the same command runs it locally.
 | `"bounds(newest)"` | The same on Python 3.14 with the newest releases | `bounds` |
 | `wheel` | Builds the wheel, checks what it ships, installs it into a fresh environment, runs the tests from another directory and checks the metadata | `wheel` |
 | `lint` | ruff: the rules, then `ruff format --check`; both are configured in `pyproject.toml` | `ruff` |
+| `types` | mypy in strict mode over the package, configured in `pyproject.toml`; legacy code is not checked | `types` |
 
 ```bash
 nox -s tests-3.14
@@ -146,6 +147,15 @@ upgrade may change what they report. `tests/test_docstrings.py` adds the two
 checks ruff has no rule for: that a private function has a docstring, and
 that a function with arguments has an `Args` section at all. The tests and the
 tools keep only the rules for a docstring's form.
+
+### Types
+
+The package is annotated throughout, and `nox -s types` checks it with mypy in
+strict mode, read as the oldest supported Python reads it. Code under
+`mower_sdk/legacy/` is left out: it is not edited, so what the checker finds
+there cannot be corrected. The tests and the tools are not type-checked. The
+check is not a commit hook; run the session before pushing a change to the
+package's signatures.
 
 ## The commit hooks
 
