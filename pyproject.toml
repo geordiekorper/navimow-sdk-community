@@ -82,12 +82,31 @@ exclude = ["mower_sdk/legacy/**", "*.md"]
 # E501 is the line length: the formatter keeps code within it, and a string,
 # comment or docstring line it cannot shorten is wrapped by hand.
 # I is the import order. RUF100 reports a noqa comment that suppresses
-# nothing, so the suppressions stay true. D205, D209 and D403 are the form of
-# a docstring: a blank line after the summary, the closing quotes on a line of
-# their own, a capital first word.
-select = ["F", "ARG", "B", "UP", "SIM", "E501", "I", "RUF100", "D205", "D209", "D403"]
+# nothing, so the suppressions stay true.
+# D is the docstrings, in the Google form (Args, Returns, Raises sections):
+# every module, class and function of the package has one, and an Args section
+# names every argument. The DOC rules hold a docstring to the code: a value
+# returned or yielded and an exception raised are documented, and nothing is
+# documented that the function does not take, return or yield. ruff still
+# marks the DOC rules as preview, so preview mode is on for the rules named
+# here and for no others. tests/test_docstrings.py adds what ruff has no rule
+# for: a function with parameters has an Args section at all.
+preview = true
+explicit-preview-rules = true
+select = [
+    "F", "ARG", "B", "UP", "SIM", "E501", "I", "RUF100",
+    "D", "DOC102", "DOC201", "DOC202", "DOC402", "DOC403", "DOC501",
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
 
 [tool.ruff.lint.per-file-ignores]
 # Legacy code moved verbatim from upstream keeps only the F rules, so it is
 # never reformatted or modernised here; that keeps merge-back diffs small.
-"mower_sdk/legacy/**" = ["ARG", "B", "SIM", "UP", "E501", "I", "RUF100", "D"]
+"mower_sdk/legacy/**" = ["ARG", "B", "SIM", "UP", "E501", "I", "RUF100", "D", "DOC"]
+# The tests and the tools keep the rules for the form of a docstring, not the
+# ones that require one everywhere or hold it to the code.
+"tests/**" = ["D1", "DOC"]
+"tools/**" = ["D1", "DOC"]
+"noxfile.py" = ["D1", "DOC"]

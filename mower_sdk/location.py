@@ -121,11 +121,15 @@ _RECORD_FIELDS = tuple(item.name for item in fields(DeviceLocation))
 class ParsedLocation:
     """What one location message did.
 
-    ``messages`` holds one DeviceLocationMessage per applied entry, in the order
-    they were applied (timed entries by ascending time, untimed entries in their
-    place in the message); ``skipped`` one SkippedLocationEntry per entry that
-    was not applied, in the order the decoder met them; ``reasons`` why any part
-    of the message was not applied, or was applied with something unknown in it.
+    Attributes:
+        messages: One DeviceLocationMessage per applied entry, in the order
+            they were applied: timed entries by ascending time, untimed
+            entries in their place in the message.
+        reasons: Why any part of the message was not applied, or was applied
+            with something unknown in it. Each reason is listed once, in the
+            order the decoder first met it.
+        skipped: One SkippedLocationEntry per entry that was not applied, in
+            the order the decoder met them.
     """
 
     messages: list[DeviceLocationMessage] = field(default_factory=list)
@@ -133,6 +137,12 @@ class ParsedLocation:
     skipped: list[SkippedLocationEntry] = field(default_factory=list)
 
     def _reject(self, reason: str) -> None:
+        """Add a reason to reasons, unless it is already there.
+
+        Args:
+            reason: The reason to record; the decoder passes the names in
+                REASON_PRIORITY.
+        """
         if reason not in self.reasons:
             self.reasons.append(reason)
 
@@ -143,10 +153,14 @@ class ParsedLocation:
 
 
 class TargetZone(StrEnum):
-    """What an empty target report is read as, by target_zone()."""
+    """What an empty target report is read as, by target_zone().
 
-    ALL = "all"  # an empty report while the mower mows or pauses: a mow-all task
-    NONE = "none"  # an empty report otherwise: no target
+    ALL is an empty report while the mower mows or pauses: a mow-all task.
+    NONE is an empty report otherwise: no target.
+    """
+
+    ALL = "all"
+    NONE = "none"
 
 
 # The states in which an empty target report is read as a mow-all task.
@@ -158,19 +172,25 @@ def target_zone(
 ) -> int | TargetZone | None:
     """The zone the mower is targeting, as far as the target report and the mower's state tell.
 
-    None before any target report (location is None, or its partition_ids is
-    None). A report that names zones gives its first partition id, whatever the
-    status. An empty report gives TargetZone.ALL while status is mowing or
-    paused, and TargetZone.NONE otherwise.
-
     This is an inference, not something the mower reports: a mow-all task sends
     the same empty report as an idle mower, and the mower's state is the only
     way to tell them apart. returning is not in MOW_ALL_STATES because a dock
     command clears the target for the trip home, so an empty report then means
     no target; for the same reason a charging break during a mow-all task reads
-    NONE until the mower resumes. status is the state the consumer shows (which
-    may be REST's rather than the SDK's cached state), a canonical MowerStatus
-    string or a MowerStatus.
+    NONE until the mower resumes.
+
+    Args:
+        location: The device's location record, or None when there is none.
+        status: The state the consumer shows (which may be REST's rather than
+            the SDK's cached state), a canonical MowerStatus string or a
+            MowerStatus. None is read as neither mowing nor paused.
+
+    Returns:
+        None before any target report (location is None, or its partition_ids
+        is None). The first partition id of a report that names zones,
+        whatever the status. For an empty report, TargetZone.ALL while status
+        is mowing or paused (the states in MOW_ALL_STATES), and
+        TargetZone.NONE otherwise.
     """
     if location is None or location.partition_ids is None:
         return None
@@ -181,11 +201,30 @@ def target_zone(
 
 
 def _plausible(ms: int, now_ms: int) -> bool:
-    """Whether a mower time is believed: from 2020 to TIME_AHEAD_MAX_MS past now_ms."""
+    """Say whether a mower time is believed.
+
+    Args:
+        ms: The mower time, in epoch milliseconds.
+        now_ms: The time the window is measured from, in epoch milliseconds.
+
+    Returns:
+        True for a time from PLAUSIBLE_MIN_MS (the start of 2020) to
+        TIME_AHEAD_MAX_MS past now_ms, both ends included; False outside that
+        window.
+    """
     return PLAUSIBLE_MIN_MS <= ms <= now_ms + TIME_AHEAD_MAX_MS
 
 
 def _entry_time(item: dict[str, Any]) -> int | None:
+    """Read an entry's time, for putting a message's entries in time order.
+
+    Args:
+        item: The entry as decoded.
+
+    Returns:
+        The entry's ``time`` as a whole number when it is above zero; None
+        when it is absent, unreadable, zero or negative.
+    """
     value = _whole(item.get("time"))
     return value if value is not None and value > 0 else None
 
@@ -194,8 +233,17 @@ def _in_time_order(entries: list[Any]) -> list[Any]:
     """The entries with the timed ones in ascending time order, the untimed ones in place.
 
     A reconnect's catch-up message lists poses newest first; applied in that
-    order, the stale check would take the newest and reject the rest. The sort
-    is stable, so equal times keep their order.
+    order, the stale check would take the newest and reject the rest. The
+    timed entries are the objects whose type is the integer 1, 2 or 3 and
+    whose time reads as a whole number above zero. They are sorted by time
+    among the positions they hold, the three types together; every other item
+    keeps its position. The sort is stable, so equal times keep their order.
+
+    Args:
+        entries: The message's items as decoded. The list is not changed.
+
+    Returns:
+        A new list of the same items, in the order to apply them.
     """
     timed = [
         (i, entry_time)
@@ -213,20 +261,50 @@ def _in_time_order(entries: list[Any]) -> list[Any]:
 
 
 def _partition_ids(value: Any) -> tuple[int, ...]:
+    """Read a target entry's partition ids.
+
+    Args:
+        value: The entry's ``partitionIds`` value, None when it sent none.
+
+    Returns:
+        The ids that read as whole numbers, in the order sent, the others
+        left out; an empty tuple when value is not a list.
+    """
     if not isinstance(value, list):
         return ()
     return tuple(pid for pid in (_whole(v) for v in value) if pid is not None)
 
 
 def _task_delay(value: Any) -> bool | None:
+    """Read a delay entry's delay flag.
+
+    Args:
+        value: The entry's ``taskDelay`` value.
+
+    Returns:
+        The value when it is a bool, else None.
+    """
     return value if isinstance(value, bool) else None
 
 
 def _entry_fields(entry_type: int, item: dict[str, Any]) -> dict[str, Any]:
     """The entry's own fields, read from item, as DeviceLocationMessage names them.
 
-    A task entry carries current_zone and route_progress only when it sent their
-    keys, so a record field it did not report is left alone.
+    A number that is absent or cannot be read is None.
+
+    Args:
+        entry_type: The entry's type: 1 (pose), 2 (task) or 3 (target); any
+            other value is read as a delay entry (type 4).
+        item: The entry as decoded.
+
+    Returns:
+        The fields by name. A pose has x, y, theta and vehicle_state. A task
+        has mowing_percentage, area_m2, week_area_m2, action, sub_action,
+        mow_start_type and map_work_position (as a string, None when absent
+        or null); it carries current_zone and route_progress only when it
+        sent their keys, so a record field it did not report is left alone.
+        A target has partition_ids, empty without a partitionIds list. A
+        delay has task_delay, None unless taskDelay is a bool.
     """
     if entry_type == 1:
         return {
@@ -261,25 +339,24 @@ def _entry_fields(entry_type: int, item: dict[str, Any]) -> dict[str, Any]:
 class LocationDecoder:
     """The per-device location records, and the merge of each message into them.
 
-    decode() merges a message; get() returns a device's record; restore() installs
-    a record persisted earlier, before the first message after a restart, so late
-    entries older than what was already applied are still rejected. Holding
-    messages back until the restore is done is the caller's.
+    decode() merges a message; get() returns a device's record; restore()
+    installs a record persisted earlier.
 
-    The dock: every applied pose entry whose code is in DOCK_VEHICLE_STATES is a
-    sample of the dock's position, folded into the record's dock fields (see
-    DeviceLocation) with a capped mean of dock_max_samples, unless it lies more
-    than dock_move_distance_m from the estimate. Such far poses gather in a
-    candidate, each within that distance of the candidate's running mean (one
-    that is not starts a new candidate), and a candidate of dock_move_samples
-    poses in a row replaces the estimate.
-    A restored record keeps its estimate and adds no samples; only applied
-    entries do, so restore the whole record, marks included, before connecting,
-    or a replayed pose trains the estimate again.
+    The dock: every applied pose entry whose code is in DOCK_VEHICLE_STATES is
+    a sample of the dock's position, folded into the record's dock fields (see
+    DeviceLocation). The three attributes set how: a capped mean of the
+    samples near the estimate, and a count of far samples in a row that
+    replaces it (see _dock_sample).
 
-    Raises:
-        ValueError: dock_max_samples or dock_move_samples is not a whole number
-            of at least 1, or dock_move_distance_m is not a finite number above 0.
+    Attributes:
+        dock_max_samples: The cap of the dock estimate's mean: once the
+            estimate holds this many poses, each new one weighs one over the
+            cap.
+        dock_move_distance_m: The distance in metres from the estimate beyond
+            which a docked pose is kept out of the mean, as it may be a moved
+            dock.
+        dock_move_samples: How many far docked poses in a row, each within
+            dock_move_distance_m of their running mean, replace the estimate.
     """
 
     def __init__(
@@ -289,6 +366,20 @@ class LocationDecoder:
         dock_move_distance_m: float = DOCK_MOVE_DISTANCE_M,
         dock_move_samples: int = DOCK_MOVE_SAMPLES,
     ) -> None:
+        """Create a decoder that holds no record yet.
+
+        Args:
+            dock_max_samples: The cap of the dock estimate's mean, in poses.
+            dock_move_distance_m: The distance in metres beyond which a docked
+                pose is far from the estimate. An int is kept as a float.
+            dock_move_samples: How many far docked poses in a row replace the
+                estimate.
+
+        Raises:
+            ValueError: dock_max_samples or dock_move_samples is not a whole
+                number of at least 1, or dock_move_distance_m is not a finite
+                number above 0. A bool is refused for each of the three.
+        """
         for name, count in (
             ("dock_max_samples", dock_max_samples),
             ("dock_move_samples", dock_move_samples),
@@ -317,14 +408,36 @@ class LocationDecoder:
         self._dock_candidates: dict[str, tuple[float, float, int, float | None]] = {}
 
     def get(self, device_id: str) -> DeviceLocation | None:
-        """The device's merged record, or None before anything was applied or restored."""
+        """Give the device's merged record.
+
+        Args:
+            device_id: The device.
+
+        Returns:
+            The record as it stands, or None before anything was applied or
+            restored for the device.
+        """
         return self._records.get(device_id)
 
     def restore(self, device_id: str, location: DeviceLocation) -> None:
-        """Install a persisted record for device_id, with its high-water marks.
+        """Install a persisted record for a device, with its high-water marks.
 
-        A record persisted without marks gets them from its observation times
-        (pose_at, task_at, target_last_at).
+        Call it before the first message after a restart, so late entries
+        older than what was already applied are still rejected. Holding
+        messages back until the restore is done is the caller's.
+
+        The record replaces any the decoder holds for the device. It keeps its
+        dock estimate and adds no samples; only applied entries do, so restore
+        the whole record, marks included, before connecting, or a replayed
+        pose trains the estimate again. The far docked poses gathered so far
+        towards a moved dock are forgotten.
+
+        Args:
+            device_id: The device. The installed record carries this id,
+                whatever the id on location.
+            location: The record to install. One persisted without marks gets
+                them from its observation times (pose_at, task_at,
+                target_last_at), for each of them that is set.
         """
         marks = dict(location.marks)
         if not marks:
@@ -344,26 +457,81 @@ class LocationDecoder:
     ) -> ParsedLocation:
         """Merge one message into the device's record.
 
-        payload is the decoded JSON value as the mower sent it: a list of entries,
-        or a lone entry object (anything the caller added must be removed first).
-        received_at is the UTC receipt time; now_ms, the time the plausibility
-        window is measured from, defaults to it.
+        A payload that is neither a list nor an object is unparsable as a
+        whole, and nothing is read from it. An empty list changes nothing and
+        earns no reason. Otherwise the entries are applied one by one, the
+        timed ones in ascending time order (see _in_time_order), each to the
+        record as the entry before it left it. The stored record is replaced
+        only when at least one entry was applied; when none was, it stays as
+        it was, and a device without a record stays without one.
 
-        The rules: anything but a list or an object is unparsable; an empty list
-        changes nothing; an entry of an unknown type is skipped (unknown_type); a
-        delay entry without taskDelay, which a reconnect sends, is skipped silently;
-        an entry with a field outside LOCATION_KNOWN_FIELDS is applied and marked
-        unknown_field; a time outside the plausibility window, or a pose, task or
-        target time that is zero, negative or unreadable, is implausible_time; an
-        entry sent without a time is applied and leaves the marks as they were;
-        a time at or below the newest applied time of the entry's type is stale
-        (delay entries carry no time and are never stale); a pose whose x or y is
-        unreadable is unparsable, and an all-zero pose a placeholder, neither
-        applied; a target entry without partitionIds clears the target; a repeat of
-        the same target set advances only target_last_at. Every entry skipped for
-        one of these reasons is in ParsedLocation.skipped, with its fields read as
-        far as they go; an item that is not an object, and the reconnect-time delay
-        entry, are not entries and are left out of it.
+        Each item goes through these checks, in this order:
+
+        - An item that is not an object is passed over without a reason.
+        - A field outside LOCATION_KNOWN_FIELDS marks the message
+          unknown_field, whatever becomes of the entry: it goes on to the
+          other checks and is applied when it passes them.
+        - A type that is not an integer from 1 to 4 (a missing type, a string
+          and a bool included) is skipped as unknown_type.
+        - A delay entry without taskDelay, which a reconnect sends, is passed
+          over without a reason.
+        - A pose, task or target entry whose time is outside the plausibility
+          window (see _plausible), or is zero, negative or unreadable, is
+          skipped as implausible_time. One sent without a time, or with a null
+          one, is not checked and goes on untimed.
+        - A pose, task or target entry whose time is at or below the newest
+          applied time of its type (see _newest) is skipped as stale. An
+          untimed entry is never stale; neither is a delay entry, which
+          carries no time (one it sends is not read).
+        - A pose whose x or y is unreadable is skipped as unparsable. A pose
+          whose x and y are zero and whose heading is zero, absent or
+          unreadable is skipped as placeholder.
+
+        An entry that passes them is applied to the record:
+
+        - A pose (type 1) replaces x, y, theta and vehicle_state whole, so a
+          heading or a code it did not send becomes None, and sets pose_at to
+          its time and pose_received_at to received_at. A pose whose code is
+          in DOCK_VEHICLE_STATES is also a sample of the dock's position (see
+          _dock_sample), whether it has a time or not.
+        - A task (type 2) sets current_zone and zone_at when it sent
+          currentMowBoundary, and route_progress and progress_at when it sent
+          currentMowProgress; a pair whose key it did not send is left alone.
+          Its other fields (mowing_percentage, area_m2, week_area_m2, action,
+          sub_action, mow_start_type and map_work_position) are replaced
+          whole, and task_at is set to its time.
+        - A target (type 3) sets partition_ids and target_at when the record
+          has no target report yet or its ids differ, as a set, from the
+          record's. A repeat of the same set, in any order, advances only
+          target_last_at, which every target entry sets to its time. An entry
+          without partitionIds has no ids, so it clears the target.
+        - A delay (type 4) sets task_delay, None when taskDelay is not a bool,
+          and sets delay_received_at to received_at.
+
+        A timed entry also raises the mark of its type to its time. An entry
+        sent without a time sets the times it writes to None and leaves the
+        marks as they were.
+
+        Args:
+            device_id: The device the message is from.
+            payload: The decoded JSON value as the mower sent it: a list of
+                entries, or a lone entry object. Anything the caller added
+                must be removed first.
+            received_at: The UTC receipt time.
+            now_ms: The time the plausibility window is measured from, in
+                epoch milliseconds. None means received_at.
+
+        Returns:
+            What the message did. messages holds one DeviceLocationMessage per
+            applied entry, in the order applied, each with the record as it
+            stood after that entry. skipped holds one SkippedLocationEntry per
+            entry skipped as unknown_type, implausible_time, stale, unparsable
+            or placeholder, with its time and its fields read as far as they
+            go (no fields for an unknown type); an item that is not an object,
+            and the reconnect-time delay entry, are not entries and are in
+            neither list. reasons holds those reasons and unknown_field, and
+            the single reason unparsable for a payload that is neither a list
+            nor an object.
         """
         result = ParsedLocation()
         if isinstance(payload, dict):
@@ -492,7 +660,43 @@ class LocationDecoder:
         theta: float | None,
         entry_time: int | None,
     ) -> None:
-        """Fold one docked pose into the working record's dock fields."""
+        """Fold one docked pose into the working record's dock fields.
+
+        Without an estimate (no dock position, or dock_samples below 1) the
+        pose becomes the estimate, with dock_samples 1.
+
+        A pose no farther than dock_move_distance_m from the estimate enters a
+        capped mean. Below dock_max_samples that is the plain mean of the
+        poses; at the cap each pose weighs one over the cap, and dock_samples
+        stays at the cap.
+
+        In both of these cases dock_theta becomes the pose's heading (the
+        previous one stays when the pose has none), dock_at becomes the pose's
+        time, and the candidate described next is dropped.
+
+        A pose farther away never enters the mean. Far poses gather in a
+        candidate, a plain running mean kept by the decoder for the device,
+        never on the record: a pose no farther than dock_move_distance_m from
+        that mean joins it, and one farther starts a new candidate. While the
+        candidate holds fewer than dock_move_samples poses the dock fields
+        stay as they are, so with dock_move_samples above 1 a single outlier
+        does not move the estimate. A candidate that reaches
+        dock_move_samples poses in a row replaces the estimate; with
+        dock_move_samples of 1 the first far pose does so at once. dock_x and
+        dock_y become the candidate's mean,
+        dock_samples its count (never above dock_max_samples), dock_theta the
+        latest heading among its poses (None when none had one, never the old
+        dock's) and dock_at this pose's time; the candidate is then dropped.
+
+        Args:
+            device_id: The device, which the candidate is kept under.
+            record: The working copy of the record's fields, changed in place.
+            x: The pose's x, in metres.
+            y: The pose's y, in metres.
+            theta: The pose's heading, or None when it has none.
+            entry_time: The pose's mower time in epoch milliseconds, or None
+                for a pose sent without one, which makes dock_at None.
+        """
         latest = {
             "dock_theta": theta if theta is not None else record["dock_theta"],
             "dock_at": entry_time,
@@ -557,9 +761,16 @@ class LocationDecoder:
 
     @staticmethod
     def _newest(record: dict[str, Any], entry_type: int) -> int | None:
-        """The newest applied time of entry_type.
+        """The newest applied time of an entry type.
 
-        That is its mark or its observation time, whichever is newer.
+        Args:
+            record: The working copy of the record's fields.
+            entry_type: The entry type.
+
+        Returns:
+            The type's mark or its observation time (pose_at, task_at or
+            target_last_at), whichever is newer; None when neither is set, and
+            for a type whose time is not guarded (the delay entry).
         """
         name = _OBSERVED_AT.get(entry_type)
         if name is None:

@@ -69,7 +69,14 @@ MOVING_STATES = frozenset({"mowing", "returning"})
 
 
 def _status(value: str | MowerStatus | None) -> str | None:
-    """A MowerStatus value as its canonical string; a string or None as given."""
+    """Give a state as its canonical string.
+
+    Args:
+        value: A MowerStatus, a canonical state string, or None.
+
+    Returns:
+        The MowerStatus's value; a string or None as given.
+    """
     return value.value if isinstance(value, MowerStatus) else value
 
 
@@ -78,14 +85,14 @@ class WatchInput:
     """What a consumer knows about one device that the SDK does not.
 
     Attributes:
-        device_id: The device
-        name: The device's name, for the reason text
+        device_id: The device.
+        name: The device's name, for the reason text.
         shown_state: The state the consumer displays (which may be REST's
-            fallback), a canonical MowerStatus string or a MowerStatus
+            fallback), a canonical MowerStatus string or a MowerStatus.
         rest_state: REST's latest state, a canonical MowerStatus string or a
-            MowerStatus; None without one
-        rest_observed_at: When that REST reading was taken, on time.monotonic();
-            None without one
+            MowerStatus; None without one.
+        rest_observed_at: When that REST reading was taken, on
+            time.monotonic(); None without one.
     """
 
     device_id: str
@@ -97,29 +104,42 @@ class WatchInput:
 
 @dataclass(frozen=True)
 class RebuildRequest:
-    """A watchdog's proposal to rebuild the MQTT client, for the reason given.
+    """A watchdog's proposal to rebuild the MQTT client.
 
-    device_ids are the devices the evidence came from. Pass the request to
-    MqttWatchdog.acknowledge once the rebuild is made or scheduled.
+    Pass the request to MqttWatchdog.acknowledge once the rebuild is made or
+    scheduled.
+
+    Attributes:
+        reason: Why the rebuild is proposed, as a sentence for a log line.
+        device_ids: The devices the evidence came from.
+        reports: For each device of a missed state change, its id and the
+            receipt time of the MQTT state report the request is about;
+            acknowledge() marks these acted on. Empty for a location silence.
     """
 
     reason: str
     device_ids: tuple[str, ...]
-    # device id -> the receipt time of the MQTT state report the request is about
-    # (rule 1 only), marked acted on by acknowledge().
     reports: tuple[tuple[str, datetime], ...] = field(default=(), repr=False)
 
 
 class MqttWatchdog:
-    """The two rules, over a facade's caches and its MQTT client's connection and message times.
+    """Decide when an MQTT client that is up has stopped delivering.
 
-    Both checks and acknowledge() read the facade's caches, which are written
-    on its bound event loop, so they run there too; only the rebuild itself
-    goes off the loop. Every time is time.monotonic(), the clock of the
-    facade's cache ages and the client's message ages.
+    The two rules of the module's description, over a facade's caches and its
+    MQTT client's connection and message times. Both checks and acknowledge()
+    read the facade's caches, which are written on its bound event loop, so
+    they run there too; only the rebuild itself goes off the loop. Every time
+    is time.monotonic(), the clock of the facade's cache ages and the client's
+    message ages.
 
-    Raises:
-        ValueError: A threshold is negative.
+    Attributes:
+        sdk: The facade whose caches and MQTT client are read.
+        rest_cache_lag: Seconds a REST reading must be newer than the accepted
+            MQTT state report to count against it.
+        location_silence: Seconds without a location message, from a mower
+            that is out, that mean the broker stopped delivering.
+        debounce: Seconds after an acknowledged request in which no other is
+            made.
     """
 
     def __init__(
@@ -130,6 +150,20 @@ class MqttWatchdog:
         location_silence: float = LOCATION_SILENCE_SECONDS,
         debounce: float = WATCHDOG_DEBOUNCE_SECONDS,
     ) -> None:
+        """Watch one facade.
+
+        Args:
+            sdk: The facade whose caches and MQTT client the rules read.
+            rest_cache_lag: Seconds a REST reading must be newer than the
+                accepted MQTT state report to count against it.
+            location_silence: Seconds without a location message that count
+                as silence.
+            debounce: Seconds after an acknowledged request in which no other
+                is made.
+
+        Raises:
+            ValueError: A threshold is negative.
+        """
         for name, value in (
             ("rest_cache_lag", rest_cache_lag),
             ("location_silence", location_silence),
@@ -146,11 +180,20 @@ class MqttWatchdog:
         self._acted_on: dict[str, datetime] = {}
 
     def _debounced(self, now: float) -> bool:
+        """Say whether the debounce window of the last acknowledged request is open.
+
+        Args:
+            now: The current time.monotonic() reading.
+
+        Returns:
+            True while less than debounce seconds have passed since a request
+            was acknowledged; False when none has been.
+        """
         acknowledged = self._last_request_acknowledged_at
         return acknowledged is not None and now - acknowledged < self.debounce
 
     def after_poll(self, inputs: Iterable[WatchInput]) -> RebuildRequest | None:
-        """Rule 1, over the devices the REST poll answered for; a RebuildRequest or None.
+        """Apply rule 1 after a REST poll: a state change the state channel missed.
 
         A device whose accepted MQTT state agrees with REST is re-armed. One whose
         REST state is in IGNORED_REST_STATES, whose REST reading is not at least
@@ -158,6 +201,15 @@ class MqttWatchdog:
         already acted on, is skipped. Nothing is asked before the client's first
         connect or inside the debounce window; a mismatch found then stays live
         for the next poll, since the missed transition may never come to clear it.
+
+        Args:
+            inputs: One WatchInput for each device the poll answered for, with
+                the time its REST reading was taken. A device the poll left
+                out is not passed.
+
+        Returns:
+            A RebuildRequest naming every device with a live mismatch, or None
+            when there is none or nothing may be asked yet.
         """
         now = time.monotonic()
         mismatches: list[tuple[WatchInput, str, str, datetime]] = []
@@ -201,7 +253,7 @@ class MqttWatchdog:
         )
 
     def check_silence(self, inputs: Iterable[WatchInput]) -> RebuildRequest | None:
-        """Rule 2: a connected client that delivers no location message while a mower runs.
+        """Apply rule 2: a connected client that delivers no location message.
 
         For each device with a timestamped pose on record whose shown or REST
         state is in MOVING_STATES (and whose shown state is not mapping), the
@@ -211,6 +263,13 @@ class MqttWatchdog:
         debounce window, or when the client does not subscribe the location
         channel (subscribe_location=False, the default), where silence is
         expected and a rebuild, which keeps that setting, could not end it.
+
+        Args:
+            inputs: One WatchInput for each device to check.
+
+        Returns:
+            A RebuildRequest for the first device found silent for at least
+            location_silence seconds, or None.
         """
         mqtt = self.sdk.mqtt
         now = time.monotonic()
@@ -252,9 +311,12 @@ class MqttWatchdog:
         return None
 
     def acknowledge(self, request: RebuildRequest) -> None:
-        """Record that the consumer rebuilt the client, or scheduled the rebuild, for request.
+        """Record that the consumer rebuilt the client, or scheduled the rebuild.
 
         Starts the debounce window and marks the request's MQTT reports acted on.
+
+        Args:
+            request: The request the rebuild was made for.
         """
         # Decision: the debounce starts here, not when a check returns a request. A
         # consumer may decline one (another operation holds its lock, say); starting
