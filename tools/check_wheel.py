@@ -1,8 +1,8 @@
 """Check the built wheel: what it ships, and the installed distribution's metadata.
 
 Run by the wheel session of noxfile.py:
-  check_wheel.py contents DIST_DIR   the wheel ships mower_sdk and mower_sdk.legacy and
-                                     nothing else
+  check_wheel.py contents DIST_DIR   the wheel ships mower_sdk with its py.typed marker
+                                     and mower_sdk.legacy, and nothing else
   check_wheel.py metadata            run with the fresh environment's Python, after
                                      installing the wheel: name, version, license
 """
@@ -22,7 +22,7 @@ def contents(dist_dir: str) -> None:
     stray = [n for n in names if not (n.startswith("mower_sdk/") or ".dist-info/" in n)]
     if stray:
         sys.exit(f"unexpected files in {wheel}: {stray}")
-    required = ["mower_sdk/__init__.py", "mower_sdk/legacy/__init__.py"] + [
+    required = ["mower_sdk/__init__.py", "mower_sdk/py.typed", "mower_sdk/legacy/__init__.py"] + [
         f"mower_sdk/legacy/{module}.py"
         for module in (
             "client",
