@@ -75,9 +75,11 @@ class MowerAPIError(Exception):
 
 
 class MowerTransportError(MowerAPIError):
-    """No usable reply: a timeout, a connection error, an HTTP 5xx, a status the client
-    cannot use (below 200, or a redirect aiohttp did not follow), or a 2xx whose body
-    is not a JSON object.
+    """No usable reply.
+
+    A timeout, a connection error, an HTTP 5xx, a status the client cannot use
+    (below 200, or a redirect aiohttp did not follow), or a 2xx whose body is
+    not a JSON object.
 
     For a command, the outcome is unknown rather than refused: the cloud may have
     acted on it. The aiohttp error, TimeoutError, UnicodeDecodeError or
@@ -86,15 +88,20 @@ class MowerTransportError(MowerAPIError):
 
 
 class MowerAuthRequiredError(MowerAPIError):
-    """The credentials were refused: HTTP 401 or 403, envelope code 4005, or a reply
-    whose desc names CODE_OAUTH_INFO_ILLEGAL; or MowerAPI has no token to send, in
-    which case no request is made. Refresh or re-authorise, then retry."""
+    """The credentials were refused.
+
+    HTTP 401 or 403, envelope code 4005, or a reply whose desc names
+    CODE_OAUTH_INFO_ILLEGAL; or MowerAPI has no token to send, in which case
+    no request is made. Refresh or re-authorise, then retry.
+    """
 
 
 class MowerRateLimitedError(MowerAPIError):
-    """The cloud asked the caller to slow down: envelope code 4001 (its circuit
-    breaker, retry after about a minute) or a desc saying "too frequent" or
-    "circuit breaker"."""
+    """The cloud asked the caller to slow down.
+
+    Envelope code 4001 (its circuit breaker, retry after about a minute) or a
+    desc saying "too frequent" or "circuit breaker".
+    """
 
 
 class MowerMQTTError(Exception):

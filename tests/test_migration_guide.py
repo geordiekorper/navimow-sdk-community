@@ -108,7 +108,7 @@ async def run_fragment(fragment: str, **given: Any) -> dict[str, Any]:
     source = (
         "async def fragment():\n" + textwrap.indent(fragment, "    ") + "\n    return locals()\n"
     )
-    exec(compile(source, str(GUIDE), "exec"), namespace)  # noqa: S102
+    exec(compile(source, str(GUIDE), "exec"), namespace)
     return await namespace["fragment"]()
 
 

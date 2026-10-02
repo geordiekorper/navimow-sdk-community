@@ -21,7 +21,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import gatelib  # noqa: E402
+import gatelib
 
 _WHAT = {"A": "added", "M": "edited", "D": "deleted or moved away", "T": "changed"}
 

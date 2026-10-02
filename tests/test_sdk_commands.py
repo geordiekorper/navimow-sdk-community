@@ -73,10 +73,13 @@ async def test_construction_passes_the_parameters_through_and_wires_on_message(
 def test_construction_outside_a_running_loop_hands_over_no_loop_and_creates_none(
     fake_mqtt: type[FakeMQTT],
 ) -> None:
-    """The MQTT client binds the loop at its first connect instead. No loop is created and there
+    """The MQTT client binds the loop at its first connect instead.
+
+    No loop is created and there
     is no asyncio warning: with no current loop set, asyncio.get_event_loop() creates a loop on
     3.11, warns and creates one on 3.12 and 3.13 and raises on 3.14, so on 3.11 to 3.13 the
-    policy's current-loop slot is read instead and only 3.14 asks it."""
+    policy's current-loop slot is read instead and only 3.14 asks it.
+    """
     with warnings.catch_warnings():
         warnings.simplefilter("error", DeprecationWarning)
         sdk = NavimowSDK(broker="broker.example.invalid", port=443)

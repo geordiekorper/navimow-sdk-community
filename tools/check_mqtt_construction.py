@@ -1,5 +1,6 @@
-"""Construct the MQTT classes outside and inside a running event loop, and
-update credentials in both connection states.
+"""Construct the MQTT classes outside and inside a running event loop.
+
+It also updates credentials in both connection states.
 
 The core classes use paho's callback API version 2, so building their clients
 must not raise paho's "Callback API version 1 is deprecated" warning; it is
@@ -23,7 +24,6 @@ from mower_sdk import NavimowMQTT, NavimowSDK
 # The legacy client is imported from its legacy path on purpose, so this
 # smoke test does not go through a deprecated path.
 from mower_sdk.legacy.mqtt_v1 import MowerMQTT
-
 
 CORE_ON_VERSION_2 = "Callback API version"
 

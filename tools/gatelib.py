@@ -389,7 +389,7 @@ def changed_files() -> list[tuple[str, str]]:
 
 
 def comment_char() -> str:
-    """git's comment character for messages (core.commentChar; "auto" reads as "#")."""
+    """Git's comment character for messages (core.commentChar; "auto" reads as "#")."""
     configured = git("config", "--get", "core.commentChar", check=False).strip()
     return configured if configured and configured != "auto" else "#"
 

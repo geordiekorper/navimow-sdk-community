@@ -222,7 +222,7 @@ def rewrite_diff(diff: bytes, moved: dict[bytes, bytes]) -> bytes:
 
 
 def mail_for(commit: str) -> bytes:
-    """git's own mbox entry for the commit: the From line, the headers and the message.
+    """Git's own mbox entry for the commit: the From line, the headers and the message.
 
     The mboxrd form quotes message lines that start with "From ", so the entry
     splits correctly whatever the message holds; git am --patch-format=mboxrd

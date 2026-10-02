@@ -177,7 +177,7 @@ class FakeClient:
         self._record("reconnect_delay_set", *args, **kwargs)
 
     def subscribe(self, *args: Any, **kwargs: Any) -> tuple[int, int | None]:
-        """paho's (result, message id).
+        """Paho's (result, message id).
 
         Success with the next id, unless subscribe_result says otherwise.
         """

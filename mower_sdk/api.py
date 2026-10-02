@@ -13,11 +13,11 @@ from typing import Any
 import aiohttp
 
 from mower_sdk.errors import (
+    ERROR_MESSAGES,
     MowerAPIError,
     MowerAuthRequiredError,
     MowerRateLimitedError,
     MowerTransportError,
-    ERROR_MESSAGES,
 )
 from mower_sdk.models import (
     CommandReceipt,

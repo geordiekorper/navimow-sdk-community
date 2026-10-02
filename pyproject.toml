@@ -81,9 +81,13 @@ exclude = ["mower_sdk/legacy/**", "*.md"]
 # Ruff rule set for the whole tree. CI runs it as a blocking check.
 # E501 is the line length: the formatter keeps code within it, and a string,
 # comment or docstring line it cannot shorten is wrapped by hand.
-select = ["F", "ARG", "B", "UP", "SIM", "E501"]
+# I is the import order. RUF100 reports a noqa comment that suppresses
+# nothing, so the suppressions stay true. D205, D209 and D403 are the form of
+# a docstring: a blank line after the summary, the closing quotes on a line of
+# their own, a capital first word.
+select = ["F", "ARG", "B", "UP", "SIM", "E501", "I", "RUF100", "D205", "D209", "D403"]
 
 [tool.ruff.lint.per-file-ignores]
 # Legacy code moved verbatim from upstream keeps only the F rules, so it is
 # never reformatted or modernised here; that keeps merge-back diffs small.
-"mower_sdk/legacy/**" = ["ARG", "B", "SIM", "UP", "E501"]
+"mower_sdk/legacy/**" = ["ARG", "B", "SIM", "UP", "E501", "I", "RUF100", "D"]

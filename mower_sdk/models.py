@@ -18,8 +18,14 @@ from mower_sdk.errors import ERROR_MESSAGES, MowerAPIError
 if TYPE_CHECKING:
     from mower_sdk.legacy.thing_models import (
         ThingEventMessage as ThingEventMessage,
+    )
+    from mower_sdk.legacy.thing_models import (
         ThingParams as ThingParams,
+    )
+    from mower_sdk.legacy.thing_models import (
         ThingPropertiesMessage as ThingPropertiesMessage,
+    )
+    from mower_sdk.legacy.thing_models import (
         ThingStatusMessage as ThingStatusMessage,
     )
 
@@ -948,8 +954,10 @@ _MILLISECONDS_ABOVE = 100_000_000_000
 
 
 def _number(value: Any) -> float | None:
-    """A vendor number (often a string such as "100.00") as a float; None for a bool,
-    a non-finite value or anything float() cannot read."""
+    """A vendor number (often a string such as "100.00") as a float.
+
+    None for a bool, a non-finite value or anything float() cannot read.
+    """
     if isinstance(value, bool):
         return None
     try:

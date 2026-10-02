@@ -22,7 +22,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import gatelib  # noqa: E402
+import gatelib
 
 
 def _local_pattern_hits(

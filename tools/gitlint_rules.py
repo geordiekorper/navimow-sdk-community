@@ -15,7 +15,7 @@ from gitlint.rules import CommitRule, ConfigurationRule, RuleViolation
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import gatelib  # noqa: E402  (the trailer-block rule is shared with the leak check)
+import gatelib
 
 _TYPE = re.compile(r"^(\w+)(?:\([^)]*\))?!?: ")
 _KIND = re.compile(r"^(?:Upstream-suitable\.|Community-only\.|Fork-only[.:])(?:\s|$)")

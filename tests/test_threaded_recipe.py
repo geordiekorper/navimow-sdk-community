@@ -56,7 +56,7 @@ def blocks() -> list[str]:
 def recipe() -> dict[str, Any]:
     """Execute the section's first Python block, the helper, and return what it defines."""
     namespace: dict[str, Any] = {"__name__": "readme_recipe"}
-    exec(compile(blocks()[0], str(README), "exec"), namespace)  # noqa: S102
+    exec(compile(blocks()[0], str(README), "exec"), namespace)
     return namespace
 
 
@@ -72,8 +72,8 @@ def run_usage(wait: float = 120) -> dict[str, Any]:
     assert "states.get(timeout=120)" in usage
     usage = usage.replace("states.get(timeout=120)", f"states.get(timeout={wait})")
     try:
-        exec(compile(usage, str(README), "exec"), namespace)  # noqa: S102
-    except Exception as exc:  # noqa: BLE001
+        exec(compile(usage, str(README), "exec"), namespace)
+    except Exception as exc:
         namespace["raised"] = exc
     return namespace
 

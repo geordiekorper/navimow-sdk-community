@@ -318,9 +318,11 @@ TOOLS = ROOT / "tools"
 
 @pytest.fixture
 def hooked(repo: Path, tmp_path: Path) -> Path:
-    """The repository with a pre-commit hook running check_leaks, and a second
-    worktree on another branch holding an untracked file and a file tracked
-    only on that branch."""
+    """The repository with a pre-commit hook running check_leaks, and a second worktree.
+
+    The second worktree is on another branch and holds an untracked file and a
+    file tracked only on that branch.
+    """
     other = tmp_path / "other"
     run("git", "worktree", "add", "-q", "-b", "feature", str(other), cwd=repo)
     (other / "feature-only.md").write_text("x", encoding="utf-8")

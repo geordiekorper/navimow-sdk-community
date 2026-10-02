@@ -882,10 +882,13 @@ def test_a_connect_from_the_explicit_loop_delivers_there(fake_paho: type[FakeCli
 def test_construction_outside_a_running_loop_binds_no_loop_and_creates_none(
     fake_paho: type[FakeClient],
 ) -> None:
-    """No asyncio warning either: with no current loop set, asyncio.get_event_loop() creates a loop
+    """No asyncio warning either.
+
+    With no current loop set, asyncio.get_event_loop() creates a loop
     on 3.11, warns and creates one on 3.12 and 3.13 and raises on 3.14, so on 3.11 to 3.13 the
     policy's current-loop slot is read instead and only 3.14 asks it. paho's own callback-API
-    warning does not arise with the fake."""
+    warning does not arise with the fake.
+    """
     with warnings.catch_warnings():
         warnings.simplefilter("error", DeprecationWarning)
         mqtt = make(TCP_KWARGS)
@@ -922,8 +925,11 @@ def test_a_client_constructed_outside_a_loop_binds_the_loop_it_connects_from(
 def test_a_client_constructed_and_connected_outside_any_loop_drops_the_callback_with_a_warning(
     fake_paho: type[FakeClient], caplog: pytest.LogCaptureFixture
 ) -> None:
-    """Without loop= there is nothing to schedule on: the callback's coroutine is closed, so no
-    "never awaited" RuntimeWarning follows, and the drop is logged as a warning naming the cure."""
+    """Without loop= there is nothing to schedule on.
+
+    The callback's coroutine is closed, so no
+    "never awaited" RuntimeWarning follows, and the drop is logged as a warning naming the cure.
+    """
     seen: list[str] = []
 
     async def on_disconnected() -> None:
@@ -958,9 +964,12 @@ def test_a_client_constructed_and_connected_outside_any_loop_drops_the_callback_
 def test_a_bound_loop_that_has_closed_drops_the_callback_closed_with_a_debug_line(
     fake_paho: type[FakeClient], caplog: pytest.LogCaptureFixture
 ) -> None:
-    """The loop bound at construction is closed by the time the callback arrives: the coroutine is
+    """The loop bound at construction is closed by the time the callback arrives.
+
+    The coroutine is
     closed, so no "never awaited" RuntimeWarning follows, and nothing above DEBUG is logged, since
-    a loop that has stopped is the shutdown case, not a missing loop."""
+    a loop that has stopped is the shutdown case, not a missing loop.
+    """
     seen: list[str] = []
 
     async def on_disconnected() -> None:
@@ -989,8 +998,11 @@ def test_a_bound_loop_that_has_closed_drops_the_callback_closed_with_a_debug_lin
 def test_a_loop_set_as_current_but_not_running_is_bound_and_receives_the_callbacks(
     fake_paho: type[FakeClient],
 ) -> None:
-    """The run_forever pattern: set the loop, construct, connect, then run the loop. No loop is
-    created and no asyncio warning escapes on the way."""
+    """The run_forever pattern: set the loop, construct, connect, then run the loop.
+
+    No loop is
+    created and no asyncio warning escapes on the way.
+    """
     seen: list[str] = []
 
     async def on_disconnected() -> None:
@@ -1038,7 +1050,7 @@ def test_a_client_constructed_outside_any_loop_binds_the_loop_set_as_current_at_
 async def test_a_refusal_from_paho_is_logged_with_its_reason_text_and_value(
     fake_paho: type[FakeClient], caplog: pytest.LogCaptureFixture
 ) -> None:
-    """paho's own ReasonCode, as a CONNACK refusal carries it."""
+    """Paho's own ReasonCode, as a CONNACK refusal carries it."""
 
     mqtt = make(TCP_KWARGS)
     with caplog.at_level(logging.ERROR, logger="mower_sdk.mqtt"):
@@ -2176,7 +2188,7 @@ async def test_an_acknowledgement_for_an_unknown_message_id_changes_nothing() ->
 @pytest.mark.usefixtures("fake_paho")
 @pytest.mark.asyncio
 async def test_an_acknowledgement_racing_the_subscribe_call_is_not_lost() -> None:
-    """paho's thread may handle the acknowledgement before subscribe() has returned the id.
+    """Paho's thread may handle the acknowledgement before subscribe() has returned the id.
 
     The fake's subscribe starts that thread and gives it time to run before
     returning; the acknowledgement must wait for the id to be recorded rather
@@ -2414,9 +2426,12 @@ async def test_no_event_for_a_replaced_client_or_without_the_hook() -> None:
 async def test_an_event_from_the_old_client_while_its_successor_is_built_names_the_old_client() -> (
     None
 ):
-    """rebuild() sets the new client id first and self.client last; the old client's
+    """rebuild() sets the new client id first and self.client last.
+
+    The old client's
     callbacks still pass the replaced-client guard in between, as paho's thread
-    may deliver them while TLS is set up on the new client."""
+    may deliver them while TLS is set up on the new client.
+    """
 
     class PausingBuild(NavimowMQTT):
         def _build_new_client(self) -> Any:

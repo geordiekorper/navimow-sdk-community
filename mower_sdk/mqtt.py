@@ -12,17 +12,17 @@ import threading
 import time
 import uuid
 import weakref
-from urllib.parse import urlparse
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlparse
 
 from paho.mqtt import client as mqtt_client
 
 from mower_sdk._deprecation import warn_legacy
-from mower_sdk.errors import MowerMQTTError, ERROR_MESSAGES  # noqa: F401
-from mower_sdk.models import Device, DeviceStatus  # noqa: F401
+from mower_sdk.errors import ERROR_MESSAGES, MowerMQTTError
+from mower_sdk.models import Device, DeviceStatus
 
 if TYPE_CHECKING:
     from mower_sdk.legacy.mqtt_v1 import MowerMQTT as MowerMQTT
@@ -927,7 +927,7 @@ class NavimowMQTT:
         self._connection_event(client, "connect_failed", reason, self.last_connect_failed_at)
 
     def _on_connect(self, client, _userdata, _flags, reason_code, _properties=None) -> None:
-        """paho's on_connect, callback API version 2: reason_code is a paho ReasonCode."""
+        """Paho's on_connect, callback API version 2: reason_code is a paho ReasonCode."""
         if client is not self.client:
             return  # a client replaced by rebuild()
         if reason_code.is_failure:
@@ -959,7 +959,7 @@ class NavimowMQTT:
         self._connection_event(client, "connected", None, self.last_connected_at)
 
     def _on_connect_fail(self, client, _userdata) -> None:
-        """paho's on_connect_fail: no CONNACK at all.
+        """Paho's on_connect_fail: no CONNACK at all.
 
         A network failure, or a bearer token refused at the WebSocket upgrade,
         shows this way. paho keeps retrying with the reconnect delays.
@@ -974,7 +974,7 @@ class NavimowMQTT:
         self._connect_failed(client, "connection failed before CONNACK")
 
     def _on_disconnect(self, client, _userdata, _flags, reason_code, _properties=None) -> None:
-        """paho's on_disconnect, callback API version 2."""
+        """Paho's on_disconnect, callback API version 2."""
         if client is not self.client:
             return
         self.disconnects += 1
@@ -996,7 +996,7 @@ class NavimowMQTT:
         )
 
     def _on_subscribe(self, client, _userdata, mid, reason_code_list, _properties=None) -> None:
-        """paho's on_subscribe, callback API version 2: one reason code per topic sent.
+        """Paho's on_subscribe, callback API version 2: one reason code per topic sent.
 
         subscribe_all sends one topic per request, so the first code decides. A
         code of 0x80 or more is a refusal.
@@ -1026,7 +1026,7 @@ class NavimowMQTT:
     _parse_topic = staticmethod(parse_topic)
 
     def _on_message(self, client, _userdata, msg) -> None:
-        """paho's on_message.
+        """Paho's on_message.
 
         The payload debug line logs every payload whole. With the location
         channel subscribed that is a movement trace of the mower: keep this

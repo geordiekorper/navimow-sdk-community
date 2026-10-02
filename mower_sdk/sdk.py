@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 from mower_sdk.errors import ERROR_MESSAGES, MowerAPIError, MowerUnsupportedOperationError
 from mower_sdk.location import REASON_PRIORITY, LocationDecoder, _plausible
 from mower_sdk.models import (
+    STATE_KNOWN_FIELDS,
     DeviceAttributesMessage,
     DeviceCommandMessage,
     DeviceEventMessage,
@@ -22,7 +23,6 @@ from mower_sdk.models import (
     DeviceStateMessage,
     MqttConnectionInfo,
     RejectedMessage,
-    STATE_KNOWN_FIELDS,
     SkippedLocationEntry,
     _broker_endpoint,
     _credential,
@@ -406,8 +406,12 @@ class NavimowSDK:
         self._location_callbacks.append(callback)
 
     def on_rejected(self, callback: Callable[[RejectedMessage], None]) -> None:
-        """Call callback once for each message that was not applied, or was applied with
-        something unknown in it, after whatever was applied has been delivered."""
+        """Call callback once for each message that was not applied cleanly.
+
+        That is a message that was not applied, or was applied with something
+        unknown in it. The callback runs after whatever was applied has been
+        delivered.
+        """
         self._rejected_callbacks.append(callback)
 
     def on_raw(self, callback: Callable[[str, bytes], None]) -> None:
