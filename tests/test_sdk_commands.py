@@ -1,9 +1,9 @@
 """Characterisation tests for NavimowSDK's command dispatch and consumer callbacks.
 
 A recording fake stands in for ``NavimowMQTT``, so nothing connects; the topic
-``publish_command`` uses is pinned in the MQTT client tests. The tests run
-inside ``asyncio.run``, where the facade binds the running loop and hands it to
-the MQTT client; one constructs outside a loop to show that None is handed over
+``publish_command`` uses is pinned in the MQTT client tests. Most tests are
+async tests, where the facade binds the running loop and hands it to the MQTT
+client; one constructs outside a loop to show that None is handed over
 instead, and one under a loop set as current to show that it is handed over.
 
 The four command methods raise ``MowerUnsupportedOperationError`` before
@@ -21,7 +21,6 @@ import asyncio
 import logging
 import uuid
 import warnings
-from collections.abc import Awaitable, Callable
 from typing import Any
 
 import pytest
@@ -67,10 +66,6 @@ def fake_mqtt(monkeypatch: pytest.MonkeyPatch) -> type[FakeMQTT]:
     return FakeMQTT
 
 
-def run(test: Callable[[], Awaitable[None]]) -> None:
-    asyncio.run(test())
-
-
 def make(**overrides: Any) -> tuple[NavimowSDK, FakeMQTT]:
     sdk = NavimowSDK(broker="broker.example.invalid", port=443, **overrides)
     (mqtt,) = FakeMQTT.instances
@@ -81,35 +76,33 @@ def topic(channel: str) -> str:
     return f"/downlink/vehicle/{DEVICE_ID}/realtimeDate/{channel}"
 
 
-def test_construction_passes_the_parameters_through_and_wires_on_message(
+@pytest.mark.asyncio
+async def test_construction_passes_the_parameters_through_and_wires_on_message(
     fake_mqtt: type[FakeMQTT],
 ) -> None:
-    async def test() -> None:
-        sdk, mqtt = make(username="u", password="p", ws_path="/mqtt", auth_headers={"Authorization": "Bearer t"})
-        assert mqtt.kwargs == {
-            "broker": "broker.example.invalid",
-            "port": 443,
-            "username": "u",
-            "password": "p",
-            "records": [],
-            "ws_path": "/mqtt",
-            "auth_headers": {"Authorization": "Bearer t"},
-            "loop": asyncio.get_running_loop(),
-            "keepalive_seconds": 60,
-            "reconnect_min_delay": 1,
-            "reconnect_max_delay": 60,
-            "subscribe_location": False,
-            "extra_topics": None,
-        }
-        assert mqtt.on_message == sdk._on_mqtt_message
-        assert sdk.mqtt is mqtt
-        assert sdk.is_connected is False
-        sdk.connect()
-        sdk.disconnect()
-        assert mqtt.calls == [("connect_async", ()), ("disconnect", ())]
-        assert fake_mqtt.instances == [mqtt]
-
-    run(test)
+    sdk, mqtt = make(username="u", password="p", ws_path="/mqtt", auth_headers={"Authorization": "Bearer t"})
+    assert mqtt.kwargs == {
+        "broker": "broker.example.invalid",
+        "port": 443,
+        "username": "u",
+        "password": "p",
+        "records": [],
+        "ws_path": "/mqtt",
+        "auth_headers": {"Authorization": "Bearer t"},
+        "loop": asyncio.get_running_loop(),
+        "keepalive_seconds": 60,
+        "reconnect_min_delay": 1,
+        "reconnect_max_delay": 60,
+        "subscribe_location": False,
+        "extra_topics": None,
+    }
+    assert mqtt.on_message == sdk._on_mqtt_message
+    assert sdk.mqtt is mqtt
+    assert sdk.is_connected is False
+    sdk.connect()
+    sdk.disconnect()
+    assert mqtt.calls == [("connect_async", ()), ("disconnect", ())]
+    assert fake_mqtt.instances == [mqtt]
 
 
 def test_construction_outside_a_running_loop_hands_over_no_loop_and_creates_none(
@@ -165,7 +158,8 @@ def test_the_gate_error_is_exported_from_the_package() -> None:
 
 @pytest.mark.parametrize("connected", [False, True], ids=["disconnected", "connected"])
 @pytest.mark.parametrize(("method", "args", "command", "params"), COMMANDS)
-def test_command_is_refused_by_default_before_the_client_is_touched(
+@pytest.mark.asyncio
+async def test_command_is_refused_by_default_before_the_client_is_touched(
     fake_mqtt: type[FakeMQTT],
     method: str,
     args: tuple,
@@ -173,54 +167,47 @@ def test_command_is_refused_by_default_before_the_client_is_touched(
     params: dict[str, Any],  # noqa: ARG001
     connected: bool,
 ) -> None:
-    async def test() -> None:
-        sdk, mqtt = make()
-        mqtt.is_connected = connected
-        with pytest.raises(MowerUnsupportedOperationError) as info:
-            getattr(sdk, method)(DEVICE_ID, *args)
-        text = str(info.value)
-        assert text.startswith(f"MQTT command {command!r} not sent: ")
-        assert f"navimow/{DEVICE_ID}/command" in text
-        assert REST_ALTERNATIVE[command] in text
-        assert "allow_experimental_mqtt_commands=True" in text
-        assert mqtt.calls == []
-        assert fake_mqtt.instances == [mqtt]
-
-    run(test)
+    sdk, mqtt = make()
+    mqtt.is_connected = connected
+    with pytest.raises(MowerUnsupportedOperationError) as info:
+        getattr(sdk, method)(DEVICE_ID, *args)
+    text = str(info.value)
+    assert text.startswith(f"MQTT command {command!r} not sent: ")
+    assert f"navimow/{DEVICE_ID}/command" in text
+    assert REST_ALTERNATIVE[command] in text
+    assert "allow_experimental_mqtt_commands=True" in text
+    assert mqtt.calls == []
+    assert fake_mqtt.instances == [mqtt]
 
 
 @pytest.mark.parametrize(("method", "args", "command", "params"), COMMANDS)
-def test_command_publishes_a_command_message_while_connected(
+@pytest.mark.asyncio
+async def test_command_publishes_a_command_message_while_connected(
     fake_mqtt: type[FakeMQTT], method: str, args: tuple, command: str, params: dict[str, Any]
 ) -> None:
-    async def test() -> None:
-        sdk, mqtt = make(allow_experimental_mqtt_commands=True)
-        assert "allow_experimental_mqtt_commands" not in mqtt.kwargs  # the gate has one layer
-        mqtt.is_connected = True
-        getattr(sdk, method)(DEVICE_ID, *args)
-        ((name, (device_id, payload)),) = mqtt.calls
-        assert name == "publish_command"
-        assert device_id == DEVICE_ID
-        assert payload == {"id": payload["id"], "device_id": DEVICE_ID, "command": command, "params": params}
-        assert payload["id"].startswith("cmd-")
-        uuid.UUID(payload["id"][len("cmd-") :])  # a fresh id per command
-        assert fake_mqtt.instances == [mqtt]
-
-    run(test)
+    sdk, mqtt = make(allow_experimental_mqtt_commands=True)
+    assert "allow_experimental_mqtt_commands" not in mqtt.kwargs  # the gate has one layer
+    mqtt.is_connected = True
+    getattr(sdk, method)(DEVICE_ID, *args)
+    ((name, (device_id, payload)),) = mqtt.calls
+    assert name == "publish_command"
+    assert device_id == DEVICE_ID
+    assert payload == {"id": payload["id"], "device_id": DEVICE_ID, "command": command, "params": params}
+    assert payload["id"].startswith("cmd-")
+    uuid.UUID(payload["id"][len("cmd-") :])  # a fresh id per command
+    assert fake_mqtt.instances == [mqtt]
 
 
 @pytest.mark.parametrize(("method", "args", "command", "params"), COMMANDS)
-def test_command_asks_to_connect_and_raises_while_disconnected(
+@pytest.mark.asyncio
+async def test_command_asks_to_connect_and_raises_while_disconnected(
     fake_mqtt: type[FakeMQTT], method: str, args: tuple, command: str, params: dict[str, Any]  # noqa: ARG001
 ) -> None:
-    async def test() -> None:
-        sdk, mqtt = make(allow_experimental_mqtt_commands=True)
-        with pytest.raises(RuntimeError, match="^MQTT not connected$"):
-            getattr(sdk, method)(DEVICE_ID, *args)
-        assert mqtt.calls == [("connect_async", ())]
-        assert fake_mqtt.instances == [mqtt]
-
-    run(test)
+    sdk, mqtt = make(allow_experimental_mqtt_commands=True)
+    with pytest.raises(RuntimeError, match="^MQTT not connected$"):
+        getattr(sdk, method)(DEVICE_ID, *args)
+    assert mqtt.calls == [("connect_async", ())]
+    assert fake_mqtt.instances == [mqtt]
 
 
 CHANNELS = [
@@ -251,24 +238,23 @@ CHANNELS = [
 
 
 @pytest.mark.parametrize(("channel", "register", "payload", "message"), CHANNELS)
-def test_callbacks_run_in_registration_order(
+@pytest.mark.asyncio
+async def test_callbacks_run_in_registration_order(
     fake_mqtt: type[FakeMQTT], channel: str, register: str, payload: bytes, message: Any
 ) -> None:
-    async def test() -> None:
-        sdk, mqtt = make()
-        seen: list[tuple[str, Any]] = []
-        getattr(sdk, register)(lambda msg: seen.append(("first", msg)))
-        getattr(sdk, register)(lambda msg: seen.append(("second", msg)))
-        await sdk._on_mqtt_message(topic(channel), payload, DEVICE_ID)
-        assert seen == [("first", message), ("second", message)]
-        assert mqtt.calls == []
-        assert fake_mqtt.instances == [mqtt]
-
-    run(test)
+    sdk, mqtt = make()
+    seen: list[tuple[str, Any]] = []
+    getattr(sdk, register)(lambda msg: seen.append(("first", msg)))
+    getattr(sdk, register)(lambda msg: seen.append(("second", msg)))
+    await sdk._on_mqtt_message(topic(channel), payload, DEVICE_ID)
+    assert seen == [("first", message), ("second", message)]
+    assert mqtt.calls == []
+    assert fake_mqtt.instances == [mqtt]
 
 
 @pytest.mark.parametrize(("channel", "register", "payload", "message"), CHANNELS)
-def test_a_raising_callback_is_logged_and_the_later_callbacks_still_run(
+@pytest.mark.asyncio
+async def test_a_raising_callback_is_logged_and_the_later_callbacks_still_run(
     fake_mqtt: type[FakeMQTT],
     caplog: pytest.LogCaptureFixture,
     channel: str,
@@ -276,95 +262,88 @@ def test_a_raising_callback_is_logged_and_the_later_callbacks_still_run(
     payload: bytes,
     message: Any,
 ) -> None:
-    async def test() -> None:
-        sdk, mqtt = make()
-        seen: list[tuple[str, Any]] = []
+    sdk, mqtt = make()
+    seen: list[tuple[str, Any]] = []
 
-        def failing(_message: Any) -> None:
-            raise RuntimeError("consumer failed")
+    def failing(_message: Any) -> None:
+        raise RuntimeError("consumer failed")
 
-        def failing_too(_message: Any) -> None:
-            raise ValueError("another consumer failed")
+    def failing_too(_message: Any) -> None:
+        raise ValueError("another consumer failed")
 
-        getattr(sdk, register)(failing)
-        getattr(sdk, register)(lambda msg: seen.append(("second", msg)))
-        getattr(sdk, register)(failing_too)
-        getattr(sdk, register)(lambda msg: seen.append(("fourth", msg)))
-        with caplog.at_level(logging.ERROR, logger="mower_sdk.sdk"):
-            await sdk._on_mqtt_message(topic(channel), payload, DEVICE_ID)
-        assert seen == [("second", message), ("fourth", message)]
+    getattr(sdk, register)(failing)
+    getattr(sdk, register)(lambda msg: seen.append(("second", msg)))
+    getattr(sdk, register)(failing_too)
+    getattr(sdk, register)(lambda msg: seen.append(("fourth", msg)))
+    with caplog.at_level(logging.ERROR, logger="mower_sdk.sdk"):
+        await sdk._on_mqtt_message(topic(channel), payload, DEVICE_ID)
+    assert seen == [("second", message), ("fourth", message)]
 
-        records = [r for r in caplog.records if r.name == "mower_sdk.sdk"]
-        assert [(r.levelno, type(r.exc_info[1])) for r in records] == [
-            (logging.ERROR, RuntimeError),
-            (logging.ERROR, ValueError),
-        ]
-        for record in records:
-            assert record.getMessage().startswith(f"Navimow {channel} callback ")
-            assert record.getMessage().endswith(f" failed for device {DEVICE_ID}")
-        cached = {"state": sdk.get_cached_state, "attributes": sdk.get_cached_attributes}.get(channel)
-        if cached is not None:
-            assert cached(DEVICE_ID) == message
-        assert fake_mqtt.instances == [mqtt]
-
-    run(test)
+    records = [r for r in caplog.records if r.name == "mower_sdk.sdk"]
+    assert [(r.levelno, type(r.exc_info[1])) for r in records] == [
+        (logging.ERROR, RuntimeError),
+        (logging.ERROR, ValueError),
+    ]
+    for record in records:
+        assert record.getMessage().startswith(f"Navimow {channel} callback ")
+        assert record.getMessage().endswith(f" failed for device {DEVICE_ID}")
+    cached = {"state": sdk.get_cached_state, "attributes": sdk.get_cached_attributes}.get(channel)
+    if cached is not None:
+        assert cached(DEVICE_ID) == message
+    assert fake_mqtt.instances == [mqtt]
 
 
-def test_update_mqtt_credentials_passes_everything_through(fake_mqtt: type[FakeMQTT]) -> None:
-    async def test() -> None:
-        sdk, mqtt = make()
-        sdk.update_mqtt_credentials(password="p")
-        sdk.update_mqtt_credentials("u", "p", {"Authorization": "Bearer t"}, force_reconnect=True)
-        sdk.update_mqtt_credentials(broker="moved.example.invalid", port=8443, ws_path="/mqtt/1")
-        keep = {"broker": None, "port": None, "ws_path": None}
-        assert mqtt.calls == [
+@pytest.mark.asyncio
+async def test_update_mqtt_credentials_passes_everything_through(fake_mqtt: type[FakeMQTT]) -> None:
+    sdk, mqtt = make()
+    sdk.update_mqtt_credentials(password="p")
+    sdk.update_mqtt_credentials("u", "p", {"Authorization": "Bearer t"}, force_reconnect=True)
+    sdk.update_mqtt_credentials(broker="moved.example.invalid", port=8443, ws_path="/mqtt/1")
+    keep = {"broker": None, "port": None, "ws_path": None}
+    assert mqtt.calls == [
+        (
+            "update_credentials",
+            ((), {"username": None, "password": "p", "auth_headers": None, **keep, "force_reconnect": False}),
+        ),
+        (
+            "update_credentials",
             (
-                "update_credentials",
-                ((), {"username": None, "password": "p", "auth_headers": None, **keep, "force_reconnect": False}),
+                (),
+                {
+                    "username": "u",
+                    "password": "p",
+                    "auth_headers": {"Authorization": "Bearer t"},
+                    **keep,
+                    "force_reconnect": True,
+                },
             ),
+        ),
+        (
+            "update_credentials",
             (
-                "update_credentials",
-                (
-                    (),
-                    {
-                        "username": "u",
-                        "password": "p",
-                        "auth_headers": {"Authorization": "Bearer t"},
-                        **keep,
-                        "force_reconnect": True,
-                    },
-                ),
+                (),
+                {
+                    "username": None,
+                    "password": None,
+                    "auth_headers": None,
+                    "broker": "moved.example.invalid",
+                    "port": 8443,
+                    "ws_path": "/mqtt/1",
+                    "force_reconnect": False,
+                },
             ),
-            (
-                "update_credentials",
-                (
-                    (),
-                    {
-                        "username": None,
-                        "password": None,
-                        "auth_headers": None,
-                        "broker": "moved.example.invalid",
-                        "port": 8443,
-                        "ws_path": "/mqtt/1",
-                        "force_reconnect": False,
-                    },
-                ),
-            ),
-        ]
-        assert fake_mqtt.instances == [mqtt]
-
-    run(test)
+        ),
+    ]
+    assert fake_mqtt.instances == [mqtt]
 
 
-def test_a_command_without_a_known_alternative_gets_a_neutral_refusal(fake_mqtt: type[FakeMQTT]) -> None:
-    async def test() -> None:
-        sdk, mqtt = make()
-        with pytest.raises(MowerUnsupportedOperationError) as info:
-            sdk._send_mqtt_command(DEVICE_ID, "set_cutting_pattern", {})
-        text = str(info.value)
-        assert "No supported alternative is known;" in text
-        assert "blade height" not in text
-        assert mqtt.calls == []
-        assert fake_mqtt.instances == [mqtt]
-
-    run(test)
+@pytest.mark.asyncio
+async def test_a_command_without_a_known_alternative_gets_a_neutral_refusal(fake_mqtt: type[FakeMQTT]) -> None:
+    sdk, mqtt = make()
+    with pytest.raises(MowerUnsupportedOperationError) as info:
+        sdk._send_mqtt_command(DEVICE_ID, "set_cutting_pattern", {})
+    text = str(info.value)
+    assert "No supported alternative is known;" in text
+    assert "blade height" not in text
+    assert mqtt.calls == []
+    assert fake_mqtt.instances == [mqtt]
