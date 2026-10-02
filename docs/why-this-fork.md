@@ -69,11 +69,21 @@ the first.
 
 The topics of the first two were already these in upstream's first release
 and stayed so through 0.1.2, whatever else changed around them: as
-published, neither appears ever to have been usable for the feed. The fork does not repair them and does not
-delete them. It moves them out of the way, into `mower_sdk.legacy`, and makes
-them explicitly deprecated: they still import from their old names, and the
-first use of one emits a `DeprecationWarning`, so the state of these routes
-is no longer silent.
+published, neither appears ever to have been usable for the feed.
+
+What the other topic forms are cannot be told from the repository. They may
+be something the cloud is meant to serve one day, or what is left of an
+earlier design. Upstream's code says only, of the first route's topics, that
+the format is still to be adjusted, and nothing upstream has published says
+more. The same holds for the MQTT command topic in the table above, which has
+the `navimow/<id>/...` form too. The fork therefore claims no more than this:
+with the topics the broker serves today, the two routes receive nothing, and
+no mower has been reported to act on a command published to that topic.
+
+The fork does not repair them and does not delete them. It moves them out of
+the way, into `mower_sdk.legacy`, and makes them explicitly deprecated: they
+still import from their old names, and the first use of one emits a
+`DeprecationWarning`, so the state of these routes is no longer silent.
 [`mower_sdk/legacy/README.md`](../mower_sdk/legacy/README.md) describes each
 module, and [migrating.md](migrating.md) gives the way over to `NavimowSDK`.
 
