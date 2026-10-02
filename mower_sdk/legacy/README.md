@@ -89,7 +89,8 @@ Several checks keep it that way:
 - The `no-protected-changes` pre-commit hook refuses a commit that edits,
   adds, deletes or moves any file in this folder.
 - The commit-message rules require a `Legacy-edit: <reason>` trailer on any
-  commit that does, and CI checks that for every commit of a pull request.
+  commit that does, unless it is a ported upstream commit, and CI checks that
+  for every commit of a pull request.
 - ruff applies only its `F` rules here, so the code is never reformatted or
   modernised (`pyproject.toml`).
 - The wheel check fails if any of the ten modules is missing from the built
@@ -111,9 +112,10 @@ or a feature of this project's own goes to the live path, even when the same
 defect exists in a legacy class: the legacy classes stay as upstream shipped
 them.
 
-Every commit that changes a file here other than this README carries a
-`Legacy-edit: <reason>` trailer, whatever its origin, and one made with
-`git commit` has to skip the hook as well:
+A ported commit carries the `Upstream-commit: <sha>` trailer the port tool
+writes. Every other commit that changes a file here other than this README
+carries a `Legacy-edit: <reason>` trailer, and one made with `git commit` has
+to skip the hook as well:
 
 ```bash
 SKIP=no-protected-changes git commit

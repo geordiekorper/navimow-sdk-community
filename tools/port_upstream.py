@@ -25,11 +25,18 @@ commit by commit instead:
    that kept its first parent's version) is skipped. The start of the range
    should lie on the first-parent line of its end, as the fork point does.
 2. Otherwise it builds an mbox with one entry per commit: git's own mail
-   header and message (``git log --pretty=mboxrd``), a ``---`` separator, and
-   the commit's diff (``git diff-tree -p``) with the ``a/`` and ``b/`` paths of
+   header and message (``git log --pretty=mboxrd``), one trailer naming the
+   upstream commit (``Upstream-commit: <sha>``), a ``---`` separator, and the
+   commit's diff (``git diff-tree -p``) with the ``a/`` and ``b/`` paths of
    the moved files rewritten through the map. The message and the diff come
    from separate git commands, so the rewriter only ever sees diff text and
-   the message is copied byte for byte however much it looks like a patch.
+   the message is copied byte for byte however much it looks like a patch;
+   the trailer goes at its end, in place of any blank lines the message ended
+   with (git am drops those in any case). The trailer marks the commit as
+   ported:
+   the commit-message rules (``tools/gitlint_rules.py``) do not apply to a
+   commit that carries it and changes nothing outside ``legacy/`` and the
+   mixed files, since its message is upstream's.
    Patches are handled as bytes, split on LF only, so file content is never
    decoded or newline-translated on the way. The mbox is applied with
    ``git am -3 --keep-cr --patch-format=mboxrd``, so each commit lands in
@@ -68,6 +75,12 @@ HEADER_LINES = [
     re.compile(rb"^(copy (?:from|to) )(?P<a>.+)$"),
 ]
 HUNK_HEADER = re.compile(rb"^@@ -\d+(?:,(?P<old>\d+))? \+\d+(?:,(?P<new>\d+))? @@")
+
+# The trailer that marks a ported commit; tools/gitlint_rules.py reads it.
+TRAILER = b"Upstream-commit"
+# A trailer line: a token of letters, digits and hyphens, a colon and a value
+# (the same shape tools/gatelib.py takes for one).
+TRAILER_LINE = re.compile(rb"^[A-Za-z][A-Za-z0-9-]*: \S")
 
 
 def git(*args: str, check: bool = True, **kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -215,6 +228,22 @@ def mail_for(commit: str) -> bytes:
     return mail if mail.endswith(b"\n") else mail + b"\n"
 
 
+def with_trailer(mail: bytes, commit: str) -> bytes:
+    """The mbox entry with one trailer naming the upstream commit at the end of its message.
+
+    Blank lines at the end of the message are dropped, and nothing else of it
+    changes. The trailer joins the message's last paragraph when every line of
+    it is a trailer already (a Signed-off-by, say), and otherwise stands as a
+    paragraph of its own, which is where git looks for trailers.
+    """
+    headers, _, body = mail.partition(b"\n\n")
+    body = body.rstrip(b"\n")
+    last_paragraph = body.rsplit(b"\n\n", 1)[-1].split(b"\n") if body else []
+    in_trailer_block = bool(last_paragraph) and all(TRAILER_LINE.match(line) for line in last_paragraph)
+    gap = b"" if not body else b"\n" if in_trailer_block else b"\n\n"
+    return headers + b"\n\n" + body + gap + TRAILER + b": " + commit.encode("ascii") + b"\n"
+
+
 def diff_for(commit: str, parents: list[str]) -> bytes:
     """The commit's diff against its first parent, renames detected, binary changes included."""
     return git_bytes(
@@ -223,8 +252,8 @@ def diff_for(commit: str, parents: list[str]) -> bytes:
 
 
 def patch_for(commit: str, parents: list[str], moved: dict[bytes, bytes]) -> bytes:
-    """One mbox entry: the mail, a separator, and the rewritten diff."""
-    return mail_for(commit) + b"---\n\n" + rewrite_diff(diff_for(commit, parents), moved)
+    """One mbox entry: the mail with its trailer, a separator, and the rewritten diff."""
+    return with_trailer(mail_for(commit), commit) + b"---\n\n" + rewrite_diff(diff_for(commit, parents), moved)
 
 
 def main(argv: list[str] | None = None) -> int:
