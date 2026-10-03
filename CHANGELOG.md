@@ -9,6 +9,8 @@ keep the headings they were released with.
 
 ## [Unreleased]
 
+## [0.2.0a5] - 2026-10-02
+
 ### Changed
 
 - Package metadata. The classifiers list Python 3.13 and 3.14, which the
@@ -54,6 +56,9 @@ keep the headings they were released with.
   `async_get_mqtt_user_info`) are unchanged: empty results for a null `data`.
 
 ## [0.2.0a4] - 2026-10-01
+
+Tagged and tested, never uploaded: no index has this version, and its
+changes ship with 0.2.0a5.
 
 ### Changed
 
@@ -558,8 +563,9 @@ metadata and its guards. No line of executable code differs from upstream
 - `UPSTREAM.md`, recording the fork point, the remotes, provenance and the
   rules that keep a merge-back possible.
 
-[Unreleased]: https://github.com/geordiekorper/navimow-sdk-community/compare/v0.2.0a4...HEAD
-[0.2.0a4]: https://github.com/geordiekorper/navimow-sdk-community/compare/v0.2.0a3...v0.2.0a4
+[Unreleased]: https://github.com/geordiekorper/navimow-sdk-community/compare/v0.2.0a5...HEAD
+[0.2.0a5]: https://github.com/geordiekorper/navimow-sdk-community/compare/ab9115dd53348a2cb89446e333316cfbe91f24fb...v0.2.0a5
+[0.2.0a4]: https://github.com/geordiekorper/navimow-sdk-community/compare/v0.2.0a3...ab9115dd53348a2cb89446e333316cfbe91f24fb
 [0.2.0a3]: https://github.com/geordiekorper/navimow-sdk-community/compare/v0.2.0a2...v0.2.0a3
 [0.2.0a2]: https://github.com/geordiekorper/navimow-sdk-community/compare/v0.2.0a1...v0.2.0a2
 [0.2.0a1]: https://github.com/geordiekorper/navimow-sdk-community/releases/tag/v0.2.0a1
