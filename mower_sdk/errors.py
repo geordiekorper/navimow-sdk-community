@@ -91,8 +91,9 @@ class MowerTransportError(MowerAPIError):
     """Raised when a request brings no usable reply.
 
     A timeout, a connection error, an HTTP 5xx, a status the client cannot use
-    (below 200, or a redirect aiohttp did not follow), or a 2xx whose body is
-    not a JSON object.
+    (below 200, or a redirect aiohttp did not follow), a 2xx whose body is not
+    a JSON object, or, from the command and command-result calls, a successful
+    envelope whose data is null or not an object, which leaves nothing to read.
 
     For a command, the outcome is unknown rather than refused: the cloud may have
     acted on it. The aiohttp error, TimeoutError, UnicodeDecodeError or

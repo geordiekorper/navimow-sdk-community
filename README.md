@@ -221,12 +221,12 @@ Three rules keep it working:
 **Request timeout and errors.** Every `MowerAPI` request is bounded at 20 seconds in total by
 default. Pass `MowerAPI(..., request_timeout=None)` to leave the session's own timeout policy in
 force instead, or another number of seconds to change the bound. A failed request or a refusal
-is a `MowerAPIError` (one exception is kept from upstream: a successful reply whose `data` is
-null makes the two command calls raise `AttributeError`; the device list and the statuses are
-then empty); `MowerTransportError` means no usable reply (a timeout, a connection error, an
-HTTP 5xx, or a reply that is not JSON), so a command may still have been carried out;
-`MowerAuthRequiredError` means the credentials were refused, or that no token is set (then no
-request is sent); `MowerRateLimitedError` means slow down.
+is a `MowerAPIError`; `MowerTransportError` means no usable reply (a timeout, a connection
+error, an HTTP 5xx, a reply that is not JSON, or a successful reply whose `data` is null on a
+command or command-result call), so a command may still have been carried out; the device list
+and the statuses are empty for a null `data`; `MowerAuthRequiredError` means the credentials
+were refused, or that no token is set (then no request is sent); `MowerRateLimitedError` means
+slow down.
 
 ### MQTT
 

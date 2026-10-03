@@ -40,6 +40,18 @@ keep the headings they were released with.
   The same holds for `update_credentials()` and
   `NavimowSDK.update_mqtt_credentials()` on the paths that rebuild: a refused
   update stores nothing.
+- `MowerAPI`: a successful reply whose `data` is null, or not an object,
+  raises `MowerTransportError` from `async_send_command`,
+  `async_send_command_receipt`, `send_command`, `async_query_command_results`,
+  `query_command_results` and `async_get_command_result`. The command calls
+  used to let an `AttributeError` out, kept from upstream, and the result
+  query an `AttributeError` for a null `data` or `payload` or, for a null
+  `devices`, a `TypeError` from `async_get_command_result`; none was caught by
+  `except MowerAPIError`. The cloud may still have acted on the command, as
+  after a timeout. A result-query reply whose `payload` or `devices` is null
+  or not of the expected type is an empty list, as one without the key is.
+  The reads (`async_get_devices`, `async_get_device_statuses`,
+  `async_get_mqtt_user_info`) are unchanged: empty results for a null `data`.
 
 ## [0.2.0a4] - 2026-10-01
 
