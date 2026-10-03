@@ -28,6 +28,19 @@ keep the headings they were released with.
   coroutine, which is what the client has always required of them, and the
   paho callbacks carry paho's types.
 
+### Fixed
+
+- `NavimowSDK` constructed without `loop=` while the loop set as current for
+  the thread is closed raises `ValueError` saying that the current loop is
+  closed. It used to say that the `loop=` given was closed, although none was.
+- `NavimowMQTT.rebuild()` called from inside a running event loop other than
+  the bound one raises `RuntimeError` before anything changes. It used to
+  install the new paho client, tear the old one down and only then raise, from
+  the final connect, leaving the new client unstarted with nothing to retry.
+  The same holds for `update_credentials()` and
+  `NavimowSDK.update_mqtt_credentials()` on the paths that rebuild: a refused
+  update stores nothing.
+
 ## [0.2.0a4] - 2026-10-01
 
 ### Changed

@@ -1780,6 +1780,23 @@ def test_a_closed_loop_is_refused_at_construction(fake_paho: type[FakeClient]) -
     assert fake_paho.instances == []
 
 
+def test_the_facade_names_the_closed_loop_it_found(fake_paho: type[FakeClient]) -> None:
+    """Without loop= the facade looks for the current loop itself, so the message says so."""
+    closed = asyncio.new_event_loop()
+    asyncio.set_event_loop(closed)
+    closed.close()
+    try:
+        with pytest.raises(ValueError, match="^NavimowSDK: the loop set as current is closed$"):
+            NavimowSDK(broker="broker.example.invalid", port=1883)
+        with pytest.raises(ValueError, match="^NavimowSDK: the loop= given is closed$"):
+            NavimowSDK(broker="broker.example.invalid", port=1883, loop=closed)
+        mqtt = make(TCP_KWARGS)  # the client alone binds it; the drop is pinned above
+    finally:
+        asyncio.set_event_loop(None)
+    assert mqtt.loop is closed
+    assert fake_paho.instances == [mqtt.client]
+
+
 def test_a_connect_from_a_second_loop_in_another_thread_raises(fake_paho: type[FakeClient]) -> None:
     errors: list[BaseException] = []
 
@@ -1801,6 +1818,119 @@ def test_a_connect_from_a_second_loop_in_another_thread_raises(fake_paho: type[F
 
     run(test)
     assert len(errors) == 1 and "another running loop" in str(errors[0])
+
+
+def test_a_rebuild_from_a_second_loop_in_another_thread_is_refused_before_anything_changes(
+    fake_paho: type[FakeClient],
+) -> None:
+    errors: list[BaseException] = []
+
+    async def test() -> None:
+        mqtt = make(WS_KWARGS)  # binds this loop
+        mqtt.connect_async()
+        old = mqtt.client
+        before = (mqtt.client_id, mqtt.password, list(old.calls))
+
+        def from_another_thread() -> None:
+            async def rebuild() -> None:
+                mqtt.rebuild(password="rotated", reason="watchdog")
+
+            try:
+                asyncio.run(rebuild())
+            except RuntimeError as exc:
+                errors.append(exc)
+
+        await asyncio.to_thread(from_another_thread)
+        assert mqtt.client is old
+        assert (mqtt.client_id, mqtt.password, old.calls) == before
+        assert (mqtt.rebuilds, mqtt.last_rebuild_reason, mqtt._loop_started) == (0, None, True)
+        assert fake_paho.instances == [old]
+
+    run(test)
+    assert len(errors) == 1 and "rebuild() was called from another running loop" in str(errors[0])
+
+
+@pytest.mark.parametrize(
+    ("connected", "kwargs"),
+    [
+        (False, {"password": "rotated"}),
+        (True, {"password": "rotated", "force_reconnect": True}),
+        (True, {"broker": "other.example.invalid"}),
+    ],
+    ids=["changed_while_disconnected", "forced", "broker_changed"],
+)
+def test_a_credential_update_that_would_rebuild_is_refused_from_a_second_loop_before_it_stores(
+    fake_paho: type[FakeClient], connected: bool, kwargs: dict[str, Any]
+) -> None:
+    errors: list[BaseException] = []
+
+    async def test() -> None:
+        mqtt = make(WS_KWARGS)  # binds this loop
+        mqtt.connect_async()
+        old = mqtt.client
+        old.connected = connected
+        before = (
+            mqtt.username,
+            mqtt.password,
+            mqtt.auth_headers,
+            mqtt.broker,
+            mqtt.port,
+            mqtt.ws_path,
+            list(old.calls),
+        )
+
+        def from_another_thread() -> None:
+            async def update() -> None:
+                mqtt.update_credentials(**kwargs)
+
+            try:
+                asyncio.run(update())
+            except RuntimeError as exc:
+                errors.append(exc)
+
+        await asyncio.to_thread(from_another_thread)
+        assert mqtt.client is old
+        assert (
+            mqtt.username,
+            mqtt.password,
+            mqtt.auth_headers,
+            mqtt.broker,
+            mqtt.port,
+            mqtt.ws_path,
+            old.calls,
+        ) == before
+        assert (mqtt.rebuilds, mqtt.last_rebuild_reason) == (0, None)
+        assert fake_paho.instances == [old]
+
+    run(test)
+    assert len(errors) == 1 and "rebuild() was called from another running loop" in str(errors[0])
+
+
+def test_a_credential_update_that_keeps_the_connection_is_not_refused_from_a_second_loop(
+    fake_paho: type[FakeClient],
+) -> None:
+    async def test() -> None:
+        mqtt = make(WS_KWARGS)  # binds this loop
+        mqtt.connect_async()
+        mqtt.client.connected = True
+
+        def from_another_thread() -> None:
+            async def update() -> None:
+                mqtt.update_credentials(password="rotated")
+
+            asyncio.run(update())
+
+        await asyncio.to_thread(from_another_thread)
+        assert mqtt.password == "rotated"
+        assert mqtt.client.named("username_pw_set")[-1] == (
+            "username_pw_set",
+            ("user", "rotated"),
+            {},
+        )
+        assert mqtt.rebuilds == 0
+        assert fake_paho.instances == [mqtt.client]
+
+    run(test)
 
 
 class ClosingLoop:

@@ -834,6 +834,39 @@ class NavimowMQTT:
             self._wss_scheme,
         )
 
+    def _bind_or_refuse(self, caller: str) -> None:
+        """Bind a loop when none is bound, and refuse a call from a running loop other than it.
+
+        Run under the lifecycle lock by connect_async() and rebuild() before
+        either changes anything. A client constructed with no running or
+        current loop binds the loop this call is made from, running or set as
+        current, so the usual patterns (construct anywhere, connect from
+        inside the loop; or set the loop, connect, then run_forever) deliver
+        the callbacks there. A call made from inside a running loop other
+        than the bound one is refused: the callbacks would go to a loop the
+        caller is not running.
+
+        Args:
+            caller: The name of the method making the call, for the message.
+
+        Raises:
+            RuntimeError: Called from inside a running event loop other than
+                the bound one.
+        """
+        if self.loop is None:
+            self.loop = _resolve_event_loop(None)
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is not None and self.loop is not None and running is not self.loop:
+            raise RuntimeError(
+                f"NavimowMQTT is bound to event loop {self.loop!r}; {caller}() was called "
+                f"from another running loop, {running!r}. Call it from the bound loop or from "
+                "a thread with no running loop, or construct the client in (or with loop=) the "
+                "loop that will run it."
+            )
+
     def update_credentials(
         self,
         username: str | None = None,
@@ -892,8 +925,9 @@ class NavimowMQTT:
 
         Raises:
             RuntimeError: A rebuilding path was taken from inside a running
-                event loop other than the bound one; connect_async() raises it
-                at the end of the rebuild.
+                event loop other than the bound one. rebuild() raises it before
+                anything changes, so the stored values and the client are as
+                they were.
         """
         with self._lifecycle_lock:
             if self._endpoint_differs(broker, port, ws_path):
@@ -912,46 +946,55 @@ class NavimowMQTT:
                     reason="broker changed",
                 )
                 return
-            changed = False
-            if username is not None and username != self.username:
-                self.username = username
-                changed = True
-            if password is not None and password != self.password:
-                self.password = password
-                changed = True
-            if auth_headers is not None and auth_headers != self.auth_headers:
-                self.auth_headers = auth_headers
-                changed = True
-
+            changed = (
+                (username is not None and username != self.username)
+                or (password is not None and password != self.password)
+                or (auth_headers is not None and auth_headers != self.auth_headers)
+            )
+            # The rebuilding paths hand the values to rebuild(), which stores them only
+            # once its loop check has passed, so a refused rebuild leaves them as they were.
             if force_reconnect:
-                self.rebuild(reason="credentials updated, reconnect forced")
+                self.rebuild(
+                    username, password, auth_headers, reason="credentials updated, reconnect forced"
+                )
                 return
 
             if not changed:
                 return
 
-            if self.client.is_connected():
-                # The connection is healthy and is kept: hourly token rotation would otherwise
-                # cause needless reconnects and "device unavailable". The setters change what
-                # paho uses at its next connect, automatic reconnects included, so the merged
-                # values (not the arguments: a partial update keeps the current username) apply
-                # then without a rebuild.
-                self._apply_credentials(self.client)
+            if not self.client.is_connected():
                 _LOGGER.info(
-                    "NavimowMQTT credentials updated while connected: set on the client, "
-                    "used at the next reconnect: broker=%s port=%s",
+                    "NavimowMQTT credentials updated while disconnected, "
+                    "rebuilding and reconnecting: broker=%s port=%s",
                     self.broker,
                     self.port,
                 )
+                self.rebuild(
+                    username,
+                    password,
+                    auth_headers,
+                    reason="credentials updated while disconnected",
+                )
                 return
 
+            if username is not None:
+                self.username = username
+            if password is not None:
+                self.password = password
+            if auth_headers is not None:
+                self.auth_headers = auth_headers
+            # The connection is healthy and is kept: hourly token rotation would otherwise
+            # cause needless reconnects and "device unavailable". The setters change what
+            # paho uses at its next connect, automatic reconnects included, so the merged
+            # values (not the arguments: a partial update keeps the current username) apply
+            # then without a rebuild.
+            self._apply_credentials(self.client)
             _LOGGER.info(
-                "NavimowMQTT credentials updated while disconnected, "
-                "rebuilding and reconnecting: broker=%s port=%s",
+                "NavimowMQTT credentials updated while connected: set on the client, "
+                "used at the next reconnect: broker=%s port=%s",
                 self.broker,
                 self.port,
             )
-            self.rebuild(reason="credentials updated while disconnected")
 
     def rebuild(
         self,
@@ -1010,11 +1053,11 @@ class NavimowMQTT:
 
         Raises:
             RuntimeError: Called from inside a running event loop other than
-                the bound one. connect_async() raises it after the old client
-                is torn down and the new one installed, so the new client is
-                left unstarted.
+                the bound one. Raised before anything changes: the stored
+                values, the client and its connection are as they were.
         """
         with self._lifecycle_lock:
+            self._bind_or_refuse("rebuild")
             if username is not None:
                 self.username = username
             if password is not None:
@@ -1075,22 +1118,7 @@ class NavimowMQTT:
                 not running.
         """
         with self._lifecycle_lock:
-            if self.loop is None:
-                # Constructed with no running or current loop: bind the loop this connect
-                # is made from, running or set as current, so the usual patterns (construct
-                # anywhere, connect from inside the loop; or set the loop, connect, then
-                # run_forever) deliver the callbacks there.
-                self.loop = _resolve_event_loop(None)
-            try:
-                running = asyncio.get_running_loop()
-            except RuntimeError:
-                running = None
-            if running is not None and self.loop is not None and running is not self.loop:
-                raise RuntimeError(
-                    f"NavimowMQTT is bound to event loop {self.loop!r}; connect_async() was called "
-                    f"from another running loop, {running!r}. Connect from the bound loop, or "
-                    "construct the client in (or with loop=) the loop that will run it."
-                )
+            self._bind_or_refuse("connect_async")
             if self._loop_started:
                 # paho's thread is running for this client: connected, connecting, or
                 # waiting to retry. Calling paho's connect_async again would reset the

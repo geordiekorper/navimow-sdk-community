@@ -120,10 +120,11 @@ and `on_message` for one message. The rules:
   `asyncio.get_event_loop()` is not used to find it, since with no loop set
   it would create one.
 - **Refused early, or dropped.** A closed `loop=` is a `ValueError`, and
-  connecting from a running loop other than the bound one a `RuntimeError`:
-  the callbacks would go to a loop the caller is not running. With no loop
-  bound, or one that is stopped or closed, `_schedule` closes the coroutine
-  and logs; an exception there would end paho's thread.
+  connecting, or rebuilding, from a running loop other than the bound one a
+  `RuntimeError`, raised before anything changes: the callbacks would go to
+  a loop the caller is not running. With no loop bound, or one that is
+  stopped or closed, `_schedule` closes the coroutine and logs; an exception
+  there would end paho's thread.
 - **Facade state belongs to the loop.** The caches, the late-state marks and
   the location records are written there, by the tasks `_schedule` creates,
   and have no lock. `MqttWatchdog` reads them, so its checks run there too.

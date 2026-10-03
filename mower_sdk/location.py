@@ -117,6 +117,42 @@ _OBSERVED_AT = {1: "pose_at", 2: "task_at", 3: "target_last_at"}
 _RECORD_FIELDS = tuple(item.name for item in fields(DeviceLocation))
 
 
+@dataclass(frozen=True)
+class _Skipped:
+    """One entry of a message that the checks of decode() skip, read as far as they got.
+
+    Attributes:
+        entry_type: The entry's type; None for an unknown type that is not an
+            integer.
+        entry_time: The entry's time as read, or None, as
+            SkippedLocationEntry.timestamp has it.
+        own: The entry's own fields, as _entry_fields reads them; empty for an
+            unknown type.
+        reason: Why the entry is skipped, a name in REASON_PRIORITY.
+    """
+
+    entry_type: int | None
+    entry_time: int | None
+    own: dict[str, Any]
+    reason: str
+
+
+@dataclass(frozen=True)
+class _Entry:
+    """One entry of a message that passed the checks of decode() and is applied.
+
+    Attributes:
+        entry_type: The entry's type, 1 to 4.
+        entry_time: The entry's time, when it carries one that was read as a
+            whole number; None otherwise, and always for a delay entry.
+        own: The entry's own fields, as _entry_fields reads them.
+    """
+
+    entry_type: int
+    entry_time: int | None
+    own: dict[str, Any]
+
+
 @dataclass
 class ParsedLocation:
     """What one location message did.
@@ -547,109 +583,174 @@ class LocationDecoder:
         record["device_id"] = device_id
         record["marks"] = dict(current.marks)
 
-        def skip(
-            reason: str, entry_type: int | None, entry_time: int | None, own: dict[str, Any]
-        ) -> None:
-            result._reject(reason)
-            result.skipped.append(
-                SkippedLocationEntry(
-                    device_id=device_id,
-                    entry_type=entry_type,
-                    timestamp=entry_time,
-                    reason=reason,
-                    received_at=received_at,
-                    raw=dict(item),
-                    **own,
-                )
-            )
-
         for item in _in_time_order(payload):
             if not isinstance(item, dict):
                 continue
-            entry_type = item.get("type")
             if not item.keys() <= LOCATION_KNOWN_FIELDS:
                 result._reject("unknown_field")
-            if type(entry_type) is not int or entry_type not in LOCATION_ENTRY_TYPES:
-                skip(
-                    "unknown_type",
-                    entry_type if type(entry_type) is int else None,
-                    _whole(item.get("time")),
-                    {},
-                )
-                continue
-            if entry_type == 4 and "taskDelay" not in item:
+            entry = self._read(item, record, now_ms)
+            if entry is None:
                 continue  # the reconnect-time shape: no delay in it, the pose has the state
-            own = _entry_fields(entry_type, item)
-            # A delay entry carries no time of its own and is never guarded. A time sent
-            # as zero, negative or unreadable is not believed either, rather than taken
-            # as "no time", which would skip the stale check.
-            entry_time = None
-            if entry_type in _OBSERVED_AT and item.get("time") is not None:
-                entry_time = _whole(item["time"])
-                if entry_time is None or not _plausible(entry_time, now_ms):
-                    skip("implausible_time", entry_type, entry_time, own)
-                    continue
-            newest = self._newest(record, entry_type)
-            if entry_time is not None and newest is not None and entry_time <= newest:
-                skip("stale", entry_type, entry_time, own)
-                continue
-
-            if entry_type == 1:
-                if own["x"] is None or own["y"] is None:
-                    skip("unparsable", entry_type, entry_time, own)
-                    continue
-                if own["x"] == 0 and own["y"] == 0 and not own["theta"]:
-                    skip("placeholder", entry_type, entry_time, own)
-                    continue
-                record.update(own, pose_at=entry_time, pose_received_at=received_at)
-                # Decision: the pose's own code says docked (1) or charging (2), not
-                # the state channel or REST, which lag the mower and never report
-                # charging; a pose without a code (a lifted mower sends none) is not a
-                # sample, and neither is any other entry type, so the same pose is
-                # never counted twice. An untimed docked pose is a sample too: the
-                # position is real, only its time is unknown, so dock_at becomes None.
-                if own["vehicle_state"] in DOCK_VEHICLE_STATES:
-                    self._dock_sample(
-                        device_id, record, own["x"], own["y"], own["theta"], entry_time
+            if isinstance(entry, _Skipped):
+                result._reject(entry.reason)
+                result.skipped.append(
+                    SkippedLocationEntry(
+                        device_id=device_id,
+                        entry_type=entry.entry_type,
+                        timestamp=entry.entry_time,
+                        reason=entry.reason,
+                        received_at=received_at,
+                        raw=dict(item),
+                        **entry.own,
                     )
-            elif entry_type == 2:
-                if "current_zone" in own:
-                    record.update(current_zone=own["current_zone"], zone_at=entry_time)
-                if "route_progress" in own:
-                    record.update(route_progress=own["route_progress"], progress_at=entry_time)
-                task = {
-                    key: value
-                    for key, value in own.items()
-                    if key not in ("current_zone", "route_progress")
-                }
-                record.update(task, task_at=entry_time)
-            elif entry_type == 3:
-                ids = own["partition_ids"]
-                if record["partition_ids"] is None or set(ids) != set(record["partition_ids"]):
-                    record.update(partition_ids=ids, target_at=entry_time)
-                record["target_last_at"] = (
-                    entry_time  # a repeat of the same set, in any order, only advances this
                 )
-            else:
-                record.update(task_delay=own["task_delay"], delay_received_at=received_at)
-
-            if entry_time is not None:
-                record["marks"][entry_type] = entry_time
+                continue
+            self._apply(device_id, record, entry, received_at)
             location = DeviceLocation(**{**record, "marks": dict(record["marks"])})
             result.messages.append(
                 DeviceLocationMessage(
                     device_id=device_id,
-                    entry_type=entry_type,
-                    timestamp=entry_time,
+                    entry_type=entry.entry_type,
+                    timestamp=entry.entry_time,
                     received_at=received_at,
                     location=location,
                     raw=dict(item),
-                    **own,
+                    **entry.own,
                 )
             )
         if result.messages:
             self._records[device_id] = result.messages[-1].location
         return result
+
+    def _read(
+        self, item: dict[str, Any], record: dict[str, Any], now_ms: int
+    ) -> _Entry | _Skipped | None:
+        """Run the checks of decode() on one entry, in the order its docstring lists them.
+
+        Args:
+            item: The entry as decoded, an object.
+            record: The working copy of the record's fields, for the stale
+                check.
+            now_ms: The time the plausibility window is measured from, in
+                epoch milliseconds.
+
+        Returns:
+            The entry to apply when it passed every check; else what was read
+            of it and the reason it is skipped for. None for the reconnect-time
+            delay shape, a delay entry without taskDelay, which is passed over
+            without a reason.
+        """
+        entry_type = item.get("type")
+        if type(entry_type) is not int or entry_type not in LOCATION_ENTRY_TYPES:
+            return _Skipped(
+                entry_type if type(entry_type) is int else None,
+                _whole(item.get("time")),
+                {},
+                "unknown_type",
+            )
+        if entry_type == 4 and "taskDelay" not in item:
+            return None
+        own = _entry_fields(entry_type, item)
+        # A delay entry carries no time of its own and is never guarded. A time sent
+        # as zero, negative or unreadable is not believed either, rather than taken
+        # as "no time", which would skip the stale check.
+        entry_time = None
+        if entry_type in _OBSERVED_AT and item.get("time") is not None:
+            entry_time = _whole(item["time"])
+            if entry_time is None or not _plausible(entry_time, now_ms):
+                return _Skipped(entry_type, entry_time, own, "implausible_time")
+        newest = self._newest(record, entry_type)
+        if entry_time is not None and newest is not None and entry_time <= newest:
+            return _Skipped(entry_type, entry_time, own, "stale")
+        if entry_type == 1:
+            if own["x"] is None or own["y"] is None:
+                return _Skipped(entry_type, entry_time, own, "unparsable")
+            if own["x"] == 0 and own["y"] == 0 and not own["theta"]:
+                return _Skipped(entry_type, entry_time, own, "placeholder")
+        return _Entry(entry_type, entry_time, own)
+
+    def _apply(
+        self, device_id: str, record: dict[str, Any], entry: _Entry, received_at: datetime
+    ) -> None:
+        """Apply one entry that passed the checks to the working record, as decode() describes.
+
+        The entry's type decides which fields it writes; a timed entry then
+        raises the mark of its type to its time.
+
+        Args:
+            device_id: The device, which the dock estimate's candidate is kept
+                under.
+            record: The working copy of the record's fields, changed in place.
+            entry: The entry, which passed the checks.
+            received_at: The UTC receipt time.
+        """
+        if entry.entry_type == 1:
+            self._apply_pose(device_id, record, entry, received_at)
+        elif entry.entry_type == 2:
+            self._apply_task(record, entry)
+        elif entry.entry_type == 3:
+            self._apply_target(record, entry)
+        else:
+            record.update(task_delay=entry.own["task_delay"], delay_received_at=received_at)
+        if entry.entry_time is not None:
+            record["marks"][entry.entry_type] = entry.entry_time
+
+    def _apply_pose(
+        self, device_id: str, record: dict[str, Any], entry: _Entry, received_at: datetime
+    ) -> None:
+        """Write a pose entry's fields and times, and fold a docked pose into the dock estimate.
+
+        Args:
+            device_id: The device, which the dock estimate's candidate is kept
+                under.
+            record: The working copy of the record's fields, changed in place.
+            entry: The pose entry, which passed the checks.
+            received_at: The UTC receipt time, which pose_received_at takes.
+        """
+        own = entry.own
+        record.update(own, pose_at=entry.entry_time, pose_received_at=received_at)
+        # Decision: the pose's own code says docked (1) or charging (2), not
+        # the state channel or REST, which lag the mower and never report
+        # charging; a pose without a code (a lifted mower sends none) is not a
+        # sample, and neither is any other entry type, so the same pose is
+        # never counted twice. An untimed docked pose is a sample too: the
+        # position is real, only its time is unknown, so dock_at becomes None.
+        if own["vehicle_state"] in DOCK_VEHICLE_STATES:
+            self._dock_sample(device_id, record, own["x"], own["y"], own["theta"], entry.entry_time)
+
+    @staticmethod
+    def _apply_task(record: dict[str, Any], entry: _Entry) -> None:
+        """Write a task entry's fields: the zone and route pairs it sent, the rest whole.
+
+        Args:
+            record: The working copy of the record's fields, changed in place.
+            entry: The task entry, which passed the checks.
+        """
+        own, entry_time = entry.own, entry.entry_time
+        if "current_zone" in own:
+            record.update(current_zone=own["current_zone"], zone_at=entry_time)
+        if "route_progress" in own:
+            record.update(route_progress=own["route_progress"], progress_at=entry_time)
+        task = {
+            key: value
+            for key, value in own.items()
+            if key not in ("current_zone", "route_progress")
+        }
+        record.update(task, task_at=entry_time)
+
+    @staticmethod
+    def _apply_target(record: dict[str, Any], entry: _Entry) -> None:
+        """Write a target entry's fields: a changed set with its time, a repeat only its last time.
+
+        Args:
+            record: The working copy of the record's fields, changed in place.
+            entry: The target entry, which passed the checks.
+        """
+        ids = entry.own["partition_ids"]
+        if record["partition_ids"] is None or set(ids) != set(record["partition_ids"]):
+            record.update(partition_ids=ids, target_at=entry.entry_time)
+        # A repeat of the same set, in any order, only advances this.
+        record["target_last_at"] = entry.entry_time
 
     def _dock_sample(
         self,
