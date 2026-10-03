@@ -126,13 +126,10 @@ def _command_results(data: dict[str, Any]) -> list[dict[str, Any]]:
     or AttributeError; what is left decides the ERROR check and the verdict.
 
     Args:
-        data: The reply's data, a dict.
+        data: The reply's data, a dict; the caller has refused anything else.
 
     Returns:
         The dict entries of data.payload.commands, else an empty list.
-
-    Raises:
-        AttributeError: data is not a dict, as when the reply's data is null.
     """
     payload = data.get("payload")
     results = payload.get("commands") if isinstance(payload, dict) else None
@@ -766,8 +763,9 @@ class MowerAPI:
                 Also what _async_request and _unwrap raise: a
                 MowerAuthRequiredError, MowerRateLimitedError or
                 MowerTransportError, or a plain MowerAPIError.
-            AttributeError: A successful reply whose data is null, a behaviour
-                kept from upstream.
+            MowerTransportError: A successful envelope whose data is null or
+                not an object: there is no result to read, and the cloud may
+                still have acted on the command.
         """
         command_mapping: dict[MowerCommand, tuple[str, dict[str, Any] | None]] = {
             MowerCommand.START: (
@@ -804,6 +802,14 @@ class MowerAPI:
             data={"commands": [{"devices": [{"id": device_id}], "execution": execution}]},
         )
         data = self._unwrap(response)
+        if not isinstance(data, dict):
+            # Decision: a successful envelope with no data object is a reply the client
+            # cannot use, not a refusal: nothing says whether the command was taken, as
+            # after a timeout, so it is the transport error, which a consumer answers by
+            # polling the status, and not the AttributeError upstream let out.
+            raise MowerTransportError(
+                f"{ERROR_MESSAGES['API_REQUEST_FAILED']}: reply data is null or not an object"
+            )
         command_results = _command_results(data)
         for result in command_results:
             if result.get("status") == "ERROR":
@@ -841,16 +847,15 @@ class MowerAPI:
                 often.
             MowerTransportError: No usable reply: a timeout, a connection
                 error, an HTTP 5xx or another status the client cannot use,
-                or a 2xx whose body is not a JSON object. The cloud may still
-                have accepted the command.
+                a 2xx whose body is not a JSON object, or a successful
+                envelope whose data is null or not an object. The cloud may
+                still have accepted the command.
             MowerAPIError: The cloud refused the command: a result in the
                 reply is an ERROR other than alreadyInState, and its errorCode
                 is the error_code (COMMAND_FAILED when it has none). Also any
                 other HTTP status of 400 or more, any other envelope code than
                 1, or a command that is not a MowerCommand member (error_code
                 INVALID_COMMAND, no request is sent).
-            AttributeError: A successful reply whose data is null, a behaviour
-                kept from upstream.
         """
         data, _results = await self._async_send_command(device_id, command)
         return data
@@ -871,9 +876,10 @@ class MowerAPI:
 
         Two cases return no receipt. Any other ERROR result raises MowerAPIError
         exactly as async_send_command does: the cloud refused the command. No
-        usable reply (a timeout, a connection error, an HTTP 5xx, or a body that
-        is not a JSON object) raises MowerTransportError: the cloud may still
-        have accepted the command.
+        usable reply (a timeout, a connection error, an HTTP 5xx, a body that
+        is not a JSON object, or a successful envelope whose data is null or
+        not an object) raises MowerTransportError: the cloud may still have
+        accepted the command.
 
         Args:
             device_id: The id of the device to command.
@@ -897,8 +903,6 @@ class MowerAPI:
                 other HTTP status of 400 or more, any other envelope code than
                 1, or a command that is not a MowerCommand member (error_code
                 INVALID_COMMAND, no request is sent).
-            AttributeError: A successful reply whose data is null, a behaviour
-                kept from upstream.
         """
         data, results = await self._async_send_command(device_id, command)
         return CommandReceipt(
@@ -933,8 +937,6 @@ class MowerAPI:
                 MowerAuthRequiredError, MowerRateLimitedError or
                 MowerTransportError, or a plain MowerAPIError, which includes
                 a command the cloud refused.
-            AttributeError: A successful reply whose data is null, as
-                async_send_command raises it.
         """
         _warn_sync_wrapper("send_command")
         return asyncio.run(self.async_send_command(device_id, command))
@@ -954,9 +956,10 @@ class MowerAPI:
 
         Returns:
             The command execution results: the reply's data.payload.devices,
-            as the cloud sent it. An empty list when the reply has no data,
-            payload or devices key and, without a request, when the devices
-            argument is empty.
+            as the cloud sent it, entries unread. An empty list when the
+            reply has no data key, or its payload or devices is missing, null
+            or not of the expected type, and, without a request, when the
+            devices argument is empty.
 
         Raises:
             MowerAuthRequiredError: No token is set (no request is sent), or
@@ -966,11 +969,10 @@ class MowerAPI:
                 often.
             MowerTransportError: No usable reply: a timeout, a connection
                 error, an HTTP 5xx or another status the client cannot use,
-                or a 2xx whose body is not a JSON object.
+                a 2xx whose body is not a JSON object, or a successful
+                envelope whose data is null or not an object.
             MowerAPIError: Any other HTTP status of 400 or more, or any other
                 envelope code than 1.
-            AttributeError: A successful reply whose data or payload is null,
-                a behaviour kept from upstream.
         """
         if not devices:
             return []
@@ -979,9 +981,14 @@ class MowerAPI:
             "/openapi/smarthome/responseCommands",
             data={"devices": devices},
         )
-        payload = self._unwrap(response).get("payload", {})
-        results: list[dict[str, Any]] = payload.get("devices", [])
-        return results
+        data = self._unwrap(response)
+        if not isinstance(data, dict):
+            raise MowerTransportError(
+                f"{ERROR_MESSAGES['API_REQUEST_FAILED']}: reply data is null or not an object"
+            )
+        payload = data.get("payload")
+        results = payload.get("devices") if isinstance(payload, dict) else None
+        return results if isinstance(results, list) else []
 
     def query_command_results(self, devices: list[dict[str, str]]) -> list[dict[str, Any]]:
         """Query command execution results synchronously (deprecated).
@@ -1007,8 +1014,6 @@ class MowerAPI:
             MowerAPIError: Whatever async_query_command_results raises: a
                 MowerAuthRequiredError, MowerRateLimitedError or
                 MowerTransportError, or a plain MowerAPIError.
-            AttributeError: A successful reply whose data or payload is null,
-                as async_query_command_results raises it.
         """
         _warn_sync_wrapper("query_command_results")
         return asyncio.run(self.async_query_command_results(devices))
@@ -1043,12 +1048,10 @@ class MowerAPI:
                 often.
             MowerTransportError: No usable reply: a timeout, a connection
                 error, an HTTP 5xx or another status the client cannot use,
-                or a 2xx whose body is not a JSON object.
+                a 2xx whose body is not a JSON object, or a successful
+                envelope whose data is null or not an object.
             MowerAPIError: Any other HTTP status of 400 or more, or any other
                 envelope code than 1.
-            AttributeError: A successful reply whose data or payload is null,
-                as async_query_command_results raises it.
-            TypeError: A successful reply whose data.payload.devices is null.
         """
         query: dict[str, str] = {"id": device_id}
         if cmd_num is not None:

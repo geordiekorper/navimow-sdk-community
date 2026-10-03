@@ -8,9 +8,9 @@ also records the ``timeout`` keyword each request carries, so the request
 timeout's default, a custom value and ``None`` can be checked.
 
 Every expectation is what the code does today, pinned so the envelope refactor
-can show that nothing observable changed. That includes the ugly cases: an
-explicit ``"data": null`` raises AttributeError from the two command
-endpoints, and that is pinned on purpose rather than corrected here.
+can show that nothing observable changed. An explicit ``"data": null`` is an
+empty result for the reads and a MowerTransportError for the two command
+endpoints, where upstream let an AttributeError out.
 """
 
 from __future__ import annotations
@@ -269,15 +269,20 @@ async def test_missing_data_key_is_an_empty_result(name: str, args: tuple, expec
     assert await getattr(api, name)(*args) == expected
 
 
+NO_DATA_OBJECT = f"{ERROR_MESSAGES['API_REQUEST_FAILED']}: reply data is null or not an object"
+
+
 @pytest.mark.parametrize(("name", "args"), ENDPOINT_NAMES)
 @pytest.mark.asyncio
-async def test_explicit_null_data_is_passed_through_as_none(name: str, args: tuple) -> None:
+async def test_explicit_null_data_is_an_empty_read_and_no_usable_reply_for_a_command(
+    name: str, args: tuple
+) -> None:
     """``response.get("data", {})`` returns None for an explicit null, unlike a missing key.
 
     async_get_mqtt_user_info returns that None; async_get_devices and
     async_get_device_statuses, read through their raw calls, give an empty result
-    as for a missing key; the two command calls call ``.get`` on it and raise
-    AttributeError.
+    as for a missing key; the two command calls raise MowerTransportError, as
+    for any reply they cannot read a result from.
     """
     api, _ = api_with(FakeResponse({"code": 1, "desc": "success", "data": None}))
     if name == "async_get_mqtt_user_info":
@@ -287,8 +292,60 @@ async def test_explicit_null_data_is_passed_through_as_none(name: str, args: tup
     elif name == "async_get_device_statuses":
         assert await getattr(api, name)(*args) == {}
     else:
-        with pytest.raises(AttributeError):
+        with pytest.raises(MowerTransportError) as info:
             await getattr(api, name)(*args)
+        assert info.value.message == NO_DATA_OBJECT
+        assert (info.value.status_code, info.value.error_code, info.value.envelope_code) == (
+            None,
+            None,
+            None,
+        )
+        assert info.value.__cause__ is None
+
+
+@pytest.mark.parametrize("data", [[], "text", 7], ids=["list", "text", "number"])
+@pytest.mark.parametrize(
+    ("name", "args"),
+    [
+        pytest.param("async_send_command", (DEVICE_ID, MowerCommand.START), id="send_command"),
+        pytest.param(
+            "async_send_command_receipt", (DEVICE_ID, MowerCommand.START), id="send_command_receipt"
+        ),
+        pytest.param(
+            "async_query_command_results", ([{"id": DEVICE_ID}],), id="query_command_results"
+        ),
+        pytest.param("async_get_command_result", (DEVICE_ID,), id="get_command_result"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_data_that_is_not_an_object_is_no_usable_reply_for_the_command_calls(
+    data: Any, name: str, args: tuple
+) -> None:
+    api, _ = api_with(FakeResponse({"code": 1, "desc": "success", "data": data}))
+    with pytest.raises(MowerTransportError) as info:
+        await getattr(api, name)(*args)
+    assert info.value.message == NO_DATA_OBJECT
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        {"payload": None},
+        {"payload": 7},
+        {"payload": {"devices": None}},
+        {"payload": {"devices": {"id": DEVICE_ID}}},
+    ],
+    ids=["null_payload", "payload_not_an_object", "null_devices", "devices_not_a_list"],
+)
+@pytest.mark.asyncio
+async def test_a_null_payload_or_devices_in_a_command_result_reply_is_an_empty_result(
+    data: dict[str, Any],
+) -> None:
+    """Read as a missing key is: the result query gives [] and the single-device query None."""
+    api, _ = api_with(FakeResponse({"code": 1, "desc": "success", "data": data}))
+    assert await api.async_query_command_results([{"id": DEVICE_ID}]) == []
+    api, _ = api_with(FakeResponse({"code": 1, "desc": "success", "data": data}))
+    assert await api.async_get_command_result(DEVICE_ID) is None
 
 
 @pytest.mark.asyncio

@@ -22,7 +22,7 @@ import pytest
 import mower_sdk
 from mower_sdk import models
 from mower_sdk.api import MowerAPI, _extract_command_number
-from mower_sdk.errors import ERROR_MESSAGES, MowerAPIError
+from mower_sdk.errors import ERROR_MESSAGES, MowerAPIError, MowerTransportError
 from mower_sdk.models import CommandReceipt, CommandVerdict, MowerCommand
 
 from .fakes import BASE_URL, FakeResponse, api_with, ok
@@ -181,6 +181,15 @@ async def test_a_transport_error_raises_with_its_cause_and_returns_no_receipt(
     with pytest.raises(MowerAPIError) as info:
         await api.async_send_command_receipt(DEVICE_ID, MowerCommand.START)
     assert info.value.__cause__ is cause
+
+
+@pytest.mark.asyncio
+async def test_null_data_is_a_transport_error_and_returns_no_receipt() -> None:
+    api, _ = api_with(FakeResponse({"code": 1, "desc": "success", "data": None}))
+    with pytest.raises(MowerAPIError) as info:
+        await api.async_send_command_receipt(DEVICE_ID, MowerCommand.START)
+    assert type(info.value) is MowerTransportError
+    assert info.value.__cause__ is None
 
 
 @pytest.mark.asyncio
