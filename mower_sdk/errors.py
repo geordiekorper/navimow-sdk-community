@@ -47,6 +47,10 @@ class MowerAPIError(Exception):
             command, or None when there is none.
         envelope_code: The reply envelope's code when the cloud refused the
             request in the envelope, else None; not part of str().
+        results: The reply's per-command result dicts, the dict entries of
+            data.payload.commands in order, when MowerAPI raised for a command
+            the cloud refused; an empty tuple otherwise, which includes every
+            error raised before a result could be read. Not part of str().
     """
 
     def __init__(
@@ -55,6 +59,7 @@ class MowerAPIError(Exception):
         status_code: int | None = None,
         error_code: str | None = None,
         envelope_code: int | None = None,
+        results: tuple[dict[str, Any], ...] = (),
     ):
         """Initialize the API exception.
 
@@ -64,12 +69,15 @@ class MowerAPIError(Exception):
                 stands for where no reply carried one, or None without one.
             error_code: The business error code, or None without one.
             envelope_code: The reply envelope's code, or None without one.
+            results: The reply's per-command result dicts, or an empty tuple
+                without any.
         """
         super().__init__(message)
         self.message = message
         self.status_code = status_code
         self.error_code = error_code
         self.envelope_code = envelope_code
+        self.results = results
 
     def __str__(self) -> str:
         """Return the formatted error message.
@@ -105,6 +113,7 @@ class MowerTransportError(MowerAPIError):
             a connection error, which bring no reply.
         error_code: None as MowerAPI raises it.
         envelope_code: None as MowerAPI raises it.
+        results: An empty tuple as MowerAPI raises it.
     """
 
 
@@ -123,6 +132,7 @@ class MowerAuthRequiredError(MowerAPIError):
             None.
         envelope_code: The envelope's code for a refusal in the envelope (None
             when it cannot be read as an integer), else None.
+        results: An empty tuple as MowerAPI raises it.
     """
 
 
@@ -139,6 +149,7 @@ class MowerRateLimitedError(MowerAPIError):
         error_code: None as MowerAPI raises it.
         envelope_code: The envelope's code, None when it cannot be read as an
             integer.
+        results: An empty tuple as MowerAPI raises it.
     """
 
 

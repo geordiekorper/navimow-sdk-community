@@ -9,6 +9,19 @@ keep the headings they were released with.
 
 ## [Unreleased]
 
+### Added
+
+- `MowerAPIError.results`: the reply's per-command result dicts, as a tuple,
+  on the error that `async_send_command`, `async_send_command_receipt` and
+  `send_command` raise for a command the cloud refused (an `ERROR` result
+  other than `alreadyInState`). A refusal used to keep only the `errorCode`,
+  as `error_code`; the result objects, which an accepted command's
+  `CommandReceipt.results` keeps, were lost. The tuple is read as the receipt
+  reads it: every dict entry of `data.payload.commands`, in order. It is
+  empty on every other `MowerAPIError`, each raised before any result is
+  read, and is not part of `str()`. The constructor takes it as a keyword
+  with that default, so existing calls are unchanged.
+
 ## [0.2.0a5] - 2026-10-02
 
 ### Changed

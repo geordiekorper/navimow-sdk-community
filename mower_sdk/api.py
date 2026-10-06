@@ -759,10 +759,13 @@ class MowerAPI:
             MowerAPIError: command is not one of the five commands above, with
                 error_code INVALID_COMMAND and before any request; or a result
                 is an ERROR other than alreadyInState, with the result's
-                errorCode as error_code (COMMAND_FAILED when it has none).
-                Also what _async_request and _unwrap raise: a
-                MowerAuthRequiredError, MowerRateLimitedError or
-                MowerTransportError, or a plain MowerAPIError.
+                errorCode as error_code (COMMAND_FAILED when it has none) and
+                the per-command results, the list this method would return
+                for an accepted reply, as a tuple in results. Also what
+                _async_request and _unwrap raise: a MowerAuthRequiredError,
+                MowerRateLimitedError or MowerTransportError, or a plain
+                MowerAPIError; those, like the INVALID_COMMAND error, are
+                raised before any result is read and have an empty results.
             MowerTransportError: A successful envelope whose data is null or
                 not an object: there is no result to read, and the cloud may
                 still have acted on the command.
@@ -821,6 +824,7 @@ class MowerAPI:
                 raise MowerAPIError(
                     f"{ERROR_MESSAGES['COMMAND_FAILED']}: {error_code}",
                     error_code=error_code,
+                    results=tuple(command_results),
                 )
         return data, command_results
 
@@ -851,11 +855,14 @@ class MowerAPI:
                 envelope whose data is null or not an object. The cloud may
                 still have accepted the command.
             MowerAPIError: The cloud refused the command: a result in the
-                reply is an ERROR other than alreadyInState, and its errorCode
-                is the error_code (COMMAND_FAILED when it has none). Also any
-                other HTTP status of 400 or more, any other envelope code than
-                1, or a command that is not a MowerCommand member (error_code
-                INVALID_COMMAND, no request is sent).
+                reply is an ERROR other than alreadyInState, its errorCode is
+                the error_code (COMMAND_FAILED when it has none), and the
+                reply's per-command result dicts, as a CommandReceipt carries
+                them, are the results. Also any other HTTP status of 400 or
+                more, any other envelope code than 1, or a command that is not
+                a MowerCommand member (error_code INVALID_COMMAND, no request
+                is sent); these are raised before any result is read and have
+                an empty results.
         """
         data, _results = await self._async_send_command(device_id, command)
         return data
@@ -898,11 +905,14 @@ class MowerAPI:
             MowerTransportError: No usable reply; the cloud may still have
                 accepted the command.
             MowerAPIError: The cloud refused the command: a result in the
-                reply is an ERROR other than alreadyInState, and its errorCode
-                is the error_code (COMMAND_FAILED when it has none). Also any
-                other HTTP status of 400 or more, any other envelope code than
-                1, or a command that is not a MowerCommand member (error_code
-                INVALID_COMMAND, no request is sent).
+                reply is an ERROR other than alreadyInState, its errorCode is
+                the error_code (COMMAND_FAILED when it has none), and the
+                reply's per-command result dicts, as a CommandReceipt carries
+                them, are the results. Also any other HTTP status of 400 or
+                more, any other envelope code than 1, or a command that is not
+                a MowerCommand member (error_code INVALID_COMMAND, no request
+                is sent); these are raised before any result is read and have
+                an empty results.
         """
         data, results = await self._async_send_command(device_id, command)
         return CommandReceipt(
