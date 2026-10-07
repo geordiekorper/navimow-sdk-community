@@ -529,7 +529,10 @@ class NavimowMQTT:
                 paho client only when both are given; an empty string is a
                 value, None is not.
             records: The devices whose ids build the subscribed topics. The
-                list is kept, not copied, and read at every subscribe.
+                list is kept, not copied, and read at every subscribe. With no
+                id in it the device level of each topic is the + wildcard,
+                which the broker granted and never delivered on (an X430,
+                October 2026): give the devices.
             ws_path: The WebSocket path. With one, the transport is WebSockets
                 and TLS is used; None or empty means TCP.
             auth_headers: Headers sent with the WebSocket upgrade; used only
@@ -549,12 +552,14 @@ class NavimowMQTT:
                 as well. Off by default: several models never publish on it,
                 and its payload is a movement trace.
             extra_topics: Topics subscribed as given on every connect, for
-                trying topics the protocol reference does not list (such as
-                the subTopics names the credential reply advertises). An extra
+                trying topics the protocol reference does not list. An extra
                 topic that overlaps a built-in one can make the broker deliver
                 a message more than once (MQTT allows a copy per matching
-                subscription), and a device-scoped wildcard was refused by the
-                broker on an X430 in September 2026.
+                subscription). Tried on an X430: a device-scoped # wildcard
+                was refused in September and October 2026; of the forms built
+                from the credential reply's subTopics names (mapChange,
+                realtime), only /downlink/vehicle/{device id}/realtimeDate/mapChange
+                was granted, in October 2026, and nothing has been seen on it.
 
         Raises:
             ValueError: loop is closed, or an extra topic is not one MQTT can
@@ -1207,8 +1212,9 @@ class NavimowMQTT:
         """Subscribe to the state, event and attributes topics of every known device.
 
         With subscribe_location, the location topic too; then every extra topic,
-        as given. With no device ids known, the device segment is the + wildcard.
-        Called on every connect, so the subscriptions survive a reconnect.
+        as given. With no device ids known, the device segment is the + wildcard,
+        which the broker has granted and never delivered on (an X430, October
+        2026). Called on every connect, so the subscriptions survive a reconnect.
         Each topic is sent in a request of its own and recorded in
         subscription_results: as "pending" until the broker answers, or as
         "not sent: <error>" when paho could not send the request.
@@ -1222,7 +1228,9 @@ class NavimowMQTT:
         topics, device_ids = self._topics()
         if not device_ids:
             _LOGGER.warning(
-                "NavimowMQTT subscribing cloud topics with wildcard: no device ids available"
+                "NavimowMQTT subscribing cloud topics with wildcard: no device ids available. "
+                "The broker grants these filters and has never been seen to deliver a message "
+                "on them; give the devices in records"
             )
         else:
             _LOGGER.info("NavimowMQTT subscribing cloud topics for %d device(s)", len(device_ids))

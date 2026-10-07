@@ -9,6 +9,16 @@ keep the headings they were released with.
 
 ## [Unreleased]
 
+### Changed
+
+- `NavimowMQTT`'s warning for a subscription made with no device ids now
+  says that the broker grants the `+` wildcard filters and has never been
+  seen to deliver a message on them, and asks for the devices in `records`.
+  On an X430 in October 2026 the four filters were granted and brought
+  nothing while the exact topics beside them delivered, so a facade built
+  with an empty `records` is a dead feed that `subscription_results` reports
+  as granted. The behaviour is unchanged: the topics are still subscribed.
+
 ### Added
 
 - `MowerAPIError.results`: the reply's per-command result dicts, as a tuple,

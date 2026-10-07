@@ -140,7 +140,9 @@ class NavimowSDK:
                 connected with no running or current loop must be given one.
             records: The account's devices, objects with an id attribute; the
                 topics of each are subscribed. With None or an empty list the
-                topics are subscribed with a wildcard in place of the device.
+                topics are subscribed with a wildcard in place of the device,
+                which the broker grants and has never delivered on (an X430,
+                October 2026): give the devices.
             keepalive_seconds: The MQTT keepalive; at least 30 is used. The
                 default is 60 because idle links die after about ten minutes,
                 and a ping a minute keeps them alive and finds a dead one
@@ -967,8 +969,10 @@ class NavimowSDK:
         """Publish a DeviceCommandMessage for device_id, if experimental MQTT commands are allowed.
 
         The message, with a new id of the form cmd-<uuid4>, is published to
-        navimow/{device_id}/command, a topic the broker accepts and no mower
-        has been seen to act on. The result of the publish is not checked.
+        navimow/{device_id}/command at QoS 0: the publish goes out, the
+        connection stays up, nothing comes back, and no mower has been seen
+        to act on it (an X430 ignored all four commands, mowing and charging,
+        in October 2026). The result of the publish is not checked.
 
         Args:
             device_id: The device the command is for.

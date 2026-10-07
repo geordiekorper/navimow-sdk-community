@@ -238,13 +238,20 @@ async def test_subscribe_all_uses_the_device_ids_and_skips_empty_ones(
 
 @pytest.mark.asyncio
 async def test_subscribe_all_falls_back_to_wildcards_without_device_ids(
-    fake_paho: type[FakeClient],
+    fake_paho: type[FakeClient], caplog: pytest.LogCaptureFixture
 ) -> None:
     mqtt = make(TCP_KWARGS, records=[device("")])
-    mqtt.subscribe_all("", "")
+    with caplog.at_level(logging.WARNING, logger="mower_sdk.mqtt"):
+        mqtt.subscribe_all("", "")
     assert [args for _, args, _ in mqtt.client.named("subscribe")] == [
         (t,) for t in WILDCARD_TOPICS
     ]
+    # The fallback is a dead feed: the broker grants the wildcard filters and has never
+    # delivered on them, and the one warning says so, since subscription_results cannot.
+    warnings_logged = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings_logged) == 1
+    assert "wildcard" in warnings_logged[0]
+    assert "never been seen to deliver" in warnings_logged[0]
     mqtt.unsubscribe_all("", "")
     assert [args for _, args, _ in mqtt.client.named("unsubscribe")] == [
         (t,) for t in WILDCARD_TOPICS
