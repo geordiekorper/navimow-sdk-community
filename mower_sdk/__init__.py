@@ -61,6 +61,7 @@ from mower_sdk.models import (
     mower_time_ms,
 )
 from mower_sdk.mqtt import ConnectionEvent, NavimowMQTT, ReceivedPayload, parse_topic
+from mower_sdk.navimow_client import MowerState, StateSource
 from mower_sdk.sdk import NavimowSDK
 from mower_sdk.watchdog import MqttWatchdog, RebuildRequest, WatchInput
 
@@ -164,6 +165,8 @@ __all__ = [
     "MowerCommand",
     "MowerError",
     "MqttConnectionInfo",
+    "MowerState",
+    "StateSource",
     "RAW_STATE_TO_CANONICAL",
     "REST_STATUS_KNOWN_FIELDS",
     "RejectedMessage",

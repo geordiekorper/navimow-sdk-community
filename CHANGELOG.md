@@ -41,6 +41,25 @@ keep the headings they were released with.
   empty on every other `MowerAPIError`, each raised before any result is
   read, and is not part of `str()`. The constructor takes it as a keyword
   with that default, so existing calls are unchanged.
+- `MowerState` and `StateSource`, in the new module
+  `mower_sdk.navimow_client` and at the package root: the state of one
+  mower as one object, what it is doing and where it is, for a consumer
+  that reads both from one place. The status half (`status`, `raw_state`,
+  `battery`, `error_code`, `error_message`, `observed_at`, `received_at`)
+  is built from one observation, a `DeviceStateMessage` the facade applied
+  with `MowerState.from_state_message` or a REST `DeviceStatus` with
+  `MowerState.from_status`, and `source` says which (`StateSource.MQTT`
+  or `StateSource.REST`); the status, battery and error fields are read as
+  `DeviceStatus.from_state_message` reads them, `observed_at` with
+  `mower_time_ms`, and a message without a `received_at` is refused with
+  `ValueError`. The location half, `location`, is the `DeviceLocation`
+  record as the caller gave it, None without one. `target_zone` is a
+  property, `mower_sdk.location.target_zone` read with the record and the
+  status; `age(now=None)` is the seconds since `received_monotonic`. The
+  source objects are kept as `message` and `rest_status`; they and
+  `received_monotonic` are left out of equality and of `repr`.
+  `DeviceStatus.from_state_message` and `DeviceStateMessage.from_status`
+  are unchanged.
 
 ## [0.2.0a5] - 2026-10-02
 
