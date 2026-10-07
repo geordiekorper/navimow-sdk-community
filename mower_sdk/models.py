@@ -528,6 +528,8 @@ class Device:
 
     MowerAPI.async_get_devices reads each entry of the cloud's device list
     into one with from_dict, which says which key fills which field.
+    product_key, device_name and iot_id are Alibaba Cloud IoT Platform's
+    device identity, which the Navimow cloud has not been seen to send.
 
     Attributes:
         id: Device ID.
@@ -540,10 +542,8 @@ class Device:
         extra: Extra information; None without any. from_dict fills it from
             the entry's own extra key, not from the keys it does not read.
         product_key: The entry's productKey or product_key; None without one.
-        device_name: The entry's deviceName or device_name, else its name;
-            None without any of them.
-        iot_id: The entry's iotId or iot_id, else its id; None without any of
-            them.
+        device_name: The entry's deviceName or device_name; None without one.
+        iot_id: The entry's iotId or iot_id; None without one.
     """
 
     id: str
@@ -569,9 +569,9 @@ class Device:
         ``firmware_version`` has one more source: ``firmware_version`` if
         present, else ``firmware``, the key the device-list reply of an X430
         carries, else ``firmwareVersion``. ``product_key``, ``device_name``
-        and ``iot_id`` take the first truthy value of their camelCase key,
-        their snake_case key and, for the last two, ``name`` and ``id``.
-        ``extra`` is the value under ``extra``; no other key is kept.
+        and ``iot_id`` take the first truthy value of their camelCase key and
+        their snake_case key. ``extra`` is the value under ``extra``; no other
+        key is kept.
 
         Args:
             data: Dictionary holding the device information: an entry of the
@@ -583,8 +583,8 @@ class Device:
             False and the other fields are None.
         """
         product_key = data.get("productKey") or data.get("product_key")
-        device_name = data.get("deviceName") or data.get("device_name") or data.get("name")
-        iot_id = data.get("iotId") or data.get("iot_id") or data.get("id")
+        device_name = data.get("deviceName") or data.get("device_name")
+        iot_id = data.get("iotId") or data.get("iot_id")
 
         return cls(
             id=data.get("id", ""),

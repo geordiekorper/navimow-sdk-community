@@ -106,7 +106,7 @@ The cloud returns the account's mowers as a list of objects in
 
 How `Device` is filled from an entry:
 
-| `Device` field | Entry key, in order of precedence | Without any of them |
+| `Device` field | Aliases, in order of preference | Value if undefined |
 |---|---|---|
 | `id` | `id` | `""` |
 | `name` | `name` | `""` |
@@ -116,13 +116,29 @@ How `Device` is filled from an entry:
 | `mac_address` | `mac_address`, `macAddress` | None |
 | `online` | `online`, `isOnline` | False |
 | `extra` | `extra` | None |
-| `product_key` | `productKey`, `product_key` | None |
-| `device_name` | `deviceName`, `device_name`, `name` | None |
-| `iot_id` | `iotId`, `iot_id`, `id` | None |
 
-From `id` to `extra` the first key that is present decides, so an explicit
-null or empty value is kept. For the last three fields the first key with a
-truthy value decides.
+The first alias that is present decides, so an explicit null or empty value
+is kept.
+
+`Device` has three more fields, and their keys are not Navimow's.
+`productKey`, `deviceName` and `iotId` are how Alibaba Cloud IoT Platform
+identifies a device, and upstream modelled the SDK on that platform.
+The same assumption left the `Thing` message envelopes now in
+[`mower_sdk.legacy.thing_models`](../mower_sdk/legacy/README.md#what-is-here)
+and the two ignored arguments of `NavimowMQTT.subscribe_all`. The Navimow
+cloud has not been seen to send any of the three keys (an X430, October
+2026), and nothing in the SDK reads the three fields except
+`Device.to_dict()`.
+
+| `Device` field | Aliases, in order of preference | Value if undefined |
+|---|---|---|
+| `product_key` | `productKey`, `product_key` | None |
+| `device_name` | `deviceName`, `device_name` | None |
+| `iot_id` | `iotId`, `iot_id` | None |
+
+Here the first alias with a truthy value decides, so an empty value is
+skipped; only when the last alias is itself present and empty does the field
+hold that empty value. On the live cloud all three are None.
 
 ### MQTT connection information
 

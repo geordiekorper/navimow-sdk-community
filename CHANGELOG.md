@@ -18,6 +18,16 @@ keep the headings they were released with.
   nothing while the exact topics beside them delivered, so a facade built
   with an empty `records` is a dead feed that `subscription_results` reports
   as granted. The behaviour is unchanged: the topics are still subscribed.
+- `Device.device_name` and `Device.iot_id` are `None` unless the device-list
+  entry carries `deviceName` or `device_name`, or `iotId` or `iot_id`. They
+  used to fall back to the entry's `name` and `id`, so on the live cloud,
+  which has not been seen to send any of those four keys, each repeated the
+  field beside it. With `product_key`, the two are Alibaba Cloud IoT
+  Platform's device identity, which upstream modelled the SDK on; the
+  Device list section of `docs/endpoints.md` says more. Nothing in the SDK
+  reads the two fields except `Device.to_dict()`, whose output no
+  longer has `device_name` and `iot_id` keys for such an entry. A consumer
+  that read either field gets the same value from `name` or `id`.
 
 ### Added
 

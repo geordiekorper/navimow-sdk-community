@@ -6,8 +6,8 @@ spelling read (``deviceModel``, ``firmwareVersion``, ``serialNumber``,
 ``macAddress``, ``isOnline``), and ``firmware_version`` also reads
 ``firmware``, the key the device-list reply of an X430 carries, before
 ``firmwareVersion``. ``product_key``, ``device_name`` and ``iot_id`` are filled
-from their camelCase key, then their snake_case key, then (for the last two)
-``name`` and ``id``.
+from their camelCase key, then their snake_case key, and never from ``name``
+or ``id``.
 """
 
 from __future__ import annotations
@@ -51,8 +51,6 @@ def test_snake_case_keys_are_read() -> None:
         mac_address="00:11:22:33:44:55",
         online=True,
         extra={"k": 1},
-        device_name="Lawn",
-        iot_id="dev-1",
     )
 
 
@@ -86,8 +84,6 @@ def test_camel_case_keys_are_read_when_the_snake_case_key_is_absent() -> None:
         serial_number="SN-1",
         mac_address="00:11:22:33:44:55",
         online=True,
-        device_name="Lawn",
-        iot_id="dev-1",
     )
 
 
@@ -110,6 +106,22 @@ def test_firmware_key_is_read_for_firmware_version() -> None:
     device = Device.from_dict(X430_AUTH_LIST_ENTRY)
     assert (device.id, device.name, device.model) == ("dev-1", "Example mower", "X430")
     assert device.firmware_version == "00AA"
+
+
+def test_a_cloud_entry_gives_no_alibaba_fields_and_to_dict_leaves_them_out() -> None:
+    """The live cloud sends none of the three keys, so the fields are None and not serialised."""
+    device = Device.from_dict(X430_AUTH_LIST_ENTRY)
+    assert (device.product_key, device.device_name, device.iot_id) == (None, None, None)
+    serialised = device.to_dict()
+    assert {"product_key", "device_name", "iot_id"}.isdisjoint(serialised)
+    assert serialised == {
+        "id": "dev-1",
+        "name": "Example mower",
+        "model": "X430",
+        "firmware_version": "00AA",
+        "serial_number": "",
+        "online": False,
+    }
 
 
 @pytest.mark.parametrize(
@@ -168,21 +180,21 @@ def test_firmware_version_precedence(payload: dict[str, Any], firmware_version: 
             "d",
             "f",
         ),
-        ({"id": "dev-1", "name": "Lawn"}, None, "Lawn", "dev-1"),
+        ({"id": "dev-1", "name": "Lawn"}, None, None, None),
         # The or-chain returns the last key's value when none is truthy, so an
-        # empty name or id gives "" rather than None.
-        ({"id": "", "name": ""}, None, "", ""),
+        # empty snake_case value gives "" rather than None.
+        ({"product_key": "", "device_name": "", "iot_id": ""}, "", "", ""),
     ],
     ids=[
         "camel_case",
         "snake_case",
         "camel_case_wins",
         "empty_camel_case_falls_back",
-        "name_and_id",
-        "empty_name_and_id",
+        "name_and_id_are_not_read",
+        "empty_snake_case_is_kept",
     ],
 )
-def test_aliyun_fallbacks(
+def test_alibaba_iot_keys(
     payload: dict[str, Any], product_key: str | None, device_name: str | None, iot_id: str | None
 ) -> None:
     device = Device.from_dict(payload)
