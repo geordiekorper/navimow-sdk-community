@@ -128,8 +128,6 @@ async def test_get_devices_success() -> None:
             model="i105",
             firmware_version="",
             serial_number="",
-            device_name="Lawn",
-            iot_id=DEVICE_ID,
         )
     ]
 

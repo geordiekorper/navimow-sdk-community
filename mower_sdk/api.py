@@ -87,9 +87,10 @@ def _extract_command_number(value: Any) -> str | None:
     command_number in a dict, its own keys first, then recursing into its
     values that are dicts or lists and into list elements that are dicts. A
     scalar is read only from one of those keys; a bare scalar met in a list (a
-    warning text, a device id) is never taken. Where cmdNum comes from is
-    undocumented and no captured reply carries one, so this is None in
-    practice.
+    warning text, a device id) is never taken. The cloud puts cmdNum in the
+    devices entry of a SUCCESS result (data.payload.commands[].devices[]) and
+    null there for an ERROR result (an X430, October 2026), which the
+    recursion reaches.
 
     Args:
         value: A reply's data, or any part of it.
@@ -593,10 +594,11 @@ class MowerAPI:
         """Fetch the status entries of several devices as the cloud sent them.
 
         One getVehicleStatus request that names every id; none is made for no
-        ids. An X430's entry carried id, capacityRemaining, vehicleState and
-        descriptiveCapacityRemaining; a field the cloud starts sending reaches
-        the caller here first. async_get_device_statuses reads the same entries
-        into DeviceStatus.
+        ids. An X430's entry carried id, capacityRemaining (one object with
+        unit PERCENTAGE and a numeric rawValue), vehicleState and
+        descriptiveCapacityRemaining (a text such as LOW); a field the cloud
+        starts sending reaches the caller here first. async_get_device_statuses
+        reads the same entries into DeviceStatus.
 
         Args:
             device_ids: The ids of the devices to ask about.
@@ -878,8 +880,9 @@ class MowerAPI:
         gives UNKNOWN. ACCEPTED means the cloud accepted the command, not that
         the mower acted: pause and resume settle within about 30 seconds and
         docking can take minutes, so poll the status for the target state.
-        command_number is the cmdNum the reply carries under a recognised key,
-        if any; no captured reply does.
+        command_number is the cmdNum a SUCCESS result carries in its devices
+        entry, which async_get_command_result takes; None when the reply
+        carries none, as after an ERROR result.
 
         Two cases return no receipt. Any other ERROR result raises MowerAPIError
         exactly as async_send_command does: the cloud refused the command. No
@@ -958,7 +961,7 @@ class MowerAPI:
 
         One responseCommands request that carries devices as given; none is
         made for an empty list. The reply's entries are returned unread: see
-        async_get_command_result for what is known of the endpoint.
+        async_get_command_result for their shape.
 
         Args:
             devices: The command targets, each a dict with an id and, to name
@@ -1036,15 +1039,20 @@ class MowerAPI:
         Wraps async_query_command_results for the single-device case. The query
         is {"id": device_id}, with cmdNum added only when cmd_num is given.
 
-        The endpoint is known from this SDK's code only: no cited capture shows
-        a reply, so its shape is unconfirmed, and where a cmdNum would come from
-        is undocumented (no captured sendCommands reply carries one; see
-        CommandReceipt.command_number).
+        An entry is {"id", "cmdNum", "status"} (an X430, October 2026). Queried
+        without a cmdNum the cloud answers the entry with cmdNum and status
+        both null, so pass the receipt's command_number. With one, status is
+        an integer: 2 at once and 3 within 30 seconds for every accepted
+        command, whether or not the mower acted; no other value has been
+        seen. The cloud keeps the result only briefly: it still read 3 two
+        minutes after the command and was null for every command older than
+        about half an hour.
 
         Args:
             device_id: The id of the device.
-            cmd_num: The command number, to query one command; None leaves
-                cmdNum out of the query.
+            cmd_num: The command number, CommandReceipt.command_number, to
+                query one command; None leaves cmdNum out of the query, and
+                the entry then says nothing.
 
         Returns:
             The first reply entry that is a dict whose id equals device_id, or

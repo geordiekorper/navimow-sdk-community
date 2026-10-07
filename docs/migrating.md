@@ -33,6 +33,7 @@ has the detail and the reason.
 | **Battery.** `DeviceStatus.battery` and `DeviceStateMessage.battery` are `None` when the payload has no readable value, where they were 0, and `capacityRemaining` is read before `battery`. | No parameter; `battery or 0` gives the 0 back. | [0.2.0a2] |
 | **Mower states.** `MowerStatus` gains `MAPPING`, `UPDATING` and `OFFLINE`. The raw states `isMapping`, `inSoftwareUpdate` and `Offline` or `offline` map to them, in `DeviceStatus.status` and in `DeviceStateMessage.state`, where they gave mowing, paused and unknown. | None; map the three back in the consumer. | [0.2.0a3] |
 | **Device list.** `async_get_devices()` leaves out an entry without an `id`, which became `Device(id="")`, and logs a warning. `Device.from_dict` also reads the camelCase keys and `firmware`, so `model`, `firmware_version`, `serial_number`, `mac_address` and `online` can be filled where they were empty. | None. | [0.2.0a2], [0.2.0a4] |
+| **Device identity.** `Device.device_name` and `Device.iot_id` are `None` for an entry without a `deviceName` or `iotId` key (or their snake_case spellings), which the cloud has not been seen to send; they repeated `name` and `id`. | `device.device_name or device.name`, `device.iot_id or device.id` | [Unreleased] |
 | **paho-mqtt.** The requirement is `paho-mqtt>=2.1.0,<3`; it was `>=1.6.1`. `NavimowMQTT` uses paho's callback API version 2, so an override or wrapper of `_on_connect` or `_on_disconnect` takes `(client, userdata, flags, reason_code, properties=None)`. | None. | [0.2.0a3] |
 | **Keepalive.** The MQTT keepalive defaults to 60 seconds; it was 2400. | `keepalive_seconds=2400` | [0.2.0a3] |
 | **MQTT commands.** `NavimowSDK.start_mowing`, `pause`, `return_to_base` and `set_blade_height` raise `MowerUnsupportedOperationError`, which is not a `MowerAPIError`, and publish nothing. | `NavimowSDK(..., allow_experimental_mqtt_commands=True)`; the README says [which commands work](../README.md#commands). | [0.2.0a2] |
@@ -290,3 +291,4 @@ classes and the old paths the question is decided when 0.2.0 is final, as the
 [0.2.0a3]: ../CHANGELOG.md#020a3---2026-09-30
 [0.2.0a4]: ../CHANGELOG.md#020a4---2026-10-01
 [0.2.0a5]: ../CHANGELOG.md#020a5---2026-10-02
+[Unreleased]: ../CHANGELOG.md#unreleased

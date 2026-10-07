@@ -329,6 +329,8 @@ For someone using the SDK:
 - [CHANGELOG.md](https://github.com/geordiekorper/navimow-sdk-community/blob/main/CHANGELOG.md): what changed in each version.
 - [docs/migrating.md](https://github.com/geordiekorper/navimow-sdk-community/blob/main/docs/migrating.md): coming from upstream's `navimow-sdk`, and moving off
   the deprecated classes.
+- [docs/endpoints.md](https://github.com/geordiekorper/navimow-sdk-community/blob/main/docs/endpoints.md): every request the SDK sends to the cloud, what
+  the cloud answers and what the caller gets back.
 - [docs/why-this-fork.md](https://github.com/geordiekorper/navimow-sdk-community/blob/main/docs/why-this-fork.md): why the community edition exists.
 
 For someone working on it:

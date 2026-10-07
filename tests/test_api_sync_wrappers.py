@@ -33,8 +33,6 @@ WRAPPERS = [
                 model="i105",
                 firmware_version="",
                 serial_number="",
-                device_name="Lawn",
-                iot_id=DEVICE_ID,
             )
         ],
         id="get_devices",

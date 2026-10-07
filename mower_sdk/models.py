@@ -277,9 +277,13 @@ class MowerCommand(Enum):
     What the cloud does with each, as observed: START resumes the task the app
     created and cannot choose a zone; PAUSE and RESUME work and settle within
     about 30 seconds; STOP pauses the task rather than ending it; DOCK sends
-    the mower home, which can take minutes. A SUCCESS result means the cloud
-    accepted the command, not that the mower acted: poll the status for the
-    state you want.
+    the mower home, which can take minutes. Sent to a docked mower, START and
+    RESUME start a one-time mowing, PAUSE and STOP are accepted and do
+    nothing, and DOCK is alreadyInState (an X430, October 2026). A SUCCESS
+    result means the cloud accepted the command, not that the mower acted: a
+    start the mower itself refused (after dark, with mowing at night switched
+    off) was a SUCCESS and showed only as an app notification. Poll the
+    status for the state you want.
     """
 
     START = "start"  # Start (resume) the task the app created
@@ -340,10 +344,11 @@ class CommandReceipt:
         device_id: The device the command was sent to.
         command: The command sent.
         verdict: The cloud's verdict, a CommandVerdict.
-        command_number: The reply's command number, when it carried one under
-            a recognised key (cmdNum and its spellings); None otherwise. No
-            captured reply carries one, and where it would come from is
-            undocumented.
+        command_number: The reply's command number: the cmdNum a SUCCESS
+            result carries in its devices entry (an X430, October 2026),
+            which MowerAPI.async_get_command_result takes. None when the reply
+            carries none under cmdNum or one of its spellings, as after an
+            ERROR result.
         results: The per-command result dicts from the reply, as a tuple;
             empty when the reply has none. Left out of the hash the frozen
             dataclass derives from its fields, since dicts are unhashable;
@@ -456,7 +461,9 @@ class MqttConnectionInfo:
     NavimowSDK.from_connection_info builds the facade from it. The reply of
     /openapi/mqtt/userInfo/get/v2 has been seen with mqttHost as a wss:// URL
     and mqttUrl as a path (/mqtt/{userId}); from_dict also reads mqttHost
-    without a scheme or with a port, and mqttUrl as a full wss:// URL.
+    without a scheme or with a port, and mqttUrl as a full wss:// URL. The
+    reply's other keys (userId, ak and subTopics, seen as ["mapChange",
+    "realtime"]) stay in raw, unread.
 
     Attributes:
         broker: The broker's host name, never a URL: mqttHost's, else a full
@@ -521,6 +528,8 @@ class Device:
 
     MowerAPI.async_get_devices reads each entry of the cloud's device list
     into one with from_dict, which says which key fills which field.
+    product_key, device_name and iot_id are Alibaba Cloud IoT Platform's
+    device identity, which the Navimow cloud has not been seen to send.
 
     Attributes:
         id: Device ID.
@@ -533,10 +542,8 @@ class Device:
         extra: Extra information; None without any. from_dict fills it from
             the entry's own extra key, not from the keys it does not read.
         product_key: The entry's productKey or product_key; None without one.
-        device_name: The entry's deviceName or device_name, else its name;
-            None without any of them.
-        iot_id: The entry's iotId or iot_id, else its id; None without any of
-            them.
+        device_name: The entry's deviceName or device_name; None without one.
+        iot_id: The entry's iotId or iot_id; None without one.
     """
 
     id: str
@@ -562,9 +569,9 @@ class Device:
         ``firmware_version`` has one more source: ``firmware_version`` if
         present, else ``firmware``, the key the device-list reply of an X430
         carries, else ``firmwareVersion``. ``product_key``, ``device_name``
-        and ``iot_id`` take the first truthy value of their camelCase key,
-        their snake_case key and, for the last two, ``name`` and ``id``.
-        ``extra`` is the value under ``extra``; no other key is kept.
+        and ``iot_id`` take the first truthy value of their camelCase key and
+        their snake_case key. ``extra`` is the value under ``extra``; no other
+        key is kept.
 
         Args:
             data: Dictionary holding the device information: an entry of the
@@ -576,8 +583,8 @@ class Device:
             False and the other fields are None.
         """
         product_key = data.get("productKey") or data.get("product_key")
-        device_name = data.get("deviceName") or data.get("device_name") or data.get("name")
-        iot_id = data.get("iotId") or data.get("iot_id") or data.get("id")
+        device_name = data.get("deviceName") or data.get("device_name")
+        iot_id = data.get("iotId") or data.get("iot_id")
 
         return cls(
             id=data.get("id", ""),
