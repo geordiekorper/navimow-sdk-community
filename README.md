@@ -322,6 +322,18 @@ The same readers are public for payloads a consumer keeps raw (from
 `RAW_STATE_TO_CANONICAL` is the table behind both, and `battery_from_payload(data)` reads the
 battery percentage from either payload shape.
 
+`MowerState` (`mower_sdk.navimow_client`, also at the package root) is one object for what a mower
+is doing and where it is.
+`MowerState.from_state_message(message, location=..., received_monotonic=...)` builds it from a
+state message the facade applied, and
+`MowerState.from_status(status, location=..., received_at=..., received_monotonic=...)` from a REST
+status; `source` (`StateSource.MQTT` or `StateSource.REST`) says which. A consumer reads `status`,
+`raw_state`, `battery`, `error_code`, `error_message`, `observed_at` (the mower's time, epoch
+milliseconds) and `received_at` for the status half, `location` (the `DeviceLocation` record as
+given) and the `target_zone` property for the location half, and `age()` for the seconds since the
+status half arrived. The client that builds these states from both transports and delivers each new
+one follows.
+
 ## Documentation
 
 For someone using the SDK:
