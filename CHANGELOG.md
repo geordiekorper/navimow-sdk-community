@@ -9,6 +9,8 @@ keep the headings they were released with.
 
 ## [Unreleased]
 
+## [0.2.0a6] - 2026-10-08
+
 ### Changed
 
 - `NavimowMQTT`'s warning for a subscription made with no device ids now
@@ -686,7 +688,8 @@ metadata and its guards. No line of executable code differs from upstream
 - `UPSTREAM.md`, recording the fork point, the remotes, provenance and the
   rules that keep a merge-back possible.
 
-[Unreleased]: https://github.com/geordiekorper/navimow-sdk-community/compare/v0.2.0a5...HEAD
+[Unreleased]: https://github.com/geordiekorper/navimow-sdk-community/compare/v0.2.0a6...HEAD
+[0.2.0a6]: https://github.com/geordiekorper/navimow-sdk-community/compare/v0.2.0a5...v0.2.0a6
 [0.2.0a5]: https://github.com/geordiekorper/navimow-sdk-community/compare/ab9115dd53348a2cb89446e333316cfbe91f24fb...v0.2.0a5
 [0.2.0a4]: https://github.com/geordiekorper/navimow-sdk-community/compare/v0.2.0a3...ab9115dd53348a2cb89446e333316cfbe91f24fb
 [0.2.0a3]: https://github.com/geordiekorper/navimow-sdk-community/compare/v0.2.0a2...v0.2.0a3
