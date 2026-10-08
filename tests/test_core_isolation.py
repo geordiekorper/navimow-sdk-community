@@ -27,6 +27,7 @@ CORE_MODULES = [
     "mower_sdk.location",
     "mower_sdk.models",
     "mower_sdk.mqtt",
+    "mower_sdk.navimow_client",
     "mower_sdk.sdk",
     "mower_sdk.watchdog",
 ]

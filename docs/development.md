@@ -30,6 +30,7 @@ uv when uv is installed and with virtualenv otherwise.
 | `mower_sdk/models.py` | The typed models and the payload readers |
 | `mower_sdk/location.py` | The location channel's decoder, the dock estimate and the target zone |
 | `mower_sdk/watchdog.py` | `MqttWatchdog` |
+| `mower_sdk/navimow_client.py` | `MowerState` and `StateSource`, the mower's state as one object from either transport; the client follows |
 | `mower_sdk/errors.py` | The exception classes |
 | `mower_sdk/_deprecation.py` | The warning policy for legacy names |
 | `mower_sdk/legacy/` and the seven shims beside it | Code moved from upstream, frozen: see its [README](../mower_sdk/legacy/README.md) |

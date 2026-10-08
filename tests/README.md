@@ -77,13 +77,14 @@ case.
 
 | Area | Modules |
 |---|---|
-| REST (`MowerAPI`) | `test_api_envelope.py`, `test_api_command_receipt.py`, `test_api_command_result.py`, `test_api_sync_wrappers.py` |
+| REST (`MowerAPI`) | `test_api_envelope.py`, `test_api_command_receipt.py`, `test_api_command_refused.py`, `test_api_command_result.py`, `test_api_sync_wrappers.py` |
 | MQTT client (`NavimowMQTT`) | `test_mqtt_client.py` |
 | Connection information | `test_connection_info.py` |
 | Facade (`NavimowSDK`) | `test_sdk_cache.py`, `test_sdk_commands.py`, `test_sdk_credentials.py`, `test_sdk_location.py`, `test_sdk_state_filter.py` |
 | Models and payload readers | `test_device_model.py`, `test_models_parsing.py`, `test_model_conversions.py`, `test_errors.py` |
 | Location | `test_location.py`, `test_location_dock.py`, `test_target_zone.py` |
 | Watchdog | `test_watchdog.py` |
+| The mower's state as one object (`MowerState`) | `test_mower_state.py` |
 | The README's threaded recipe, run as written | `test_threaded_recipe.py` |
 | The migration guide's "after" fragments, run as written | `test_migration_guide.py` |
 | Compatibility with upstream | `test_public_api_compat.py`, `test_module_star_imports.py`, `test_legacy_shims.py`, `test_core_isolation.py`, `test_upstream_distribution_warning.py` |

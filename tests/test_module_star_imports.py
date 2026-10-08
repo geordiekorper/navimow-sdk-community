@@ -9,7 +9,8 @@ picked up, and the names the community edition has added to that module, which
 ``COMMUNITY_ADDITIONS`` records. The imported helpers that a bare star import
 used to leak (``json``, ``asyncio``, ``dataclass`` and the like) no longer
 arrive; plain attribute access to them is unchanged. A module the community
-edition added (``mower_sdk.location``, ``mower_sdk.watchdog``) has no inventory
+edition added (``mower_sdk.location``, ``mower_sdk.watchdog``,
+``mower_sdk.navimow_client``) has no inventory
 entry: its ``__all__`` is exactly what ``COMMUNITY_ADDITIONS`` records for it.
 """
 
@@ -31,6 +32,7 @@ MODULES = [
     "mower_sdk.errors",
     "mower_sdk.location",
     "mower_sdk.watchdog",
+    "mower_sdk.navimow_client",
 ]
 
 # Public names the community edition adds to a module's ``__all__`` beyond the
@@ -87,6 +89,7 @@ COMMUNITY_ADDITIONS: dict[str, set[str]] = {
         "WATCHDOG_DEBOUNCE_SECONDS",
         "WatchInput",
     },
+    "mower_sdk.navimow_client": {"MowerState", "StateSource"},
 }
 
 
