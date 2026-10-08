@@ -86,6 +86,12 @@ test suite runs each "after" fragment as printed
 
 ### MowerClient
 
+A program that used `MowerClient` for the REST calls and the MQTT feed together
+has one replacement, `NavimowClient`: it owns a `MowerAPI` and a `NavimowSDK`,
+keeps a `MowerState` per mower and polls on its own clock, as the README's
+[quick example](../README.md#quick-example) shows; the table below maps each
+method to the layer underneath, for a program that keeps the layers apart.
+
 `MowerClient` holds a `MowerAPI` as `client.api`, and its REST methods only
 forward to it, so each call has one counterpart:
 
