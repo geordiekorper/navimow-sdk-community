@@ -65,6 +65,41 @@ keep the headings they were released with.
   while none is set. A consumer that hands the same token on, to build the
   facade with `NavimowSDK.from_connection_info(info, access_token=api.token,
   ...)` say, no longer keeps a copy of its own beside the client's.
+- `NavimowClient`, in `mower_sdk.navimow_client` and at the package root:
+  one client for an account over the REST client and the MQTT facade, with
+  one `MowerState` per mower. It is constructed on a `MowerAPI`.
+  `async_connect()` lists the devices when none were given (an empty list
+  is refused), polls their status once, builds the facade from the
+  connection information with the current token as its bearer and
+  connects the feed; `async_disconnect()` stops the feed and a later
+  `async_connect()` reconnects it. For every mower the client keeps the
+  latest state message the facade applied and the latest REST status and
+  builds the state from the MQTT observation while it is younger than
+  `mqtt_stale_seconds` (`MQTT_STALE_SECONDS`, 300), else from a REST
+  observation received after it; the location half is the facade's record,
+  or an applied entry's own snapshot. `state(device_id)` and `states()`
+  return the states, and `on_state(callback, device_id=None)` delivers each
+  new one: after a state message, an applied location entry, a poll whose
+  REST observation becomes or stays current, and a `restore_location()`
+  once the facade exists. `async_poll(device_ids=None)` polls over REST,
+  one request at a time, and keeps `last_poll_at` and `last_poll_error`.
+  The token stays the consumer's: `async_set_token(token)` sets it on REST
+  at once and pushes the bearer header to the MQTT client when it changed,
+  a `token_provider` coroutine, when given, is awaited before each operation
+  that sends a token, and after a refused connection the client fetches the
+  broker credentials again (`recover_on_connect_fail`, True by default).
+  `async_refresh_broker_credentials()`, `async_rebuild(reason)` and
+  `async_refresh_devices()` forward to the facade and the REST client with
+  the current token. `on_event`, `on_attributes` and `on_rejected` forward
+  the facade's callbacks, each with a keyword-only `device_id` filter, and
+  may be registered before `async_connect()`; `on_connection(callback)`
+  delivers the MQTT client's `ConnectionEvent`s and `on_error(callback)`
+  the failures of the client's own operations as `(operation, exception)`.
+  `subscribe_location` and `reject_late_state` default to True; the facade
+  options `keepalive_seconds`, `reconnect_min_delay`, `reconnect_max_delay`
+  and `extra_topics` pass through, and any other keyword is refused. Every
+  coroutine runs on the loop the client is bound to and raises
+  `RuntimeError` from another.
 
 ## [0.2.0a5] - 2026-10-02
 

@@ -89,7 +89,12 @@ COMMUNITY_ADDITIONS: dict[str, set[str]] = {
         "WATCHDOG_DEBOUNCE_SECONDS",
         "WatchInput",
     },
-    "mower_sdk.navimow_client": {"MowerState", "StateSource"},
+    "mower_sdk.navimow_client": {
+        "MQTT_STALE_SECONDS",
+        "MowerState",
+        "NavimowClient",
+        "StateSource",
+    },
 }
 
 

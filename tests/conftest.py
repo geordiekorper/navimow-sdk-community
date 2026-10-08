@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from mower_sdk import mqtt as mqtt_module
+from mower_sdk import navimow_client as client_module
 from mower_sdk import sdk as sdk_module
 from mower_sdk import watchdog as watchdog_module
 
@@ -41,7 +42,7 @@ def clock(monkeypatch: pytest.MonkeyPatch) -> FakeClock:
     It is installed in the modules of the live path that read them.
     """
     fake = FakeClock()
-    for module in (mqtt_module, sdk_module):
+    for module in (mqtt_module, sdk_module, client_module):
         monkeypatch.setattr(module, "time", fake)
         monkeypatch.setattr(module, "datetime", fake)
     monkeypatch.setattr(watchdog_module, "time", fake)
