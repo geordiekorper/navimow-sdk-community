@@ -95,8 +95,11 @@ forward the facade's callbacks, each with an optional `device_id=` filter, and `
 `on_error` report the connection's events and the client's own failures. The layers are reachable as
 `client.api`, `client.sdk` and `client.mqtt`.
 
-A command goes over REST: `await client.api.async_send_command(device_id, MowerCommand.START)`, or
-`async_send_command_receipt()` for a receipt whose result can be looked up later.
+A command goes through the client: `await client.async_send_command(device_id, MowerCommand.START)`
+sends it over REST, returns its `CommandReceipt` (kept as `client.last_receipt(device_id)`) and
+polls the status five seconds later, since the cloud's acceptance does not mean the mower acted;
+`MowerCommand` says what the cloud does with each command. The REST client's
+`async_send_command()` and `async_send_command_receipt()` stay on `client.api`.
 
 **Tokens.** The SDK is token-in: it takes an OAuth access token and never obtains or refreshes one
 itself. Obtain the token through the Navimow account's OAuth flow. After each refresh pass the new

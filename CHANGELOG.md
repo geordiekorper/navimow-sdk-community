@@ -112,8 +112,15 @@ keep the headings they were released with.
   A consumer's own `async_poll()` counts as a tick. `async_disconnect()`
   cancels the tasks before it disconnects. A failure on the clock is
   logged and reported through `on_error` as `"poll"` or
-  `"silence_check"`, never raised; `COMMAND_POLL_DELAY_SECONDS` (5) is
-  exported with the other constants.
+  `"silence_check"`, never raised. `async_send_command(device_id, command)`
+  sends a command through `MowerAPI.async_send_command_receipt`, with the
+  provider's token first, keeps the receipt as `last_receipt(device_id)`
+  and polls the status `COMMAND_POLL_DELAY_SECONDS` (5) later whatever the
+  reply, a refusal included, while the client is started; a second command
+  while that poll is pending leaves it in place, and its failure is
+  reported as `"command_poll"`. A refused command raises the REST client's
+  error unchanged and keeps no receipt. There is one command method and no
+  verb methods.
 
 ## [0.2.0a5] - 2026-10-02
 
