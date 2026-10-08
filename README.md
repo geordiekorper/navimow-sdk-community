@@ -51,8 +51,64 @@ The import name is `mower_sdk`.
 
 ## Quick example
 
-The example lists the account's mowers over REST, then connects to the MQTT feed and prints each
-state message for a minute. It sends no command.
+The example lists the account's mowers, connects to them and prints each new state for a minute. It
+sends no command.
+
+```python
+import asyncio
+
+import aiohttp
+
+from mower_sdk import MowerState, NavimowClient
+
+BASE_URL = "https://navimow-fra.ninebot.com"
+TOKEN = "your_access_token"  # an OAuth access token, obtained separately
+
+
+def show(state: MowerState) -> None:
+    print(state.device_id, state.status.value, state.battery, state.source.value, state.target_zone)
+
+
+async def main() -> None:
+    async with aiohttp.ClientSession() as session:
+        client = NavimowClient.from_token(session, TOKEN, BASE_URL)
+        client.on_state(show)
+        # Lists the mowers, polls their status once, connects the MQTT feed, and from
+        # then on polls every two minutes and delivers each new state to show().
+        await client.async_connect()
+        try:
+            await asyncio.sleep(60)
+        finally:
+            await client.async_disconnect()
+
+
+asyncio.run(main())
+```
+
+`NavimowClient.from_token()` builds the REST client (`MowerAPI`) on the session, the token and the
+base URL; `NavimowClient(api)` takes one the program already holds. The client owns the REST
+client and the MQTT facade and keeps one `MowerState` per mower: the
+status half from the latest state message while it is fresh, else from a REST status read after it,
+and the location record beside it (see [Mower states](#mower-states)). `client.state(device_id)` and
+`client.states()` return the states between callbacks; `on_event`, `on_attributes` and `on_rejected`
+forward the facade's callbacks, each with an optional `device_id=` filter, and `on_connection` and
+`on_error` report the connection's events and the client's own failures. The layers are reachable as
+`client.api`, `client.sdk` and `client.mqtt`.
+
+A command goes over REST: `await client.api.async_send_command(device_id, MowerCommand.START)`, or
+`async_send_command_receipt()` for a receipt whose result can be looked up later.
+
+**Tokens.** The SDK is token-in: it takes an OAuth access token and never obtains or refreshes one
+itself. Obtain the token through the Navimow account's OAuth flow. After each refresh pass the new
+token to `client.async_set_token()`, which sets it on the REST client at once and pushes the bearer
+header to the MQTT client, or give the client a `token_provider` coroutine, which it awaits before
+each operation that sends a token. With the layers alone, pass the token to `api.set_token()` and
+the bearer header to `sdk.update_mqtt_credentials(auth_headers=...)`.
+
+### The layers underneath
+
+The same without the client: the REST client, then the facade over the MQTT feed, each run by the
+program itself.
 
 ```python
 import asyncio
@@ -92,14 +148,6 @@ async def main() -> None:
 
 asyncio.run(main())
 ```
-
-A command goes over REST: `await api.async_send_command(device.id, MowerCommand.START)`, or
-`async_send_command_receipt()` for a receipt whose result can be looked up later.
-
-**Tokens.** The SDK is token-in: it takes an OAuth access token and never obtains or refreshes one
-itself. Obtain the token through the Navimow account's OAuth flow, and after each refresh pass the
-new token to `api.set_token()` and the new bearer header to
-`sdk.update_mqtt_credentials(auth_headers=...)`.
 
 ## Threaded applications
 
@@ -259,7 +307,8 @@ as `original`.
 **Broker address.** `api.async_get_mqtt_connection_info()` reads the credential reply into an
 `MqttConnectionInfo` (host, port, WebSocket path, username, password), and
 `NavimowSDK.from_connection_info(info, access_token=..., records=...)` builds the facade from it,
-as in the quick example. The constructor stays available for another transport.
+as in the layered example under the quick example; `NavimowClient` does the same inside
+`async_connect()`. The constructor stays available for another transport.
 
 **Broker credentials.** The MQTT username and password come from the cloud's credential endpoint,
 which allows about one call a minute. `await sdk.async_refresh_broker_credentials(api,
@@ -331,8 +380,8 @@ status; `source` (`StateSource.MQTT` or `StateSource.REST`) says which. A consum
 `raw_state`, `battery`, `error_code`, `error_message`, `observed_at` (the mower's time, epoch
 milliseconds) and `received_at` for the status half, `location` (the `DeviceLocation` record as
 given) and the `target_zone` property for the location half, and `age()` for the seconds since the
-status half arrived. The client that builds these states from both transports and delivers each new
-one follows.
+status half arrived. `NavimowClient` builds these states from both transports and delivers each new
+one to its `on_state` callbacks; `client.state(device_id)` returns the latest.
 
 ## Documentation
 

@@ -330,7 +330,7 @@ def test_state_source_values() -> None:
 
 
 def test_both_names_are_exported_from_the_module_and_the_package_root() -> None:
-    assert navimow_client.__all__ == ["MowerState", "StateSource"]
+    assert {"MowerState", "StateSource"} <= set(navimow_client.__all__)
     assert mower_sdk.MowerState is MowerState
     assert mower_sdk.StateSource is StateSource
     for name in ("MowerState", "StateSource"):

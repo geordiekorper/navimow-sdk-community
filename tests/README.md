@@ -62,6 +62,9 @@ The fakes that more than one module uses have one definition each, in
   the `fake_mqtt` fixture.
 - `FakeClock` stands in for `time` and `datetime` in the modules of the live
   path and is installed by the `clock` fixture; it starts at `T0`.
+- `FakeSleeper` stands in for the function `NavimowClient`'s clock waits
+  through and is installed by the `sleeper` fixture; each task's wait is
+  held until the test releases it.
 
 A fake that one module alone needs stays in that module, and so does a
 subclass that adds to a shared one, as `test_threaded_recipe.py` has. A test
@@ -84,8 +87,9 @@ case.
 | Models and payload readers | `test_device_model.py`, `test_models_parsing.py`, `test_model_conversions.py`, `test_errors.py` |
 | Location | `test_location.py`, `test_location_dock.py`, `test_target_zone.py` |
 | Watchdog | `test_watchdog.py` |
+| The account-level client (`NavimowClient`) | `test_navimow_client.py`, `test_navimow_client_clock.py` |
 | The mower's state as one object (`MowerState`) | `test_mower_state.py` |
-| The README's threaded recipe, run as written | `test_threaded_recipe.py` |
+| The README's quick example and threaded recipe, run as written | `test_readme_client_example.py`, `test_threaded_recipe.py` |
 | The migration guide's "after" fragments, run as written | `test_migration_guide.py` |
 | Compatibility with upstream | `test_public_api_compat.py`, `test_module_star_imports.py`, `test_legacy_shims.py`, `test_core_isolation.py`, `test_upstream_distribution_warning.py` |
 | The upstream porting tool | `test_port_upstream.py` |

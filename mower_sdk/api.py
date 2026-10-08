@@ -248,6 +248,15 @@ class MowerAPI:
         """
         self._token = token
 
+    @property
+    def token(self) -> str | None:
+        """The access token the requests carry: the constructor's, or the last set_token was given.
+
+        None or empty while no token is set, when a request raises
+        MowerAuthRequiredError instead of being sent.
+        """
+        return self._token
+
     def _get_auth_headers(self) -> dict[str, str]:
         """Return the authentication headers.
 

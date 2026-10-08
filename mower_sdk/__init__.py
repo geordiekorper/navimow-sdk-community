@@ -61,7 +61,16 @@ from mower_sdk.models import (
     mower_time_ms,
 )
 from mower_sdk.mqtt import ConnectionEvent, NavimowMQTT, ReceivedPayload, parse_topic
-from mower_sdk.navimow_client import MowerState, StateSource
+from mower_sdk.navimow_client import (
+    COMMAND_POLL_DELAY_SECONDS,
+    MQTT_STALE_SECONDS,
+    REST_POLL_MAX_BACKOFF_SECONDS,
+    REST_POLL_SECONDS,
+    SILENCE_CHECK_SECONDS,
+    MowerState,
+    NavimowClient,
+    StateSource,
+)
 from mower_sdk.sdk import NavimowSDK
 from mower_sdk.watchdog import MqttWatchdog, RebuildRequest, WatchInput
 
@@ -135,6 +144,7 @@ __all__ = [
     # Main clients
     "MowerClient",
     "Navimow",
+    "NavimowClient",
     "NavimowSDK",
     "MqttWatchdog",
     "RebuildRequest",
@@ -167,6 +177,11 @@ __all__ = [
     "MqttConnectionInfo",
     "MowerState",
     "StateSource",
+    "MQTT_STALE_SECONDS",
+    "REST_POLL_SECONDS",
+    "REST_POLL_MAX_BACKOFF_SECONDS",
+    "SILENCE_CHECK_SECONDS",
+    "COMMAND_POLL_DELAY_SECONDS",
     "RAW_STATE_TO_CANONICAL",
     "REST_STATUS_KNOWN_FIELDS",
     "RejectedMessage",
