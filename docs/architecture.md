@@ -190,7 +190,8 @@ When to refresh credentials and how to run the watchdog are in the README's
 ## The client
 
 `NavimowClient` (`navimow_client.py`) sits above the two transports: it owns a
-`MowerAPI` and builds a `NavimowSDK` at `async_connect()`, and from then on
+`MowerAPI` (given to it, or built by `from_token`) and builds a `NavimowSDK` at
+`async_connect()`, and from then on
 decides the state and runs the schedule that the README's
 [quick example](../README.md#quick-example) leaves to it. The parts above are
 unchanged by it; it calls them.

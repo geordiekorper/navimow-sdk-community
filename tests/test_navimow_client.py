@@ -21,6 +21,7 @@ import pytest
 
 import mower_sdk
 from mower_sdk import navimow_client as client_module
+from mower_sdk.api import MowerAPI
 from mower_sdk.errors import MowerAuthRequiredError, MowerTransportError
 from mower_sdk.models import (
     Device,
@@ -37,6 +38,7 @@ from mower_sdk.navimow_client import MQTT_STALE_SECONDS, MowerState, NavimowClie
 from mower_sdk.sdk import NavimowSDK
 
 from .fakes import (
+    BASE_URL,
     SUCCESS,
     T0,
     TOKEN,
@@ -267,6 +269,29 @@ def test_the_defaults_and_the_constants() -> None:
     assert (client.state(DEVICE), client.states()) == (None, {})
     assert (client.last_poll_at, client.last_poll_error) == (None, None)
     assert client.api.token == TOKEN
+
+
+def test_from_token_builds_the_rest_client_on_the_session_and_forwards_the_options() -> None:
+    session = FakeSession(devices_reply(DEVICE))
+    client = NavimowClient.from_token(session, "t1", BASE_URL, devices=None, mqtt_stale_seconds=10)
+    assert isinstance(client.api, MowerAPI)
+    assert (client.api.token, client.api.base_url) == ("t1", BASE_URL.rstrip("/"))
+    assert client._mqtt_stale_seconds == 10 and client.devices == []
+    with pytest.raises(TypeError, match="MQTT options"):
+        NavimowClient.from_token(session, "t1", BASE_URL, broker="x")
+    with pytest.raises(ValueError, match="poll_interval"):
+        NavimowClient.from_token(session, "t1", BASE_URL, poll_interval=0)
+
+
+@pytest.mark.asyncio
+async def test_a_client_from_token_sends_on_the_session_it_was_given() -> None:
+    session = FakeSession(devices_reply(DEVICE), *connect_replies())
+    client = NavimowClient.from_token(session, "t1", BASE_URL)
+    await client.async_connect()
+    assert [request["headers"]["Authorization"] for request in session.requests] == [
+        "Bearer t1"
+    ] * 3
+    assert client.mqtt.auth_headers == bearer("t1")
 
 
 def test_the_client_and_the_constants_are_exported_from_the_package() -> None:

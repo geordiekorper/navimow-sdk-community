@@ -66,7 +66,8 @@ def example() -> str:
     """The first Python block of the section: the example on the client."""
     found = re.findall(r"```python\n(.*?)```", section(), re.DOTALL)
     assert len(found) == 2, "the quick example and the layered example underneath"
-    assert "NavimowClient(api)" in found[0] and "NavimowSDK.from_connection_info" in found[1]
+    assert "NavimowClient.from_token(" in found[0]
+    assert "NavimowSDK.from_connection_info" in found[1]
     return found[0]
 
 
@@ -193,6 +194,8 @@ def test_the_example_releases_everything_when_a_rest_call_fails(
 def test_the_section_names_the_client_and_the_layers() -> None:
     text = " ".join(section().split())
     for name in (
+        "NavimowClient.from_token()",
+        "NavimowClient(api)",
         "client.state(device_id)",
         "client.states()",
         "on_event",

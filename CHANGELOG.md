@@ -67,7 +67,9 @@ keep the headings they were released with.
   ...)` say, no longer keeps a copy of its own beside the client's.
 - `NavimowClient`, in `mower_sdk.navimow_client` and at the package root:
   one client for an account over the REST client and the MQTT facade, with
-  one `MowerState` per mower. It is constructed on a `MowerAPI`.
+  one `MowerState` per mower. It is constructed on a `MowerAPI`, or built by
+  `NavimowClient.from_token(session, token, base_url)`, which makes the
+  `MowerAPI` with its defaults and takes the constructor's keyword options.
   `async_connect()` lists the devices when none were given (an empty list
   is refused), polls their status once, builds the facade from the
   connection information with the current token as its bearer and

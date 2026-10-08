@@ -28,7 +28,7 @@ from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from mower_sdk.api import MowerAPI
 from mower_sdk.errors import MowerAPIError
@@ -51,6 +51,9 @@ from mower_sdk.models import (
 )
 from mower_sdk.mqtt import ConnectionEvent, _resolve_event_loop
 from mower_sdk.sdk import NavimowSDK
+
+if TYPE_CHECKING:
+    import aiohttp
 
 __all__ = [
     "COMMAND_POLL_DELAY_SECONDS",
@@ -437,7 +440,8 @@ class NavimowClient:
     seen within one tick. async_disconnect() cancels both tasks. A failure
     on the clock is logged and reported through on_error, never raised.
 
-    Use: construct it on the MowerAPI, register the callbacks, then
+    Use: construct it on the MowerAPI, or with from_token, register the
+    callbacks, then
     ``await client.async_connect()``, which lists the devices when none were
     given, polls their status once, builds the facade and connects the feed.
     ``await client.async_disconnect()`` stops the feed; a later
@@ -592,6 +596,33 @@ class NavimowClient:
         self._poll_wait = self._poll_interval or 0.0
         self._next_poll_due: float | None = None
         self._tasks: set[asyncio.Task[None]] = set()
+
+    @classmethod
+    def from_token(
+        cls, session: aiohttp.ClientSession, token: str, base_url: str, **options: Any
+    ) -> NavimowClient:
+        """Build the client on a new MowerAPI for a session, a token and a base URL.
+
+        The same as NavimowClient(MowerAPI(session, token, base_url), **options):
+        the REST client is built with its defaults (a request timeout of 20
+        seconds) and is reachable as api. A consumer that wants another
+        request timeout, or already holds a MowerAPI, uses the constructor.
+
+        Args:
+            session: The aiohttp session every request is sent on; the
+                caller creates and closes it.
+            token: The OAuth access token, as MowerAPI takes it.
+            base_url: The API base URL, as MowerAPI takes it.
+            **options: The constructor's keyword arguments, passed unchanged.
+
+        Returns:
+            The client, not yet connected.
+
+        Raises:
+            TypeError: options names an argument the constructor refuses.
+            ValueError: options holds a value the constructor refuses.
+        """
+        return cls(MowerAPI(session, token, base_url), **options)
 
     # ---- the layers underneath -------------------------------------------------------------------
 
