@@ -13,9 +13,10 @@ NavimowClient owns one MowerAPI and one NavimowSDK for an account, keeps the
 latest observation from each transport for every mower, decides which one the
 status half comes from, and delivers each new state to the on_state callbacks.
 It connects the feed, runs the clock that polls the status and re-evaluates
-the merge by time, sends commands and polls after them, pushes a rotated
-token to the MQTT client and recovers after a refused connection, so a
-consumer registers its callbacks, connects and receives.
+the merge by time, sends commands and polls after them, runs the watchdog
+and rebuilds the MQTT client when it asks, pushes a rotated token to the
+MQTT client and recovers after a refused connection, so a consumer registers
+its callbacks, connects and receives.
 """
 
 from __future__ import annotations
@@ -53,6 +54,7 @@ from mower_sdk.models import (
 )
 from mower_sdk.mqtt import ConnectionEvent, _resolve_event_loop
 from mower_sdk.sdk import NavimowSDK
+from mower_sdk.watchdog import MqttWatchdog, RebuildRequest, WatchInput
 
 if TYPE_CHECKING:
     import aiohttp
@@ -82,6 +84,8 @@ SILENCE_CHECK_SECONDS = 30
 # The delay of the poll that follows a command.
 COMMAND_POLL_DELAY_SECONDS = 5
 
+# How many watchdog requests the client remembers the generation of at most.
+_PENDING_REQUESTS = 64
 # The NavimowSDK constructor arguments a consumer may pass through the client.
 _MQTT_OPTION_KEYS = frozenset(
     {"keepalive_seconds", "reconnect_min_delay", "reconnect_max_delay", "extra_topics"}
@@ -447,6 +451,15 @@ class NavimowClient:
     command poll included. A failure on the clock is logged and reported
     through on_error, never raised.
 
+    The watchdog: the client owns an MqttWatchdog (the factory's, or
+    MqttWatchdog(sdk)) and runs its rules itself, rule 1 after each poll
+    over the devices the reply covered and rule 2 on the silence tick, with
+    inputs built from the states and the REST observations. Every
+    RebuildRequest goes to the on_rebuild_request callbacks; with
+    auto_rebuild, the default, a task then rebuilds the MQTT client through
+    async_rebuild(request), where requests made before the last rebuild
+    coalesce into it and only an executed rebuild is acknowledged.
+
     Use: construct it on the MowerAPI, or with from_token, register the
     callbacks, then
     ``await client.async_connect()``, which lists the devices when none were
@@ -492,6 +505,8 @@ class NavimowClient:
         mqtt_stale_seconds: float = MQTT_STALE_SECONDS,
         subscribe_location: bool = True,
         reject_late_state: bool = True,
+        auto_rebuild: bool = True,
+        watchdog: Callable[[NavimowSDK], MqttWatchdog] | None = None,
         **mqtt_options: Any,
     ) -> None:
         """Create the client; nothing is fetched or connected until a coroutine is awaited.
@@ -520,6 +535,14 @@ class NavimowClient:
                 so states carry the location record.
             reject_late_state: True keeps a late or implausible state message
                 from being applied (NavimowSDK says more).
+            auto_rebuild: True rebuilds the MQTT client on a watchdog request,
+                in a task of its own; False only delivers the request to
+                on_rebuild_request, and a consumer that wants the rebuild
+                calls async_rebuild(request).
+            watchdog: A factory called with the facade at the build (and
+                again at the next connect when it raised), returning the
+                MqttWatchdog to run; None for MqttWatchdog(sdk) with its
+                defaults.
             **mqtt_options: keepalive_seconds, reconnect_min_delay,
                 reconnect_max_delay and extra_topics, passed to NavimowSDK
                 unchanged.
@@ -580,6 +603,17 @@ class NavimowClient:
         self._subscribe_location = subscribe_location
         self._reject_late_state = reject_late_state
         self._mqtt_options = dict(mqtt_options)
+        self._auto_rebuild = auto_rebuild
+        self._watchdog_factory = watchdog
+        self._watchdog: MqttWatchdog | None = None
+        # The rebuild generation: advanced under the lock at the successful end of
+        # an operation that left the MQTT client's rebuilds higher than it found
+        # it. Each watchdog request is remembered, by identity, with the generation
+        # it was made at, until it is acknowledged; the oldest entries are dropped
+        # beyond _PENDING_REQUESTS, far more than the watchdog's debounce allows.
+        self._rebuild_generation = 0
+        self._request_generations: dict[int, tuple[RebuildRequest, int]] = {}
+        self._rebuild_request_callbacks: list[Callable[[RebuildRequest], None]] = []
 
         self._sdk: NavimowSDK | None = None
         self._closed = False
@@ -724,6 +758,36 @@ class NavimowClient:
         if token is not None:
             self._learn(token)
 
+    def _make_watchdog(self, sdk: NavimowSDK) -> MqttWatchdog:
+        """Build the watchdog: the factory's, called with the facade, else MqttWatchdog(sdk).
+
+        Args:
+            sdk: The facade.
+
+        Returns:
+            The watchdog.
+
+        Raises:
+            Exception: Whatever the factory raises; the connect then fails and
+                leaves the client closed, so the next async_connect() builds
+                it again.
+        """
+        if self._watchdog_factory is None:
+            return MqttWatchdog(sdk)
+        return self._watchdog_factory(sdk)
+
+    def _note_rebuilds(self, before: int) -> None:
+        """Advance the rebuild generation when an operation left the MQTT client rebuilt.
+
+        Called under the lifecycle lock at the successful end of the
+        operation.
+
+        Args:
+            before: The MQTT client's rebuild count when the operation began.
+        """
+        if self._sdk is not None and self._sdk.mqtt.rebuilds > before:
+            self._rebuild_generation += 1
+
     async def _reconcile(self, loop: asyncio.AbstractEventLoop) -> None:
         """Push the current token's bearer to the MQTT client when it differs from the applied one.
 
@@ -746,10 +810,12 @@ class NavimowClient:
         bearer = self._bearer(self._token)
         if bearer is None or bearer == self._applied_bearer:
             return
+        before = sdk.mqtt.rebuilds
         await loop.run_in_executor(
             None, functools.partial(sdk.update_mqtt_credentials, auth_headers=bearer)
         )
         self._applied_bearer = bearer
+        self._note_rebuilds(before)
 
     # ---- lifecycle -------------------------------------------------------------------------
 
@@ -781,7 +847,8 @@ class NavimowClient:
             RuntimeError: Awaited from a running loop other than the bound
                 one.
             Exception: Whatever token_provider raises; nothing is changed
-                then.
+                then. Whatever the watchdog factory raises; the client is
+                then closed and the next call retries.
         """
         loop = self._bind("async_connect")
         async with self._lock:
@@ -850,6 +917,7 @@ class NavimowClient:
             sdk.restore_location(device_id, location)
         self._sdk = sdk
         try:
+            self._watchdog = self._make_watchdog(sdk)
             for device_id, _location in restored:
                 if device_id in self._states:
                     self._rebuild(device_id, sdk.get_cached_location(device_id))
@@ -879,7 +947,10 @@ class NavimowClient:
         sdk = self._sdk
         assert sdk is not None
         self._closed = False
+        before = sdk.mqtt.rebuilds
         try:
+            if self._watchdog is None:
+                self._watchdog = self._make_watchdog(sdk)  # the factory raised last time
             await self._startup_poll()
             bearer = self._bearer(self._token)
 
@@ -899,6 +970,7 @@ class NavimowClient:
             raise
         if bearer is not None:
             self._applied_bearer = bearer
+        self._note_rebuilds(before)
         self._start_clock(loop)
 
     async def _startup_poll(self) -> None:
@@ -995,6 +1067,7 @@ class NavimowClient:
                 return False
             await self._refresh_token()
             bearer = self._bearer(self._token)
+            before = sdk.mqtt.rebuilds
             try:
                 refreshed = await sdk.async_refresh_broker_credentials(
                     self.api, auth_headers=bearer, force_reconnect=force_reconnect
@@ -1006,9 +1079,10 @@ class NavimowClient:
                 self._applied_bearer = bearer
             else:
                 await self._reconcile(loop)
+            self._note_rebuilds(before)
             return refreshed
 
-    async def async_rebuild(self, reason: str) -> None:
+    async def async_rebuild(self, reason: str | RebuildRequest) -> None:
         """Replace the MQTT client with a new one and connect it, with the current token's bearer.
 
         A no-op before async_connect() and while closed. Otherwise, under the
@@ -1017,8 +1091,17 @@ class NavimowClient:
         bearer header and the reason, which is logged and kept as
         mqtt.last_rebuild_reason, and the bearer is recorded as applied.
 
+        With a RebuildRequest, its reason is the text, and the request is
+        acknowledged to the watchdog once the rebuild is made. A request made
+        before the client's last rebuild (one made while that rebuild was
+        still running included) is obsolete: it is acknowledged without a
+        second rebuild, so requests that arrive close together coalesce into
+        one. A rebuild that raises is not acknowledged, and the request stays
+        eligible.
+
         Args:
-            reason: Why the client is rebuilt, for the log line.
+            reason: Why the client is rebuilt, for the log line; or the
+                watchdog's request.
 
         Raises:
             RuntimeError: Awaited from a running loop other than the bound
@@ -1032,13 +1115,130 @@ class NavimowClient:
             sdk = self._sdk
             if sdk is None or self._closed:
                 return
+            request = reason if isinstance(reason, RebuildRequest) else None
+            # Decision: a watchdog request is acted on by default, and requests
+            # coalesce through a generation the client owns: it advances at the
+            # successful end of any operation that left the MQTT client rebuilt, and
+            # a request made before it last advanced is acknowledged without a
+            # second rebuild, so the watchdog's debounce starts for all of them. The
+            # MQTT client's own counter is not used, since it advances before the
+            # rebuild has connected and whether or not it then raises. Only an
+            # executed rebuild is acknowledged; one that raises leaves the request
+            # eligible.
+            if request is not None:
+                entry = self._request_generations.get(id(request))
+                made_at = (
+                    entry[1]
+                    if entry is not None and entry[0] is request
+                    else self._rebuild_generation
+                )
+                if made_at < self._rebuild_generation:
+                    self._acknowledge(request)
+                    return
             await self._refresh_token()
             bearer = self._bearer(self._token)
+            text = reason if isinstance(reason, str) else reason.reason
             await loop.run_in_executor(
-                None, functools.partial(sdk.mqtt.rebuild, auth_headers=bearer, reason=reason)
+                None, functools.partial(sdk.mqtt.rebuild, auth_headers=bearer, reason=text)
             )
             if bearer is not None:
                 self._applied_bearer = bearer
+            self._rebuild_generation += 1
+            if request is not None:
+                self._acknowledge(request)
+
+    def _acknowledge(self, request: RebuildRequest) -> None:
+        """Tell the watchdog a request was acted on, and forget its generation.
+
+        Args:
+            request: The request.
+        """
+        entry = self._request_generations.get(id(request))
+        if entry is not None and entry[0] is request:
+            del self._request_generations[id(request)]
+        if self._watchdog is not None:
+            self._watchdog.acknowledge(request)
+
+    async def _rebuild_task(self, request: RebuildRequest) -> None:
+        """The task that rebuilds on a watchdog request; a failure is reported as "rebuild".
+
+        Args:
+            request: The watchdog's request.
+        """
+        try:
+            await self.async_rebuild(request)
+        except Exception as exc:
+            _LOGGER.exception("NavimowClient: the rebuild the watchdog asked for failed")
+            self._report("rebuild", exc)
+
+    def _watch_input(self, device_id: str) -> WatchInput:
+        """Build the watchdog's input for a device from the state and the REST observation.
+
+        Args:
+            device_id: The device.
+
+        Returns:
+            A WatchInput with the state's status as the shown state (None
+            without a state), the REST observation's status and the monotonic
+            time it was read (None without one), and the device's name (its
+            id when the device is unknown).
+        """
+        state = self._states.get(device_id)
+        rest = self._rest_observations.get(device_id)
+        device = self.device(device_id)
+        return WatchInput(
+            device_id=device_id,
+            name=device.name if device is not None else device_id,
+            shown_state=state.status if state is not None else None,
+            rest_state=rest.status.status if rest is not None else None,
+            rest_observed_at=rest.received_monotonic if rest is not None else None,
+        )
+
+    def _handle_request(self, loop: asyncio.AbstractEventLoop, request: RebuildRequest) -> None:
+        """Deliver a watchdog request to the callbacks and, with auto_rebuild, start its rebuild.
+
+        Args:
+            loop: The bound loop.
+            request: The request a rule returned.
+        """
+        self._request_generations[id(request)] = (request, self._rebuild_generation)
+        while len(self._request_generations) > _PENDING_REQUESTS:
+            del self._request_generations[next(iter(self._request_generations))]
+        for callback in list(self._rebuild_request_callbacks):
+            try:
+                callback(request)
+            except Exception:
+                _LOGGER.exception("NavimowClient rebuild-request callback %r failed", callback)
+        _LOGGER.warning("NavimowClient: the watchdog asks for a rebuild: %s", request.reason)
+        if self._auto_rebuild:
+            self._spawn(loop, self._rebuild_task(request), "rebuild")
+
+    def _run_rule_1(self, loop: asyncio.AbstractEventLoop, device_ids: Iterable[str]) -> None:
+        """Run the watchdog's rule 1 after a poll, over the devices the reply covered.
+
+        Args:
+            loop: The bound loop.
+            device_ids: The devices the reply covered.
+        """
+        if self._watchdog is None or self._sdk is None or self._closed:
+            return
+        request = self._watchdog.after_poll([self._watch_input(d) for d in device_ids])
+        if request is not None:
+            self._handle_request(loop, request)
+
+    def _run_rule_2(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Run the watchdog's rule 2 on the silence tick, over every known device.
+
+        Args:
+            loop: The bound loop.
+        """
+        if self._watchdog is None or self._sdk is None or self._closed:
+            return
+        request = self._watchdog.check_silence(
+            [self._watch_input(device.id) for device in self.devices]
+        )
+        if request is not None:
+            self._handle_request(loop, request)
 
     async def async_refresh_devices(self) -> list[Device]:
         """Fetch the device list again and update devices in place.
@@ -1345,6 +1545,7 @@ class NavimowClient:
             await _sleep(SILENCE_CHECK_SECONDS)
             try:
                 self._silence_tick()
+                self._run_rule_2(asyncio.get_running_loop())
             except Exception as exc:
                 _LOGGER.exception("NavimowClient: the silence tick failed")
                 self._report("silence_check", exc)
@@ -1413,6 +1614,13 @@ class NavimowClient:
                 self._rest_observations[device_id] = observation
                 if self._select(device_id) is observation:
                     self._rebuild(device_id, self._current_location(device_id))
+            try:
+                self._run_rule_1(asyncio.get_running_loop(), list(statuses))
+            except Exception as exc:
+                # The poll's request succeeded and its observations are applied; what
+                # fails after is reported, never raised to the caller.
+                _LOGGER.exception("NavimowClient: the watchdog's check after a poll failed")
+                self._report("poll", exc)
             return statuses
 
     def _select(self, device_id: str) -> _Observation | None:
@@ -1595,9 +1803,10 @@ class NavimowClient:
         """Call callback(operation, exception) for each failure on the client's own schedule.
 
         The operations are "poll" for the poll inside async_connect() and
-        the poll task's polls, "command_poll" for the poll after a command,
-        "silence_check" for the silence tick and "recovery" for a failed
-        recovery after a refused connection. A
+        the poll task's polls (the watchdog's check after a poll included),
+        "command_poll" for the poll after a command, "silence_check" for the
+        silence tick, "rebuild" for a rebuild the watchdog asked for and
+        "recovery" for a failed recovery after a refused connection. A
         MowerAuthRequiredError here is the one failure a consumer must act
         on: only it can re-authenticate, through async_set_token() or the
         provider.
@@ -1607,6 +1816,18 @@ class NavimowClient:
                 the exception.
         """
         self._error_callbacks.append(callback)
+
+    def on_rebuild_request(self, callback: Callable[[RebuildRequest], None]) -> None:
+        """Call callback with each RebuildRequest the watchdog makes, before anything acts on it.
+
+        With auto_rebuild the client then rebuilds in a task of its own;
+        without it, a consumer that wants the rebuild calls
+        async_rebuild(request).
+
+        Args:
+            callback: A synchronous function taking the RebuildRequest.
+        """
+        self._rebuild_request_callbacks.append(callback)
 
     def on_event(
         self, callback: Callable[[DeviceEventMessage], None], *, device_id: str | None = None

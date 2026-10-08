@@ -327,7 +327,10 @@ that from the data: call `after_poll(inputs)` after each REST status poll and `c
 every half minute or so (it needs `subscribe_location=True`), with a `WatchInput` per mower (the state you show, REST's latest state and
 when it was read). When either returns a `RebuildRequest`, rebuild the client off the event loop
 (`sdk.mqtt.rebuild(reason=request.reason)`) and pass the request to `acknowledge()`. It has no
-timer and makes no request of its own.
+timer and makes no request of its own. `NavimowClient` runs all of that itself: rule 1 after each
+of its polls, rule 2 on its silence tick, and a rebuild on each request unless it is constructed
+with `auto_rebuild=False`; `client.on_rebuild_request(callback)` sees every request first, and a
+`watchdog=` factory supplies an `MqttWatchdog` with other thresholds.
 
 **Location channel.** Pose, zone, route progress and target zones arrive on a separate MQTT
 channel, off by default (several models never publish on it, and it is a movement trace). Turn it

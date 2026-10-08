@@ -87,7 +87,7 @@ case.
 | Models and payload readers | `test_device_model.py`, `test_models_parsing.py`, `test_model_conversions.py`, `test_errors.py` |
 | Location | `test_location.py`, `test_location_dock.py`, `test_target_zone.py` |
 | Watchdog | `test_watchdog.py` |
-| The account-level client (`NavimowClient`) | `test_navimow_client.py`, `test_navimow_client_clock.py`, `test_navimow_client_commands.py` |
+| The account-level client (`NavimowClient`) | `test_navimow_client.py`, `test_navimow_client_clock.py`, `test_navimow_client_commands.py`, `test_navimow_client_watchdog.py` |
 | The mower's state as one object (`MowerState`) | `test_mower_state.py` |
 | The README's quick example and threaded recipe, run as written | `test_readme_client_example.py`, `test_threaded_recipe.py` |
 | The migration guide's "after" fragments, run as written | `test_migration_guide.py` |
