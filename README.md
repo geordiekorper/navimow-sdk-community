@@ -95,8 +95,11 @@ forward the facade's callbacks, each with an optional `device_id=` filter, and `
 `on_error` report the connection's events and the client's own failures. The layers are reachable as
 `client.api`, `client.sdk` and `client.mqtt`.
 
-A command goes over REST: `await client.api.async_send_command(device_id, MowerCommand.START)`, or
-`async_send_command_receipt()` for a receipt whose result can be looked up later.
+A command goes through the client: `await client.async_send_command(device_id, MowerCommand.START)`
+sends it over REST, returns its `CommandReceipt` (kept as `client.last_receipt(device_id)`) and
+polls the status five seconds later, since the cloud's acceptance does not mean the mower acted;
+`MowerCommand` says what the cloud does with each command. The REST client's
+`async_send_command()` and `async_send_command_receipt()` stay on `client.api`.
 
 **Tokens.** The SDK is token-in: it takes an OAuth access token and never obtains or refreshes one
 itself. Obtain the token through the Navimow account's OAuth flow. After each refresh pass the new
@@ -324,7 +327,10 @@ that from the data: call `after_poll(inputs)` after each REST status poll and `c
 every half minute or so (it needs `subscribe_location=True`), with a `WatchInput` per mower (the state you show, REST's latest state and
 when it was read). When either returns a `RebuildRequest`, rebuild the client off the event loop
 (`sdk.mqtt.rebuild(reason=request.reason)`) and pass the request to `acknowledge()`. It has no
-timer and makes no request of its own.
+timer and makes no request of its own. `NavimowClient` runs all of that itself: rule 1 after each
+of its polls, rule 2 on its silence tick, and a rebuild on each request unless it is constructed
+with `auto_rebuild=False`; `client.on_rebuild_request(callback)` sees every request first, and a
+`watchdog=` factory supplies an `MqttWatchdog` with other thresholds.
 
 **Location channel.** Pose, zone, route progress and target zones arrive on a separate MQTT
 channel, off by default (several models never publish on it, and it is a movement trace). Turn it

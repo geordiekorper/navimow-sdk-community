@@ -112,8 +112,25 @@ keep the headings they were released with.
   A consumer's own `async_poll()` counts as a tick. `async_disconnect()`
   cancels the tasks before it disconnects. A failure on the clock is
   logged and reported through `on_error` as `"poll"` or
-  `"silence_check"`, never raised; `COMMAND_POLL_DELAY_SECONDS` (5) is
-  exported with the other constants.
+  `"silence_check"`, never raised. `async_send_command(device_id, command)`
+  sends a command through `MowerAPI.async_send_command_receipt`, with the
+  provider's token first, keeps the receipt as `last_receipt(device_id)`
+  and polls the status `COMMAND_POLL_DELAY_SECONDS` (5) later whatever the
+  reply, a refusal included, while the client is started; a second command
+  while that poll is pending leaves it in place, and its failure is
+  reported as `"command_poll"`. A refused command raises the REST client's
+  error unchanged and keeps no receipt. There is one command method and no
+  verb methods. The client runs the watchdog: it owns an `MqttWatchdog`
+  (the `watchdog=` factory's, called once with the facade, or
+  `MqttWatchdog(sdk)`), runs rule 1 after each poll over the devices the
+  reply covered and rule 2 on the silence tick, with the states and the
+  REST observations as the inputs, and delivers each `RebuildRequest` to
+  `on_rebuild_request(callback)`; with `auto_rebuild` (True by default) a
+  task then rebuilds through `async_rebuild(request)`, which also takes a
+  request from a consumer: a request made before the client's last rebuild
+  is acknowledged without a second one, so requests that arrive together
+  coalesce, and only an executed rebuild is acknowledged; a failed one is
+  reported as `"rebuild"`.
 
 ## [0.2.0a5] - 2026-10-02
 

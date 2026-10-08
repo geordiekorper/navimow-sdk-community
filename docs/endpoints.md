@@ -29,7 +29,8 @@ cloud sends it.
 | `NavimowClient.async_poll(ids)`, and its poll task every `poll_interval` seconds (`REST_POLL_SECONDS` by default; no task with `poll_interval=None`) | The status request, through `MowerAPI.async_get_device_statuses()` | The statuses by device id, and the states through `on_state` |
 | `NavimowClient.async_refresh_devices()` | The device list, through `MowerAPI.async_get_devices()` | The devices |
 | `NavimowClient.async_refresh_broker_credentials()` | The credential request, through `NavimowSDK.async_refresh_broker_credentials(api)` | Its result |
-| `NavimowClient.async_rebuild(reason)` | A new MQTT `CONNECT`, through `NavimowMQTT.rebuild()` | Nothing |
+| `NavimowClient.async_send_command(id, command)` | `POST /openapi/smarthome/sendCommands`, through `MowerAPI.async_send_command_receipt()`, then one status poll `COMMAND_POLL_DELAY_SECONDS` later | The `CommandReceipt`, kept as `last_receipt(id)`; the states through `on_state` |
+| `NavimowClient.async_rebuild(reason)`, and the rebuild the watchdog asks for | A new MQTT `CONNECT`, through `NavimowMQTT.rebuild()`; a request older than the last rebuild makes none | Nothing |
 | `NavimowClient.async_set_token(token)` | No request of its own: the token goes to `MowerAPI.set_token()` and, when it changed, the bearer header to `NavimowSDK.update_mqtt_credentials()`, which a connected MQTT client uses at its next connect and a started but disconnected one applies by rebuilding and connecting at once | Nothing |
 | `NavimowClient.async_disconnect()` | MQTT `DISCONNECT`, through `NavimowSDK.disconnect()` | Nothing |
 
@@ -38,7 +39,7 @@ part, and the legacy classes send through the calls above, as the last
 section says. `NavimowClient` sends nothing of its own: each of its calls
 goes through the `MowerAPI` or `NavimowSDK` call its row names. When a
 `token_provider` is given, `async_connect()` (when it starts or restarts),
-`async_poll()`, `async_refresh_devices()`, and, while the client is started
+`async_poll()`, `async_send_command()`, `async_refresh_devices()`, and, while the client is started
 and not closed, `async_refresh_broker_credentials()` and `async_rebuild()`
 await it first; `async_set_token()` and `async_disconnect()` do not.
 
