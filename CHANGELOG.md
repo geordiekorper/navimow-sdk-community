@@ -60,6 +60,11 @@ keep the headings they were released with.
   `received_monotonic` are left out of equality and of `repr`.
   `DeviceStatus.from_state_message` and `DeviceStateMessage.from_status`
   are unchanged.
+- `MowerAPI.token`: the access token the requests carry, as a read-only
+  property: the constructor's until `set_token` replaces it, None or empty
+  while none is set. A consumer that hands the same token on, to build the
+  facade with `NavimowSDK.from_connection_info(info, access_token=api.token,
+  ...)` say, no longer keeps a copy of its own beside the client's.
 
 ## [0.2.0a5] - 2026-10-02
 

@@ -456,6 +456,17 @@ async def test_missing_token_is_auth_required_before_any_request(token: str | No
     assert session.requests == []
 
 
+def test_token_is_the_constructors_then_the_last_set() -> None:
+    api, _session = api_with()
+    assert api.token == TOKEN
+    api.set_token("token-456")
+    assert api.token == "token-456"
+    unset, _session = api_with(token=None)
+    assert unset.token is None
+    with pytest.raises(AttributeError):
+        api.token = "token-789"  # type: ignore[misc]
+
+
 @pytest.mark.asyncio
 async def test_set_token_changes_the_authorization_header() -> None:
     api, session = api_with(FakeResponse(ok({})))
