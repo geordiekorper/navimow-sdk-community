@@ -94,7 +94,7 @@ if TYPE_CHECKING:
         ThingStatusMessage as ThingStatusMessage,
     )
 
-__version__ = "0.2.0a5"
+__version__ = "0.2.0a6"
 
 
 def _warn_if_upstream_installed(

@@ -17,6 +17,8 @@ real-time updates over its MQTT feed.
 
 - REST API client (`MowerAPI`): devices, status, commands and their results
 - Real-time state, events, attributes and (optionally) location over MQTT (`NavimowSDK`)
+- One client over both (`NavimowClient`): one `MowerState` per mower, with the polling, the watchdog
+  and the rebuilds run by the client
 - Typed models and errors that say whether a failed call may still have been carried out
 - Designed for Home Assistant integrations and other long-running consumers
 
@@ -267,6 +269,53 @@ Three rules keep it working:
 
 ## Behaviour notes
 
+### The client
+
+**The clock.** From `async_connect()` the client polls the status over REST every `poll_interval`
+seconds (`REST_POLL_SECONDS`, 120), the first poll being the connect's own, made before the MQTT
+feed connects. A failed poll, a rate-limited reply included, doubles the wait up to
+`poll_backoff_max` (`REST_POLL_MAX_BACKOFF_SECONDS`, 600, never below the interval), and the next
+success restores the interval. The interval is a deployment setting: the cloud answers the status
+request from a cache that lags the mower, and its rate limit is not documented. `poll_interval=None`
+runs no poll task; `client.async_poll()` then polls on the program's own schedule, and the states
+are merged and delivered the same way. Every `SILENCE_CHECK_SECONDS` (30) the client re-evaluates
+which observation is current and runs the watchdog's silence check. A command sent while the client
+is started is followed by one poll `COMMAND_POLL_DELAY_SECONDS` (5) later, whatever the reply; a
+second command while that poll is pending shares it. That poll stands outside the schedule above:
+its failure changes no wait, and its success resets the backoff without moving the next poll.
+
+**Which observation the state shows.** The status half of a `MowerState` is the latest MQTT state
+message while it is younger than `mqtt_stale_seconds` (`MQTT_STALE_SECONDS`, 300); once it is
+older, a REST status read after it takes over, and the next state message takes it back. A REST
+status older than the MQTT message never replaces it. `state.source` says which transport the status
+half came from, and `on_state` fires for every new state: after a state message, after each applied
+location entry (about every two seconds while the mower is out), after a poll whose REST status is
+or becomes current, at the silence tick at which a stale MQTT message yields to a REST status read
+after it, and after a `restore_location()` once the feed is built. A state exists only once a status
+observation does, so a location entry or a restore before any produces none; the poll inside
+`async_connect()` gives one, before the feed connects, to each mower its reply covers.
+
+**Recovery and the client's own failures.** After a refused MQTT connection the client asks the
+`token_provider`, when there is one, and fetches the broker credentials again through
+`async_refresh_broker_credentials()`, whose cooldown bounds the cost of repeated refusals
+(`recover_on_connect_fail`, True by default); a plain disconnect needs nothing, since paho reconnects
+with the stored values. What fails on the client's own schedule is logged and reported to
+`on_error(callback)` as `(operation, exception)`, with the operation `poll`, `command_poll`,
+`silence_check`, `rebuild` or `recovery`, and never raised; a `MowerAuthRequiredError` there is the
+one failure a consumer must act on, since only it can obtain a new token.
+
+**Automatic rebuilds.** The client runs the watchdog that finds a broker that has stopped
+delivering (see [A broker that stops delivering](#mqtt)): rule 1 after each of its polls, rule 2 on
+its silence tick, with a `watchdog=` factory supplying an `MqttWatchdog` with other thresholds. It
+rebuilds the MQTT connection on each request unless it is constructed with `auto_rebuild=False`;
+`client.on_rebuild_request(callback)` sees every request first, and with automatic rebuilds off the
+consumer calls `client.async_rebuild(request)` when it wants one. Requests that arrive together make
+one rebuild. The reason is kept as `client.mqtt.last_rebuild_reason`, and the rebuild shows in
+`on_connection` as the connection that follows it.
+
+**Tokens.** The client is token-in like the layers beneath it; the
+[quick example](#quick-example)'s token paragraph says how a refreshed token reaches it.
+
 ### REST
 
 **Request timeout and errors.** Every `MowerAPI` request is bounded at 20 seconds in total by
@@ -327,10 +376,8 @@ that from the data: call `after_poll(inputs)` after each REST status poll and `c
 every half minute or so (it needs `subscribe_location=True`), with a `WatchInput` per mower (the state you show, REST's latest state and
 when it was read). When either returns a `RebuildRequest`, rebuild the client off the event loop
 (`sdk.mqtt.rebuild(reason=request.reason)`) and pass the request to `acknowledge()`. It has no
-timer and makes no request of its own. `NavimowClient` runs all of that itself: rule 1 after each
-of its polls, rule 2 on its silence tick, and a rebuild on each request unless it is constructed
-with `auto_rebuild=False`; `client.on_rebuild_request(callback)` sees every request first, and a
-`watchdog=` factory supplies an `MqttWatchdog` with other thresholds.
+timer and makes no request of its own. `NavimowClient` runs all of that itself
+([The client](#the-client)).
 
 **Location channel.** Pose, zone, route progress and target zones arrive on a separate MQTT
 channel, off by default (several models never publish on it, and it is a movement trace). Turn it
