@@ -12,9 +12,10 @@ clock.
 NavimowClient owns one MowerAPI and one NavimowSDK for an account, keeps the
 latest observation from each transport for every mower, decides which one the
 status half comes from, and delivers each new state to the on_state callbacks.
-It connects the feed, polls the status at connect and on request, pushes a
-rotated token to the MQTT client and recovers after a refused connection, so a
-consumer registers its callbacks, connects and receives.
+It connects the feed, runs the clock that polls the status and re-evaluates
+the merge by time, pushes a rotated token to the MQTT client and recovers
+after a refused connection, so a consumer registers its callbacks, connects
+and receives.
 """
 
 from __future__ import annotations
@@ -51,18 +52,60 @@ from mower_sdk.models import (
 from mower_sdk.mqtt import ConnectionEvent, _resolve_event_loop
 from mower_sdk.sdk import NavimowSDK
 
-__all__ = ["MQTT_STALE_SECONDS", "MowerState", "NavimowClient", "StateSource"]
+__all__ = [
+    "COMMAND_POLL_DELAY_SECONDS",
+    "MQTT_STALE_SECONDS",
+    "MowerState",
+    "NavimowClient",
+    "REST_POLL_MAX_BACKOFF_SECONDS",
+    "REST_POLL_SECONDS",
+    "SILENCE_CHECK_SECONDS",
+    "StateSource",
+]
 
 _LOGGER = logging.getLogger(__name__)
 
 # An MQTT observation older than this yields the status half to a REST
 # observation received after it.
 MQTT_STALE_SECONDS = 300
+# The clock's poll interval.
+REST_POLL_SECONDS = 120
+# The cap of the doubling wait after failed polls; never below the interval.
+REST_POLL_MAX_BACKOFF_SECONDS = 600
+# The silence tick: how often the merge is re-evaluated by time.
+SILENCE_CHECK_SECONDS = 30
+# The delay of the poll that follows a command.
+COMMAND_POLL_DELAY_SECONDS = 5
 
 # The NavimowSDK constructor arguments a consumer may pass through the client.
 _MQTT_OPTION_KEYS = frozenset(
     {"keepalive_seconds", "reconnect_min_delay", "reconnect_max_delay", "extra_topics"}
 )
+
+
+async def _sleep(seconds: float) -> None:
+    """Wait for a number of seconds on the loop's clock.
+
+    The clock's tasks wait through this function and nothing else, so a test
+    can stand in for it.
+
+    Args:
+        seconds: How long to wait.
+    """
+    await asyncio.sleep(seconds)
+
+
+def _positive(value: Any) -> bool:
+    """Say whether a value is a positive number, for the constructor's checks.
+
+    Args:
+        value: The value given.
+
+    Returns:
+        True for an int or float above zero; False for a bool, anything else
+        or a value at or below zero.
+    """
+    return isinstance(value, int | float) and not isinstance(value, bool) and value > 0
 
 
 class StateSource(StrEnum):
@@ -384,7 +427,15 @@ class NavimowClient:
     Each new state goes to the on_state callbacks and is returned by state()
     and states(). A state is rebuilt after each state message, each applied
     location entry, each poll whose REST observation becomes or stays
-    current, and each restore_location() once the facade exists.
+    current, each silence tick at which the rule's choice changed by time,
+    and each restore_location() once the facade exists.
+
+    The clock: from async_connect() the client polls every poll_interval
+    seconds (the first poll is the connect's own), doubling the wait after a
+    failed poll up to poll_backoff_max and never below the interval, and
+    re-evaluates the merge every SILENCE_CHECK_SECONDS, so a flip by time is
+    seen within one tick. async_disconnect() cancels both tasks. A failure
+    on the clock is logged and reported through on_error, never raised.
 
     Use: construct it on the MowerAPI, register the callbacks, then
     ``await client.async_connect()``, which lists the devices when none were
@@ -425,6 +476,8 @@ class NavimowClient:
         loop: asyncio.AbstractEventLoop | None = None,
         token_provider: Callable[[], Awaitable[str | None]] | None = None,
         recover_on_connect_fail: bool = True,
+        poll_interval: float | None = REST_POLL_SECONDS,
+        poll_backoff_max: float = REST_POLL_MAX_BACKOFF_SECONDS,
         mqtt_stale_seconds: float = MQTT_STALE_SECONDS,
         subscribe_location: bool = True,
         reject_late_state: bool = True,
@@ -446,6 +499,10 @@ class NavimowClient:
                 operation that sends a token. None for no provider.
             recover_on_connect_fail: True fetches the broker credentials again
                 after a refused connection (see on_connection for the event).
+            poll_interval: Seconds between the clock's polls; None runs no
+                poll task, and a consumer polls with async_poll() itself.
+            poll_backoff_max: The cap of the doubling wait after failed
+                polls; a cap below poll_interval is raised to it.
             mqtt_stale_seconds: Seconds after which an MQTT observation yields
                 the status half to a REST observation received after it.
             subscribe_location: True subscribes each device's location topic,
@@ -458,8 +515,9 @@ class NavimowClient:
 
         Raises:
             TypeError: mqtt_options names another argument.
-            ValueError: mqtt_stale_seconds is not a number (a bool included), or
-                is negative.
+            ValueError: poll_interval (when given) or poll_backoff_max is not
+                a positive number, or mqtt_stale_seconds is not a number (a
+                bool included) or is negative.
         """
         # Decision: mqtt_options accepts the four facade arguments a consumer may
         # tune and refuses the rest at construction: the connection arguments come
@@ -471,6 +529,20 @@ class NavimowClient:
             raise TypeError(
                 "NavimowClient() takes only keepalive_seconds, reconnect_min_delay, "
                 f"reconnect_max_delay and extra_topics as MQTT options, not {', '.join(unknown)}"
+            )
+        # Decision: the poll interval is a deployment setting with a default, not
+        # something the client learns from the cloud: it backs off on every failed
+        # poll, the cloud's "too frequent" included, and comes back to the interval
+        # on the next success.
+        if poll_interval is not None and not _positive(poll_interval):
+            raise ValueError(
+                "NavimowClient: poll_interval must be a positive number or None, "
+                f"got {poll_interval!r}"
+            )
+        if not _positive(poll_backoff_max):
+            raise ValueError(
+                "NavimowClient: poll_backoff_max must be a positive number, "
+                f"got {poll_backoff_max!r}"
             )
         if (
             isinstance(mqtt_stale_seconds, bool)
@@ -487,6 +559,8 @@ class NavimowClient:
         self._loop = _resolve_event_loop(loop)
         self._token_provider = token_provider
         self._recover_on_connect_fail = recover_on_connect_fail
+        self._poll_interval = None if poll_interval is None else float(poll_interval)
+        self._poll_backoff_max = max(float(poll_backoff_max), self._poll_interval or 0.0)
         self._mqtt_stale_seconds = float(mqtt_stale_seconds)
         # Decision: reject_late_state and subscribe_location default to True here,
         # unlike on the facade: the client's state is meant to be shown, so a late
@@ -513,6 +587,11 @@ class NavimowClient:
         self._error_callbacks: list[Callable[[str, Exception], None]] = []
         self.last_poll_at: datetime | None = None
         self.last_poll_error: Exception | None = None
+        # The clock: the wait before the next poll (the interval, doubled after each
+        # failure), when that poll is due on time.monotonic(), and the tasks.
+        self._poll_wait = self._poll_interval or 0.0
+        self._next_poll_due: float | None = None
+        self._tasks: set[asyncio.Task[None]] = set()
 
     # ---- the layers underneath -------------------------------------------------------------------
 
@@ -744,6 +823,7 @@ class NavimowClient:
             self._closed = True
             raise
         self._applied_bearer = self._bearer(token)
+        self._start_clock(loop)
 
     async def _restart(self, loop: asyncio.AbstractEventLoop) -> None:
         """A connect after async_disconnect(): clear the mark, poll, reconcile and reconnect.
@@ -775,6 +855,7 @@ class NavimowClient:
             raise
         if bearer is not None:
             self._applied_bearer = bearer
+        self._start_clock(loop)
 
     async def _startup_poll(self) -> None:
         """The poll inside async_connect(): every device once, a failure reported, never raised."""
@@ -783,7 +864,7 @@ class NavimowClient:
         # build or, on a restart, by the reconcile that follows the poll; a reconcile
         # here would take the lifecycle lock inside itself.
         try:
-            await self._poll(None)
+            await self._scheduled_poll(None, provider=False)
         except Exception as exc:
             _LOGGER.exception("NavimowClient: the poll inside async_connect() failed")
             self._report("poll", exc)
@@ -791,8 +872,11 @@ class NavimowClient:
     async def async_disconnect(self) -> None:
         """Stop the feed: mark the client closed and disconnect the MQTT client.
 
-        Under the lifecycle lock, so an operation in flight finishes first. A
-        no-op before async_connect() and when already closed. While closed the
+        Under the lifecycle lock, so an operation in flight finishes first.
+        The clock's tasks are cancelled and awaited before the MQTT client is
+        disconnected in the default executor, so nothing of the client's runs
+        afterwards. A no-op before async_connect() and when already closed.
+        While closed the
         MQTT client is left alone until the next async_connect(); REST stays
         usable, and async_set_token() changes the REST token only.
 
@@ -805,6 +889,7 @@ class NavimowClient:
             if self._sdk is None or self._closed:
                 return
             self._closed = True
+            await self._cancel_tasks()
             await loop.run_in_executor(None, self._sdk.disconnect)
 
     async def async_set_token(self, token: str) -> None:
@@ -956,7 +1041,9 @@ class NavimowClient:
         device the reply covers, the REST observation is replaced and the
         state rebuilt when the merge selects that observation, which fires
         on_state; a device whose MQTT observation is current is left as it
-        is. last_poll_at and last_poll_error are updated.
+        is. last_poll_at and last_poll_error are updated. The poll counts
+        as a tick of the clock: a success sets the next poll one interval
+        from now and resets the backoff, a failure doubles the wait.
 
         Args:
             device_ids: The devices to poll; None polls every known device.
@@ -974,25 +1061,165 @@ class NavimowClient:
                 it.
         """
         self._bind("async_poll")
+        statuses = await self._scheduled_poll(device_ids, provider=True)
+        assert statuses is not None  # a manual poll is never skipped
+        return statuses
+
+    async def _scheduled_poll(
+        self, device_ids: Iterable[str] | None, *, provider: bool, only_when_due: bool = False
+    ) -> dict[str, DeviceStatus] | None:
+        """A poll that counts as a tick of the clock, with the token step when asked.
+
+        Args:
+            device_ids: The devices to poll; None for every known device.
+            provider: True asks the provider first and pushes a token that
+                changed through async_set_token(); False skips the token step.
+            only_when_due: True makes no request when the next poll is no
+                longer due once the poll lock is held, as for the poll task:
+                a poll that held the lock meanwhile has moved the deadline.
+
+        Returns:
+            The statuses by device id; None when only_when_due skipped the
+            request, with nothing recorded.
+
+        Raises:
+            MowerAPIError: The request failed; last_poll_error holds the
+                exception and the backoff counts the failure.
+            Exception: Whatever the provider raises; the same bookkeeping.
+        """
         try:
-            if self._token_provider is not None:
+            if provider and self._token_provider is not None:
                 token = await self._token_provider()
                 if token is not None:
                     await self.async_set_token(token)
+            statuses = await self._poll(device_ids, only_when_due=only_when_due)
         except Exception as exc:
             self.last_poll_error = exc
+            self._record_poll_failure()
             raise
-        return await self._poll(device_ids)
+        if statuses is None:
+            return None
+        self._record_poll_success()
+        return statuses
 
-    async def _poll(self, device_ids: Iterable[str] | None) -> dict[str, DeviceStatus]:
+    def _record_poll_success(self) -> None:
+        """Set the next poll one interval from now and reset the backoff.
+
+        Nothing happens in manual mode (poll_interval None).
+        """
+        if self._poll_interval is None:
+            return
+        self._poll_wait = self._poll_interval
+        self._next_poll_due = time.monotonic() + self._poll_wait
+
+    def _record_poll_failure(self) -> None:
+        """Double the wait, up to the cap, and set the next poll that far from now.
+
+        Nothing happens in manual mode (poll_interval None).
+        """
+        if self._poll_interval is None:
+            return
+        self._poll_wait = min(self._poll_wait * 2, self._poll_backoff_max)
+        self._next_poll_due = time.monotonic() + self._poll_wait
+
+    def _start_clock(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Start the poll task, unless poll_interval is None, and the silence task.
+
+        Args:
+            loop: The bound loop.
+        """
+        # Decision: the client runs the clock, so a consumer runs no timer of its
+        # own: the poll task polls every poll_interval seconds with a doubling
+        # backoff after failures that never goes below the interval, and the
+        # silence task re-evaluates the merge every SILENCE_CHECK_SECONDS. Every
+        # task is tracked and cancelled by async_disconnect(), so none outlives the
+        # connection or runs while closed.
+        if self._poll_interval is not None:
+            self._spawn(loop, self._poll_task(), "poll")
+        self._spawn(loop, self._silence_task(), "silence_check")
+
+    def _spawn(self, loop: asyncio.AbstractEventLoop, coroutine: Any, name: str) -> None:
+        """Run a coroutine as a tracked task on the loop.
+
+        Args:
+            loop: The bound loop.
+            coroutine: The task's body.
+            name: The task's name, after "NavimowClient ".
+        """
+        task = loop.create_task(coroutine, name=f"NavimowClient {name}")
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
+    async def _cancel_tasks(self) -> None:
+        """Cancel every tracked task and wait for each to end."""
+        tasks = list(self._tasks)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        self._tasks.clear()
+
+    async def _poll_task(self) -> None:
+        """The poll task: poll when the next poll is due, else sleep until it is."""
+        while True:
+            now = time.monotonic()
+            due = self._next_poll_due
+            if due is None:
+                due = now + self._poll_wait
+                self._next_poll_due = due
+            if due > now:
+                await _sleep(due - now)
+                continue  # a poll made meanwhile may have moved the due time
+            await self._clock_poll()
+
+    async def _clock_poll(self) -> None:
+        """One poll of the poll task: a failure is logged and reported as "poll", never raised."""
+        # Decision: failures on the clock are logged with their traceback and
+        # reported through on_error with the operation's name, and the task goes
+        # on: nothing escapes a task, and a MowerAuthRequiredError here is the one
+        # failure a consumer must act on, which it does through the provider or
+        # async_set_token() while the client keeps polling with backoff.
+        try:
+            await self._scheduled_poll(None, provider=True, only_when_due=True)
+        except Exception as exc:
+            _LOGGER.exception("NavimowClient: the clock's poll failed")
+            self._report("poll", exc)
+
+    async def _silence_task(self) -> None:
+        """The silence task: every SILENCE_CHECK_SECONDS, re-evaluate the merge for every device."""
+        while True:
+            await _sleep(SILENCE_CHECK_SECONDS)
+            try:
+                self._silence_tick()
+            except Exception as exc:
+                _LOGGER.exception("NavimowClient: the silence tick failed")
+                self._report("silence_check", exc)
+
+    def _silence_tick(self) -> None:
+        """Rebuild the state of every device whose observation the rule now chooses differently."""
+        # Decision: the tick re-evaluates the merge for every device with a state,
+        # so a flip by time (an MQTT observation going stale with a newer REST one
+        # stored) is seen within one tick; only a changed choice stores a new state
+        # and fires on_state, else every tick would deliver every mower again.
+        for device_id, current in list(self._states.items()):
+            chosen = self._select(device_id)
+            if chosen is None or chosen.is_source_of(current):
+                continue
+            self._rebuild(device_id, self._current_location(device_id))
+
+    async def _poll(
+        self, device_ids: Iterable[str] | None, *, only_when_due: bool = False
+    ) -> dict[str, DeviceStatus] | None:
         """The request and the merge of a poll, under the poll lock; no token step.
 
         Args:
             device_ids: The devices to poll; None for every known device,
                 fetched first when none are known.
+            only_when_due: True makes no request when, once the lock is
+                held, the next poll is not due yet.
 
         Returns:
-            The statuses by device id.
+            The statuses by device id; None when only_when_due skipped the
+            request.
 
         Raises:
             MowerAPIError: The request failed; last_poll_error holds the
@@ -1000,8 +1227,16 @@ class NavimowClient:
         """
         # Decision: polls are serialised on a lock of the client's own and applied
         # in reply order, so a manual or command poll waits for one in flight and an
-        # older reply never replaces a newer observation.
+        # older reply never replaces a newer observation. The poll task checks its
+        # deadline again once it holds the lock: a poll that held it meanwhile has
+        # moved the deadline, and a request now would be a duplicate.
         async with self._poll_lock:
+            if (
+                only_when_due
+                and self._next_poll_due is not None
+                and self._next_poll_due > time.monotonic()
+            ):
+                return None
             try:
                 if device_ids is None:
                     if not self._devices_known:
@@ -1074,7 +1309,8 @@ class NavimowClient:
             location: The location half to carry.
         """
         # Decision: the state is rebuilt at a state message, an applied location
-        # entry, a poll whose REST observation the rule selects, and a restore;
+        # entry, a poll whose REST observation the rule selects, a silence tick
+        # at which the rule's choice changed, and a restore;
         # each rebuild stores a new state and fires on_state, so a consumer that
         # wants only the status half compares those fields.
         observation = self._select(device_id)
@@ -1204,6 +1440,7 @@ class NavimowClient:
         """Call callback(operation, exception) for each failure on the client's own schedule.
 
         The operations are "poll" for the poll inside async_connect() and
+        the poll task's polls, "silence_check" for the silence tick and
         "recovery" for a failed recovery after a refused connection. A
         MowerAuthRequiredError here is the one failure a consumer must act
         on: only it can re-authenticate, through async_set_token() or the

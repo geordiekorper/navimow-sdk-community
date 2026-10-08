@@ -9,7 +9,7 @@ from mower_sdk import navimow_client as client_module
 from mower_sdk import sdk as sdk_module
 from mower_sdk import watchdog as watchdog_module
 
-from .fakes import FakeClient, FakeClock, FakeMQTT
+from .fakes import FakeClient, FakeClock, FakeMQTT, FakeSleeper
 
 
 @pytest.fixture
@@ -46,4 +46,12 @@ def clock(monkeypatch: pytest.MonkeyPatch) -> FakeClock:
         monkeypatch.setattr(module, "time", fake)
         monkeypatch.setattr(module, "datetime", fake)
     monkeypatch.setattr(watchdog_module, "time", fake)
+    return fake
+
+
+@pytest.fixture
+def sleeper(monkeypatch: pytest.MonkeyPatch) -> FakeSleeper:
+    """A FakeSleeper in place of the function NavimowClient's clock waits through."""
+    fake = FakeSleeper()
+    monkeypatch.setattr(client_module, "_sleep", fake)
     return fake

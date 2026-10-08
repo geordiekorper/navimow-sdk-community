@@ -324,3 +324,65 @@ class FakeClock:
     def advance(self, seconds: float) -> None:
         self.monotonic_now += seconds
         self.wall_now += timedelta(seconds=seconds)
+
+
+# ---- the clock's sleep ---------------------------------------------------------------------------
+
+
+class FakeSleeper:
+    """Stands in for the function NavimowClient's tasks wait through.
+
+    Each task's wait is recorded under the task's name and held until the test
+    releases it, so a tick happens when the test says and never after a fixed
+    time.
+    """
+
+    def __init__(self) -> None:
+        self.waits: dict[str, list[float]] = {}
+        self._pending: dict[str, asyncio.Future[None]] = {}
+        self._entered: dict[str, asyncio.Event] = {}
+
+    async def __call__(self, seconds: float) -> None:
+        task = asyncio.current_task()
+        assert task is not None
+        name = task.get_name()
+        self.waits.setdefault(name, []).append(seconds)
+        future = asyncio.get_running_loop().create_future()
+        self._pending[name] = future
+        self._entered.setdefault(name, asyncio.Event()).set()
+        try:
+            await future
+        finally:
+            if self._pending.get(name) is future:
+                del self._pending[name]
+
+    def sleeping(self, name: str) -> bool:
+        """Whether the task of this name is in a wait."""
+        return name in self._pending
+
+    def wake(self, name: str) -> None:
+        """End the task's current wait without waiting for its next one."""
+        self._entered.setdefault(name, asyncio.Event()).clear()
+        self._pending.pop(name).set_result(None)
+
+    async def until_sleeping(self, name: str) -> None:
+        """Wait until the task of this name is in a wait, at once when it already is."""
+        if self.sleeping(name):
+            return
+        # Not in a wait now, so whatever set the event is stale: the next wait sets it again.
+        event = self._entered.setdefault(name, asyncio.Event())
+        event.clear()
+        async with asyncio.timeout(5):
+            await event.wait()
+        assert self.sleeping(name)
+
+    async def release(self, name: str) -> None:
+        """End the task's current wait, once it is in one, and wait until it sleeps again."""
+        event = self._entered.setdefault(name, asyncio.Event())
+        if not self.sleeping(name):
+            async with asyncio.timeout(5):
+                await event.wait()
+        event.clear()
+        self._pending.pop(name).set_result(None)
+        async with asyncio.timeout(5):
+            await event.wait()

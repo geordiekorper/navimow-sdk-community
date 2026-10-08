@@ -46,12 +46,11 @@ from .fakes import (
     FakeResponse,
     FakeSession,
     api_with,
-    drain,
     ok,
     topic,
 )
 
-pytestmark = pytest.mark.usefixtures("fake_paho", "clock")
+pytestmark = pytest.mark.usefixtures("fake_paho", "clock", "sleeper")
 
 DEVICE = "dev-1"
 OTHER = "dev-2"
@@ -189,12 +188,33 @@ def connect_replies() -> list[FakeResponse]:
     return [broker_reply(), both_docked()]
 
 
+async def settle(client: NavimowClient, *held: asyncio.Task[Any]) -> None:
+    """Let everything run to its end but the client's clock and the tasks the test holds.
+
+    A marker queued on the loop runs after every callback queued before it,
+    so once it has run the tasks those callbacks created exist; they are
+    awaited, and the round repeats until none is left. The clock's tasks wait
+    in the sleeper until a test releases them, and a held task waits in a
+    provider, so neither is waited for.
+    """
+    loop = asyncio.get_running_loop()
+    async with asyncio.timeout(5):
+        while True:
+            marker = loop.create_future()
+            loop.call_soon(marker.set_result, None)
+            await marker
+            tasks = asyncio.all_tasks() - {asyncio.current_task(), *client._tasks, *held}
+            if not tasks:
+                return
+            await asyncio.wait(tasks)
+
+
 async def connected(client: NavimowClient) -> None:
     """Paho's thread: the broker answered the connect."""
     mqtt = client.mqtt
     mqtt._on_connect(mqtt.client, None, {}, SUCCESS, None)
     mqtt.client.connected = True
-    await drain()
+    await settle(client)
 
 
 async def deliver(
@@ -204,7 +224,7 @@ async def deliver(
     data = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
     mqtt = client.mqtt
     mqtt._on_message(mqtt.client, None, FakeMessage(topic(channel, device_id), data))
-    await drain()
+    await settle(client)
 
 
 async def state_message(
@@ -731,25 +751,11 @@ async def test_a_consumer_set_token_during_the_restart_waits_and_is_reconciled_a
 # ---- recovery after a refused connection ---------------------------------------------------------
 
 
-async def settle(*held: asyncio.Task[Any]) -> None:
-    """Like drain(), but leaving the given tasks pending: the test holds them in a provider."""
-    loop = asyncio.get_running_loop()
-    async with asyncio.timeout(5):
-        while True:
-            marker = loop.create_future()
-            loop.call_soon(marker.set_result, None)
-            await marker
-            tasks = asyncio.all_tasks() - {asyncio.current_task(), *held}
-            if not tasks:
-                return
-            await asyncio.wait(tasks)
-
-
 async def refused(client: NavimowClient, *held: asyncio.Task[Any]) -> None:
     """Paho's thread: the connect failed before the broker answered."""
     mqtt = client.mqtt
     mqtt._on_connect_fail(mqtt.client, None)
-    await settle(*held)
+    await settle(client, *held)
 
 
 @pytest.mark.asyncio
@@ -853,7 +859,7 @@ async def test_disconnect_waits_for_an_operation_in_flight() -> None:
     disconnecting = asyncio.ensure_future(client.async_disconnect())
     refreshing.add_done_callback(lambda _: order.append("refresh"))
     disconnecting.add_done_callback(lambda _: order.append("disconnect"))
-    await settle(refreshing, disconnecting)  # the disconnect has reached the lock and waits there
+    await settle(client, refreshing, disconnecting)  # the disconnect waits at the lock
     assert not disconnecting.done() and not paho(client).named("disconnect")
     provider.release.set()
     await refreshing
@@ -1069,7 +1075,7 @@ async def test_async_refresh_devices_waits_for_the_lock_asks_the_provider_and_pu
     refreshing = asyncio.ensure_future(client.async_refresh_broker_credentials())
     await provider.entered.wait()  # the refresh holds the lock in the provider
     listing = asyncio.ensure_future(client.async_refresh_devices())
-    await settle(refreshing, listing)
+    await settle(client, refreshing, listing)
     assert not listing.done() and requests(session) == ["v2", "getVehicleStatus"]
     provider.release.set()
     await refreshing
@@ -1110,11 +1116,11 @@ async def test_two_polls_never_overlap_and_observations_follow_reply_order() -> 
     await client.async_connect()
     polls = [asyncio.ensure_future(client.async_poll()), asyncio.ensure_future(client.async_poll())]
     await first.entered.wait()
-    await settle(*polls)
+    await settle(client, *polls)
     assert not second.entered.is_set()  # the second request waits for the poll lock
     assert requests(session).count("getVehicleStatus") == 2  # the request was taken, not sent
     second.release.set()
-    await settle(*polls)
+    await settle(client, *polls)
     assert not second.entered.is_set()
     first.release.set()
     await second.entered.wait()

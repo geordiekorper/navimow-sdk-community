@@ -99,7 +99,19 @@ keep the headings they were released with.
   options `keepalive_seconds`, `reconnect_min_delay`, `reconnect_max_delay`
   and `extra_topics` pass through, and any other keyword is refused. Every
   coroutine runs on the loop the client is bound to and raises
-  `RuntimeError` from another.
+  `RuntimeError` from another. The client runs the clock: from
+  `async_connect()` it polls every `poll_interval` seconds
+  (`REST_POLL_SECONDS`, 120; None runs no poll task), the first poll being
+  the connect's own, doubles the wait after each failed poll up to
+  `poll_backoff_max` (`REST_POLL_MAX_BACKOFF_SECONDS`, 600, never below the
+  interval) and comes back to the interval on a success, and every
+  `SILENCE_CHECK_SECONDS` (30) re-evaluates the merge, so an MQTT
+  observation that went stale yields to a newer REST one within one tick.
+  A consumer's own `async_poll()` counts as a tick. `async_disconnect()`
+  cancels the tasks before it disconnects. A failure on the clock is
+  logged and reported through `on_error` as `"poll"` or
+  `"silence_check"`, never raised; `COMMAND_POLL_DELAY_SECONDS` (5) is
+  exported with the other constants.
 
 ## [0.2.0a5] - 2026-10-02
 
