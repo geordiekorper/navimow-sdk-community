@@ -2,8 +2,8 @@
 
 How the live path of `mower_sdk` fits together and why it is built the way it
 is, for someone about to change it. The live path is the code new programs
-use: `MowerAPI`, `NavimowSDK`, `NavimowMQTT`, `MqttWatchdog`, the models and
-the errors. What a caller sees of it (defaults, hooks, how to use each piece)
+use: `NavimowClient`, `MowerAPI`, `NavimowSDK`, `NavimowMQTT`, `MqttWatchdog`,
+the models and the errors. What a caller sees of it (defaults, hooks, how to use each piece)
 is in the [README](../README.md#behaviour-notes); this document gives the
 structure behind that and links there instead of repeating it. The
 [development guide](development.md) lists the modules and the checks.
@@ -13,9 +13,11 @@ structure behind that and links there instead of repeating it. The
 ```mermaid
 flowchart LR
     consumer(["A consumer"])
-    consumer --> api["MowerAPI<br/>api.py"]
-    consumer --> sdk["NavimowSDK<br/>sdk.py"]
-    consumer --> dog["MqttWatchdog<br/>watchdog.py"]
+    consumer --> client["NavimowClient<br/>navimow_client.py"]
+    client --> api["MowerAPI<br/>api.py"]
+    client --> sdk["NavimowSDK<br/>sdk.py"]
+    client --> dog["MqttWatchdog<br/>watchdog.py"]
+    consumer -. or each layer itself .-> api
     dog -. reads .-> sdk
     sdk --> mqtt["NavimowMQTT<br/>mqtt.py"]
     sdk --> decoder["LocationDecoder<br/>location.py"]
@@ -36,13 +38,21 @@ not know each other.
 - `NavimowSDK` is the facade over one `NavimowMQTT`, reachable as `sdk.mqtt`.
   It decodes payloads into the models, filters them, keeps the caches and
   calls the consumer's plain callbacks.
+- `NavimowClient` is the client over both. It owns the `MowerAPI` it is given
+  (or builds with `from_token`), builds the `NavimowSDK` and the
+  `MqttWatchdog` at `async_connect()`, keeps one `MowerState` per mower from
+  what the two transports deliver, and runs the polling, the watchdog and the
+  rebuilds itself ([The client](#the-client)). A program uses it, or the
+  layers directly; the README's [quick example](../README.md#quick-example)
+  shows both.
 
-`models.py` and `errors.py` are shared by all three. The facade holds no REST
-client, because the consumer owns the session and the OAuth token (see the
-README's [quick example](../README.md#quick-example)). The transports meet in
-two calls: `NavimowSDK.from_connection_info()` takes the `MqttConnectionInfo`
-the API returned, and `async_refresh_broker_credentials(api, ...)` takes the
-API as an argument.
+`models.py` and `errors.py` are shared by all of them. The facade holds no
+REST client, because the consumer owns the session and the OAuth token (see
+the README's [layered example](../README.md#the-layers-underneath)); the
+client is built on that same `MowerAPI`. The transports meet in two calls:
+`NavimowSDK.from_connection_info()` takes the `MqttConnectionInfo` the API
+returned, and `async_refresh_broker_credentials(api, ...)` takes the API as
+an argument.
 
 ## From a broker message to a callback
 
@@ -180,9 +190,10 @@ it is called off the loop.
 state with the facade's accepted state, and `check_silence()` measures how
 long the location channel has been quiet while a mower runs; each returns a
 `RebuildRequest` or None. The checks read the caches and so run on the loop;
-the rebuild blocks and runs off it, and is left to the consumer, which then
+the rebuild blocks and runs off it, and is left to the caller, which then
 calls `acknowledge()`. The debounce window starts there, not when a request is
-returned, because a consumer may decline one.
+returned, because a caller may decline one. `NavimowClient` is that caller
+when it runs the watchdog ([The client](#the-client)).
 
 When to refresh credentials and how to run the watchdog are in the README's
 [MQTT notes](../README.md#mqtt).
@@ -241,6 +252,21 @@ unchanged by it; it calls them.
   `SILENCE_CHECK_SECONDS`.
   Nothing escapes a task: a failure is logged with its traceback and
   reported through `on_error` with the operation's name.
+- **The watchdog.** The client builds the `WatchInput`s from its own records
+  (the state's status, the REST observation's status and the monotonic time
+  it was read) and runs rule 1 after each poll, over the devices the reply
+  covered, and rule 2 on the silence tick. A request goes to the
+  `on_rebuild_request` callbacks and then, with `auto_rebuild`, to a task of
+  its own, so the poll or silence tick that made the request does not await
+  the rebuild (a later poll's token step may still wait for the lock the
+  rebuild holds).
+  Requests coalesce through a generation the client keeps: it advances,
+  under the lock, at the successful end of any operation that left
+  `mqtt.rebuilds` higher than it found it, and a request made before the
+  last advance is acknowledged without a second rebuild. The facade's own
+  counter is not used, because it advances before the rebuild has connected,
+  whether or not it then raises. Only an executed rebuild is acknowledged,
+  so the watchdog's debounce starts when the connection was in fact rebuilt.
 - **Recovery.** The client's hook on the MQTT client's `on_connect_fail`
   asks the token provider and runs the facade's credential helper, whose
   cooldown bounds the cost of repeated refusals; it is skipped while the lock
@@ -357,10 +383,17 @@ legacy class.
 This section describes the live path as it is today. It is not a rule for
 what a change may do.
 
-- **Policy stays with the consumer.** The SDK obtains no token, runs no timer
-  and polls nothing. It reports (cache ages, receipt times, rejections,
-  rebuild requests), and the consumer decides what is current, when to poll
-  and when to rebuild.
+- **The layers leave policy to their caller; the client is that caller.**
+  `MowerAPI` and `NavimowSDK` obtain no token, run no timer and poll nothing.
+  They report (cache ages, receipt times, rejections, rebuild requests) and
+  leave to their caller what is current, when to poll and when to rebuild.
+  `NavimowClient` takes those decisions: it decides the state by its merge
+  rule, polls on its clock, runs the watchdog and rebuilds on its requests,
+  and recovers after a refused connection. What remains with a consumer of
+  the client is the token (the client sends what it is given and asks the
+  `token_provider` for a fresh one; it runs no OAuth flow), the poll interval
+  (a deployment setting; `poll_interval=None` leaves the polling to the
+  consumer) and what to show of the state.
 - **Unknowns are passed on, not hidden.** What the SDK does not recognise
   stays visible: an unknown state as sent, an unknown field as
   `unknown_field`, the payload kept as `raw` and `original` beside the fields
