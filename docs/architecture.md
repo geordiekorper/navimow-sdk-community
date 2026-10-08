@@ -187,6 +187,65 @@ returned, because a consumer may decline one.
 When to refresh credentials and how to run the watchdog are in the README's
 [MQTT notes](../README.md#mqtt).
 
+## The client
+
+`NavimowClient` (`navimow_client.py`) sits above the two transports: it owns a
+`MowerAPI` and builds a `NavimowSDK` at `async_connect()`, and from then on
+decides the state and runs the schedule that the README's
+[quick example](../README.md#quick-example) leaves to it. The parts above are
+unchanged by it; it calls them.
+
+- **One lock.** The lifecycle coroutines (`async_connect`, `async_disconnect`,
+  `async_set_token`, `async_refresh_broker_credentials`, `async_rebuild`,
+  `async_refresh_devices`) run under one `asyncio.Lock`, so a token push
+  cannot interleave with a rebuild or a disconnect. The facade's own locks
+  are taken inside it, never the other way round, and nothing that holds it
+  awaits a coroutine that takes it: the poll inside `async_connect()` skips
+  the token step for that reason. Every coroutine raises `RuntimeError`
+  before anything changes when awaited from a loop other than the bound one.
+- **Executor hops.** The facade's blocking calls (`connect()`,
+  `disconnect()`, `update_mqtt_credentials()`, `mqtt.rebuild()`, and the
+  build itself, which loads certificates) run in the loop's default executor
+  under the lock, so the loop keeps delivering callbacks while paho's thread
+  is joined.
+- **The token step.** Learning a token sets it on the REST client and
+  remembers it; reconciling, under the lock, pushes the current token's
+  bearer header to the MQTT client when it differs from the one last
+  applied and records what was pushed. `async_set_token()` learns before
+  it takes the lock, and so does a poll, whose provider call goes through
+  `async_set_token()`; `async_connect()`, `async_refresh_broker_credentials()`,
+  `async_rebuild()` and `async_refresh_devices()` ask the provider while
+  they hold the lock, so a provider must not await one of the client's
+  lifecycle coroutines. A push sends the current token, never a call's
+  argument, so one that waited for the lock cannot undo a newer token.
+  While the client is closed the MQTT client is left alone and the next
+  `async_connect()` applies what changed.
+- **The state.** Per device, the latest MQTT observation, the latest REST
+  observation and the facade's location record. The status half comes from
+  the MQTT observation while it is younger than `mqtt_stale_seconds`
+  (`MQTT_STALE_SECONDS` by default), else
+  from a REST observation received after it, and an older REST observation
+  never replaces a newer MQTT one. The state is rebuilt after a state
+  message, an applied location entry (with that entry's own record), a poll
+  whose REST observation the rule selects, a silence tick at which the
+  choice changed, and a restore; each rebuild fires `on_state`.
+- **The clock.** Tasks on the bound loop, started at the end of
+  `async_connect()` and cancelled first by `async_disconnect()`. The poll
+  task, run unless `poll_interval` is None, polls every `poll_interval`
+  seconds (`REST_POLL_SECONDS` by default) and doubles its wait after a
+  failure up to `poll_backoff_max` (`REST_POLL_MAX_BACKOFF_SECONDS` by
+  default, never below the interval); the schedule is arithmetic on
+  `time.monotonic()`, so a consumer's own `async_poll()` moves the next poll
+  without waking the task. The silence task re-evaluates the merge every
+  `SILENCE_CHECK_SECONDS`.
+  Nothing escapes a task: a failure is logged with its traceback and
+  reported through `on_error` with the operation's name.
+- **Recovery.** The client's hook on the MQTT client's `on_connect_fail`
+  asks the token provider and runs the facade's credential helper, whose
+  cooldown bounds the cost of repeated refusals; it is skipped while the lock
+  is held or the client is closed, and its failures are reported, never
+  raised.
+
 ## Commands
 
 Commands go over REST. `MowerAPI._async_send_command` maps a `MowerCommand` to

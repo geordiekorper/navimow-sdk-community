@@ -89,7 +89,7 @@ case.
 | Watchdog | `test_watchdog.py` |
 | The account-level client (`NavimowClient`) | `test_navimow_client.py`, `test_navimow_client_clock.py` |
 | The mower's state as one object (`MowerState`) | `test_mower_state.py` |
-| The README's threaded recipe, run as written | `test_threaded_recipe.py` |
+| The README's quick example and threaded recipe, run as written | `test_readme_client_example.py`, `test_threaded_recipe.py` |
 | The migration guide's "after" fragments, run as written | `test_migration_guide.py` |
 | Compatibility with upstream | `test_public_api_compat.py`, `test_module_star_imports.py`, `test_legacy_shims.py`, `test_core_isolation.py`, `test_upstream_distribution_warning.py` |
 | The upstream porting tool | `test_port_upstream.py` |
