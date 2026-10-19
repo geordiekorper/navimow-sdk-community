@@ -19,6 +19,22 @@ keep the headings they were released with.
   reconnect attempt whose socket drops before any CONNACK is not counted
   again either; a drop after a reconnect, refused or not, or on a client made
   by `rebuild()`, still counts.
+- `NavimowClient.async_connect()` cancelled while the MQTT connect runs in
+  the executor leaves the feed not running. The cancellation marked the client
+  closed and cancelled its tasks, but the executor finished the connect, so
+  paho's network thread came up for a client that reported itself closed, and
+  `async_disconnect()`, a no-op on a closed client, could not stop it; a
+  consumer that cancels a connect in progress (a setup that times out or is
+  torn down) had to shield the call and disconnect by hand. The connect, once
+  started in the executor, is now awaited to its end and undone with a
+  disconnect before the cancellation propagates, through any further
+  cancellation, so nothing of the client's runs afterwards; the next
+  `async_connect()` restarts the client as before. A connect whose MQTT
+  connect raised (an unusable address, refused before paho's thread starts)
+  is followed by the same disconnect, and the exception propagates as before.
+  The reconnect of a connect after `async_disconnect()` is undone the same
+  way, and a rebuild it made (a token changed while closed) counts for the
+  rebuild generation, so a watchdog request from before it is stale.
 
 ## [0.2.0a6] - 2026-10-08
 

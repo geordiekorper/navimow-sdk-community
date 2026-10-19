@@ -104,6 +104,29 @@ async def _sleep(seconds: float) -> None:
     await asyncio.sleep(seconds)
 
 
+async def _settle(future: asyncio.Future[Any]) -> None:
+    """Wait for a future to end, through cancellations, and drop its outcome.
+
+    For an executor step that a coroutine being cancelled must see to its
+    end: a cancellation that lands during the wait is absorbed and the wait
+    goes on, and the step's result, or the Exception it raised, is read and
+    dropped. The caller re-raises what interrupted it afterwards.
+
+    Args:
+        future: The future to wait for.
+    """
+    while True:
+        try:
+            await asyncio.shield(future)
+        except asyncio.CancelledError:
+            if future.done():
+                return
+            continue
+        except Exception:
+            return
+        return
+
+
 def _positive(value: Any) -> bool:
     """Say whether a value is a positive number, for the constructor's checks.
 
@@ -835,8 +858,12 @@ class NavimowClient:
         once, and a token that changed while closed is pushed, which rebuilds
         and connects the MQTT client; else the client is reconnected. A
         connect interrupted after the facade was built (cancelled, say)
-        leaves the client closed, and the next async_connect() takes that
-        path.
+        leaves the client closed with the feed not running, and the next
+        async_connect() takes that path. A connect of the MQTT client that
+        had started in the executor, interrupted or failed, is awaited to
+        its end and undone with a disconnect before the exception
+        propagates, through any further cancellation, so nothing of the
+        client's runs afterwards.
 
         Raises:
             MowerAPIError: A REST request failed (its subclass says which
@@ -916,21 +943,30 @@ class NavimowClient:
         for device_id, location in restored:
             sdk.restore_location(device_id, location)
         self._sdk = sdk
+        connecting: asyncio.Future[None] | None = None
         try:
             self._watchdog = self._make_watchdog(sdk)
             for device_id, _location in restored:
                 if device_id in self._states:
                     self._rebuild(device_id, sdk.get_cached_location(device_id))
             await self._startup_poll()
-            await loop.run_in_executor(None, sdk.connect)
+            connecting = loop.run_in_executor(None, sdk.connect)
+            await asyncio.shield(connecting)
         except BaseException:
             # Decision: a first connect interrupted after the build (cancelled during
             # the startup poll, say) leaves the facade built and the client marked
             # closed, so the next async_connect() restarts it: polls, reconciles and
-            # connects, instead of finding it started and doing nothing. A task
+            # connects, instead of finding it started and doing nothing. The connect
+            # of the MQTT client, once started in the executor, runs on whatever
+            # happens to this coroutine, so it is awaited to its end and undone with
+            # a disconnect before the exception propagates, both through any further
+            # cancellation: a closed client's feed is not running, and
+            # async_disconnect(), a no-op while closed, has nothing to stop. A task
             # spawned meanwhile (the poll after a command sent during the startup
             # poll) is cancelled with it, as async_disconnect() would cancel it.
             self._closed = True
+            if connecting is not None:
+                await self._undo_connect(loop, sdk, connecting)
             await self._cancel_tasks()
             raise
         self._applied_bearer = self._bearer(token)
@@ -948,6 +984,7 @@ class NavimowClient:
         assert sdk is not None
         self._closed = False
         before = sdk.mqtt.rebuilds
+        connecting: asyncio.Future[None] | None = None
         try:
             if self._watchdog is None:
                 self._watchdog = self._make_watchdog(sdk)  # the factory raised last time
@@ -961,17 +998,44 @@ class NavimowClient:
                     sdk.update_mqtt_credentials(auth_headers=bearer)
                 sdk.connect()
 
-            await loop.run_in_executor(None, reconnect)
+            connecting = loop.run_in_executor(None, reconnect)
+            await asyncio.shield(connecting)
         except BaseException:
-            # Interrupted before the reconnect: still closed, so the next
-            # async_connect() restarts again; a task spawned meanwhile is cancelled.
+            # Interrupted: still closed, so the next async_connect() restarts again,
+            # and a reconnect that had started is awaited and undone as in _build. A
+            # rebuild it made counts, so a watchdog request from before it is stale;
+            # the bearer it pushed is not recorded, and the next restart's push of
+            # the same bearer changes nothing. A task spawned meanwhile is cancelled.
             self._closed = True
+            if connecting is not None:
+                await self._undo_connect(loop, sdk, connecting)
+                self._note_rebuilds(before)
             await self._cancel_tasks()
             raise
         if bearer is not None:
             self._applied_bearer = bearer
         self._note_rebuilds(before)
         self._start_clock(loop)
+
+    async def _undo_connect(
+        self, loop: asyncio.AbstractEventLoop, sdk: NavimowSDK, connecting: asyncio.Future[None]
+    ) -> None:
+        """Wait for an interrupted executor connect to end, then disconnect the facade.
+
+        The connect runs on in the executor whatever happened to the
+        coroutine that started it, so it is awaited to its end, and the
+        disconnect, in the executor as well, follows it; the MQTT client's own
+        lock orders the two. Both waits last through further cancellations and
+        neither raises, so whatever the connect did, the facade is left
+        disconnected when the caller re-raises.
+
+        Args:
+            loop: The bound loop.
+            sdk: The facade whose connect was started.
+            connecting: The executor connect's future.
+        """
+        await _settle(connecting)
+        await _settle(loop.run_in_executor(None, sdk.disconnect))
 
     async def _startup_poll(self) -> None:
         """The poll inside async_connect(): every device once, a failure reported, never raised."""
@@ -991,8 +1055,9 @@ class NavimowClient:
         Under the lifecycle lock, so an operation in flight finishes first.
         The clock's tasks are cancelled and awaited before the MQTT client is
         disconnected in the default executor, so nothing of the client's runs
-        afterwards. A no-op before async_connect() and when already closed.
-        While closed the
+        afterwards. A no-op before async_connect() and when already closed,
+        an interrupted connect included, which disconnected what it had
+        started itself. While closed the
         MQTT client is left alone until the next async_connect(); REST stays
         usable, and async_set_token() changes the REST token only.
 

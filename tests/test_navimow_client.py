@@ -20,6 +20,7 @@ from typing import Any
 import pytest
 
 import mower_sdk
+from mower_sdk import mqtt as mqtt_module
 from mower_sdk import navimow_client as client_module
 from mower_sdk.api import MowerAPI
 from mower_sdk.errors import MowerAuthRequiredError, MowerTransportError
@@ -157,6 +158,61 @@ class GatedBuild(NavimowSDK):
         GatedBuild.entered.set()
         assert GatedBuild.release.wait(5)
         return super().from_connection_info(info, **kwargs)
+
+
+class GatedConnect(FakeClient):
+    """A paho client whose connect and loop stop wait for the test, as slow executor steps would.
+
+    Both gates pass at once while their release event is set; a test clears
+    one to hold the step and sets it to let the step go on.
+    """
+
+    entered = threading.Event()
+    release = threading.Event()
+    stop_entered = threading.Event()
+    stop_release = threading.Event()
+
+    def connect_async(self, *args: Any, **kwargs: Any) -> None:
+        super().connect_async(*args, **kwargs)  # recorded, then held
+        GatedConnect.entered.set()
+        assert GatedConnect.release.wait(5)
+
+    def loop_stop(self) -> None:
+        super().loop_stop()
+        GatedConnect.stop_entered.set()
+        assert GatedConnect.stop_release.wait(5)
+
+
+class FailingConnect(FakeClient):
+    """A paho client whose connect_async raises, as paho's does for an unusable address.
+
+    It raises as many times as ``failures`` says, then connects as the fake
+    does; the thread is never started by a refused connect.
+    """
+
+    failures = 1
+
+    def connect_async(self, *args: Any, **kwargs: Any) -> None:
+        super().connect_async(*args, **kwargs)  # recorded, then refused
+        if FailingConnect.failures:
+            FailingConnect.failures -= 1
+            raise ValueError("Invalid host.")
+
+
+def gate_the_connect(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Install GatedConnect as the paho client, with the connect held and the loop stop free."""
+    GatedConnect.entered = threading.Event()
+    GatedConnect.release = threading.Event()
+    GatedConnect.stop_entered = threading.Event()
+    GatedConnect.stop_release = threading.Event()
+    GatedConnect.stop_release.set()
+    monkeypatch.setattr(mqtt_module.mqtt_client, "Client", GatedConnect)
+
+
+def lifecycle_calls(client: NavimowClient) -> list[str]:
+    """The connect and disconnect calls made on the current paho client, in order."""
+    lifecycle = {"connect_async", "loop_start", "loop_stop", "disconnect"}
+    return [name for name, _args, _kwargs in paho(client).calls if name in lifecycle]
 
 
 class Recorder:
@@ -1083,6 +1139,144 @@ async def test_a_connect_cancelled_during_the_startup_poll_is_retried_by_the_nex
     await client.async_connect()
     assert len(paho(client).named("connect_async")) == 2
     assert requests(session).count("getVehicleStatus") == 4
+
+
+@pytest.mark.asyncio
+async def test_a_connect_cancelled_during_the_executor_connect_disconnects_what_it_started(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gate_the_connect(monkeypatch)
+    client, session = make(*connect_replies(), both_docked())
+    connecting = asyncio.ensure_future(client.async_connect())
+    await asyncio.to_thread(GatedConnect.entered.wait, 5)  # sdk.connect() runs in the executor
+    connecting.cancel()
+    await settle(client, connecting)
+    # The cancellation is seen, and the cleanup waits for the executor connect to end.
+    assert not connecting.done() and lifecycle_calls(client) == ["connect_async"]
+    GatedConnect.release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await connecting
+    # The connect finished, then the client was disconnected: nothing of the client's runs.
+    assert lifecycle_calls(client) == ["connect_async", "loop_start", "loop_stop", "disconnect"]
+    assert client.sdk is not None and not client.is_connected and client._tasks == set()
+    await client.async_disconnect()  # closed: nothing left to stop
+    assert len(paho(client).named("disconnect")) == 1
+    await client.async_connect()  # restarts: polls again, then connects
+    assert len(paho(client).named("connect_async")) == 2
+    assert requests(session) == ["v2", "getVehicleStatus", "getVehicleStatus"]
+    assert len(FakeClient.instances) == 1
+    await connected(client)
+    assert client.is_connected
+
+
+@pytest.mark.asyncio
+async def test_a_cancellation_during_the_cleanup_of_an_interrupted_connect_is_absorbed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gate_the_connect(monkeypatch)
+    GatedConnect.stop_release.clear()  # the undo's disconnect is held too
+    client, _session = make(*connect_replies())
+    connecting = asyncio.ensure_future(client.async_connect())
+    await asyncio.to_thread(GatedConnect.entered.wait, 5)
+    connecting.cancel()
+    await settle(client, connecting)
+    connecting.cancel()  # lands in the wait for the executor connect
+    await settle(client, connecting)
+    assert not connecting.done() and lifecycle_calls(client) == ["connect_async"]
+    GatedConnect.release.set()
+    await asyncio.to_thread(GatedConnect.stop_entered.wait, 5)  # the undo's disconnect runs
+    connecting.cancel()  # lands in the wait for the executor disconnect
+    await settle(client, connecting)
+    assert not connecting.done()
+    GatedConnect.stop_release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await connecting
+    assert lifecycle_calls(client) == ["connect_async", "loop_start", "loop_stop", "disconnect"]
+    assert not client.is_connected
+    await client.async_connect()
+    assert len(paho(client).named("connect_async")) == 2
+    await connected(client)
+    assert client.is_connected
+
+
+@pytest.mark.asyncio
+async def test_a_connect_whose_mqtt_connect_raises_is_disconnected_and_the_error_propagates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    FailingConnect.failures = 1
+    monkeypatch.setattr(mqtt_module.mqtt_client, "Client", FailingConnect)
+    client, session = make(*connect_replies(), both_docked())
+    with pytest.raises(ValueError, match="Invalid host"):
+        await client.async_connect()
+    # The refused connect started no thread; the undo still stops the client, once.
+    assert lifecycle_calls(client) == ["connect_async", "loop_stop", "disconnect"]
+    assert client.sdk is not None and not client.is_connected and client._tasks == set()
+    await client.async_disconnect()  # closed: nothing left to stop
+    assert len(paho(client).named("disconnect")) == 1
+    await client.async_connect()  # restarts: polls again, then connects
+    assert lifecycle_calls(client)[3:] == ["connect_async", "loop_start"]
+    assert requests(session) == ["v2", "getVehicleStatus", "getVehicleStatus"]
+    await connected(client)
+    assert client.is_connected
+
+
+@pytest.mark.asyncio
+async def test_a_restart_cancelled_during_the_reconnect_disconnects_what_it_started(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gate_the_connect(monkeypatch)
+    GatedConnect.release.set()  # the first connect passes
+    client, session = make(*connect_replies(), both_docked(), both_docked())
+    await client.async_connect()
+    await connected(client)
+    await client.async_disconnect()
+    assert lifecycle_calls(client) == ["connect_async", "loop_start", "loop_stop", "disconnect"]
+    GatedConnect.entered.clear()
+    GatedConnect.release.clear()
+    restarting = asyncio.ensure_future(client.async_connect())
+    await asyncio.to_thread(GatedConnect.entered.wait, 5)  # the reconnect runs in the executor
+    restarting.cancel()
+    GatedConnect.release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await restarting
+    assert lifecycle_calls(client)[4:] == ["connect_async", "loop_start", "loop_stop", "disconnect"]
+    assert not client.is_connected and client._tasks == set()
+    assert requests(session) == ["v2", "getVehicleStatus", "getVehicleStatus"]
+    await client.async_connect()
+    assert len(paho(client).named("connect_async")) == 3
+    await connected(client)
+    assert client.is_connected
+
+
+@pytest.mark.asyncio
+async def test_a_rebuild_made_by_an_interrupted_reconnect_counts_and_is_undone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gate_the_connect(monkeypatch)
+    GatedConnect.release.set()
+    client, _session = make(*connect_replies(), both_docked(), both_docked())
+    await client.async_connect()
+    await connected(client)
+    await client.async_disconnect()
+    await client.async_set_token("t2")  # learned; pushed by the next connect, which rebuilds
+    GatedConnect.entered.clear()
+    GatedConnect.release.clear()
+    restarting = asyncio.ensure_future(client.async_connect())
+    await asyncio.to_thread(GatedConnect.entered.wait, 5)  # the rebuilt client's connect
+    restarting.cancel()
+    GatedConnect.release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await restarting
+    first, second = FakeClient.instances
+    assert paho(client) is second and client.mqtt.auth_headers == bearer("t2")
+    assert lifecycle_calls(client) == ["connect_async", "loop_start", "loop_stop", "disconnect"]
+    assert (client.mqtt.rebuilds, client._rebuild_generation) == (1, 1)
+    assert not client.is_connected
+    await client.async_connect()  # the same bearer: pushed again, changing nothing
+    assert len(FakeClient.instances) == 2 and len(second.named("connect_async")) == 2
+    assert len(first.named("disconnect")) == 2  # async_disconnect's, then the rebuild's teardown
+    await connected(client)
+    assert client.is_connected
 
 
 @pytest.mark.asyncio
