@@ -15,6 +15,7 @@ import asyncio
 import json
 import logging
 import threading
+from datetime import datetime
 from typing import Any
 
 import pytest
@@ -221,12 +222,19 @@ class Recorder:
         self.events: list[DeviceEventMessage] = []
         self.attributes: list[DeviceAttributesMessage] = []
         self.rejected: list[RejectedMessage] = []
+        self.locations: list[DeviceLocationMessage] = []
+        self.seen: list[tuple[str, str, datetime]] = []
         self.connections: list[ConnectionEvent] = []
         self.errors: list[tuple[str, Exception]] = []
         client.on_state(self.states.append, device_id=device_id)
         client.on_event(self.events.append, device_id=device_id)
         client.on_attributes(self.attributes.append, device_id=device_id)
         client.on_rejected(self.rejected.append, device_id=device_id)
+        client.on_location(self.locations.append, device_id=device_id)
+        client.on_message_seen(
+            lambda seen_id, channel, at: self.seen.append((seen_id, channel, at)),
+            device_id=device_id,
+        )
         client.on_connection(self.connections.append)
         client.on_error(lambda operation, exc: self.errors.append((operation, exc)))
 
@@ -557,6 +565,59 @@ async def test_the_device_filter_on_on_state_and_the_three_forwarded_callbacks()
         assert [m.device_id for m in recorder.attributes] == expected
         assert [m.device_id for m in recorder.rejected] == expected
     assert [event.kind for event in nobody.connections] == ["connected"]  # no filter
+
+
+@pytest.mark.asyncio
+async def test_on_location_and_on_message_seen_forward_before_and_after_connect() -> None:
+    client, _session = make(*connect_replies())
+    before = Recorder(client)
+    inside: list[bool] = []  # whether state() already carried the entry's record
+    client.on_location(
+        lambda entry: inside.append(
+            client.state(entry.device_id) is not None
+            and client.state(entry.device_id).location == entry.location
+        )
+    )
+    await client.async_connect()
+    await connected(client)
+    await deliver(client, "location", [pose(T + 1000), target(T + 2000, 7)])
+    after = Recorder(client)
+    await deliver(client, "location", [pose(T + 3000, x="2.5")])
+    await deliver(client, "state", b"not json")
+    # One applied entry each, in order, with the record as it stood after the entry.
+    assert [(m.device_id, m.entry_type, m.location.x) for m in before.locations] == [
+        (DEVICE, 1, 1.5),
+        (DEVICE, 3, 1.5),
+        (DEVICE, 1, 2.5),
+    ]
+    assert before.locations[1].location.partition_ids == (7,)
+    assert [(m.entry_type, m.location.x) for m in after.locations] == [(1, 2.5)]
+    assert inside == [True, True, True]
+    # One message-seen call per message, applied or not, with the receipt time.
+    seen_location, seen_state = (DEVICE, "location", T0), (DEVICE, "state", T0)
+    assert before.seen == [seen_location, seen_location, seen_state]
+    assert after.seen == [seen_location, seen_state]
+    assert client.sdk is not None
+    assert client.sdk.get_cached_location(DEVICE) == after.locations[0].location
+
+
+@pytest.mark.asyncio
+async def test_the_device_filter_on_on_location_and_on_message_seen() -> None:
+    client, _session = make(*connect_replies())
+    every = Recorder(client)
+    lawn = Recorder(client, device_id=DEVICE)
+    nobody = Recorder(client, device_id="nope")
+    await client.async_connect()
+    await connected(client)
+    for device_id in (DEVICE, OTHER):
+        await deliver(client, "location", [pose(T + 1000)], device_id)
+        await state_message(client, "isRunning", device_id)
+    for recorder, expected in ((every, [DEVICE, OTHER]), (lawn, [DEVICE]), (nobody, [])):
+        assert [m.device_id for m in recorder.locations] == expected
+        assert [seen_id for seen_id, _channel, _at in recorder.seen] == [
+            device_id for device_id in expected for _ in ("location", "state")
+        ]
+    assert [channel for _id, channel, _at in every.seen] == ["location", "state"] * 2
 
 
 @pytest.mark.asyncio

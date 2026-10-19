@@ -9,6 +9,20 @@ keep the headings they were released with.
 
 ## [Unreleased]
 
+### Added
+
+- `NavimowClient.on_location(callback, device_id=None)` and
+  `NavimowClient.on_message_seen(callback, device_id=None)`: the facade's
+  `on_location` and `on_message_seen` forwarded through the client as
+  `on_event`, `on_attributes` and `on_rejected` are, with the same
+  keyword-only device filter, registrable before `async_connect()` and
+  installed by the build after the client's own location handler, so inside
+  an `on_location` callback `state(device_id)` already shows the state built
+  with the entry's record. The `on_message_seen` callback takes the facade's
+  three arguments (the device id, the channel, the UTC receipt time) and the
+  filter reads the first. A consumer no longer waits for `client.sdk` to
+  exist to register either.
+
 ### Fixed
 
 - `NavimowMQTT` counts a keep-alive timeout as one disconnect. paho-mqtt 2.1

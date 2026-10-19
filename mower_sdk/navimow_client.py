@@ -649,7 +649,7 @@ class NavimowClient:
         self._rest_observations: dict[str, _RestObservation] = {}
         self._states: dict[str, MowerState] = {}
         self._queued_restores: dict[str, DeviceLocation] = {}
-        self._queued_forwards: list[tuple[str, Callable[[Any], None]]] = []
+        self._queued_forwards: list[tuple[str, Callable[..., None]]] = []
         self._state_callbacks: list[tuple[Callable[[MowerState], None], str | None]] = []
         self._connection_callbacks: list[Callable[[ConnectionEvent], None]] = []
         self._error_callbacks: list[Callable[[str, Exception], None]] = []
@@ -927,9 +927,10 @@ class NavimowClient:
             ),
         )
         # Decision: the client's handlers are registered at build, before the
-        # facade is reachable as client.sdk, so they run before any callback a
-        # consumer registers on the facade itself and state() already shows a
-        # message inside such a callback. The facade connects nothing until
+        # forwarded callbacks and before the facade is reachable as client.sdk, so
+        # they run before any callback a consumer registers through the client or
+        # on the facade itself, and state() already shows a message, or an entry's
+        # record, inside such a callback. The facade connects nothing until
         # connect(), so no message can arrive before the hooks are in place.
         sdk.mqtt.on_connect_fail = self._on_connect_fail
         sdk.mqtt.on_connection_event = self._on_connection_event
@@ -1934,29 +1935,73 @@ class NavimowClient:
         """
         self._forward("rejected", callback, device_id)
 
-    def _forward(
-        self, channel: str, callback: Callable[[Any], None], device_id: str | None
+    def on_location(
+        self,
+        callback: Callable[[DeviceLocationMessage], None],
+        *,
+        device_id: str | None = None,
     ) -> None:
+        """Call callback with each applied location entry, as the facade's on_location does.
+
+        The callback runs after the client's own handler, so inside it
+        state(device_id) is already the state built with the entry's record,
+        when a status observation exists.
+
+        Args:
+            callback: A synchronous function taking the DeviceLocationMessage.
+            device_id: Deliver only this device's entries; None delivers
+                every device's.
+        """
+        self._forward("location", callback, device_id)
+
+    def on_message_seen(
+        self,
+        callback: Callable[[str, str, datetime], None],
+        *,
+        device_id: str | None = None,
+    ) -> None:
+        """Call callback(device_id, channel, received_at) for every message on a device's topic.
+
+        As the facade's on_message_seen does: every message whose topic names
+        a device and a channel, whatever its payload and whether or not it is
+        applied, with the UTC receipt time the MQTT client recorded.
+
+        Args:
+            callback: A synchronous function taking the device id, the
+                channel and the UTC receipt time.
+            device_id: Deliver only this device's messages; None delivers
+                every device's.
+        """
+        self._forward("message_seen", callback, device_id)
+
+    def _forward(self, channel: str, callback: Callable[..., None], device_id: str | None) -> None:
         """Register a consumer's callback with the facade, wrapped in the client's device filter.
 
         Before the facade exists the wrapper is queued and registered by the
-        build.
+        build, after the client's own handlers.
 
         Args:
-            channel: "event", "attributes" or "rejected".
+            channel: "event", "attributes", "rejected", "location" or
+                "message_seen".
             callback: The consumer's callback.
             device_id: The filter; None admits every device.
         """
 
-        # Decision: the client forwards on_event, on_attributes and on_rejected, the
-        # three feeds it does not consume, and not the facade's on_state,
-        # on_location, on_raw or on_message_seen: the first two are what the state
-        # is built from and the others are diagnostics, all reachable on client.sdk
-        # after async_connect(). The device filter is the client's, applied in this
-        # wrapper, so the facade's callbacks and their signatures are unchanged.
-        def filtered(message: Any) -> None:
-            if device_id is None or message.device_id == device_id:
-                callback(message)
+        # Decision: the client forwards on_event, on_attributes, on_rejected,
+        # on_location and on_message_seen, and not the facade's on_state or on_raw:
+        # the state message is what the state is built from, delivered as a
+        # MowerState through on_state, and the raw feed is a diagnostic, reachable
+        # on client.sdk after async_connect(). The location entries are forwarded
+        # although the state carries the record, for a consumer that reads each
+        # entry (which fields it wrote, an untimed repeat) and wants to register
+        # before the first connect, with the device filter, as for the other
+        # channels. The filter is the client's, applied in this wrapper, so the
+        # facade's callbacks and their signatures are unchanged; on_message_seen's
+        # device id is its first argument, the others carry it on the message.
+        def filtered(*args: Any) -> None:
+            seen = args[0] if channel == "message_seen" else args[0].device_id
+            if device_id is None or seen == device_id:
+                callback(*args)
 
         if self._sdk is None:
             self._queued_forwards.append((channel, filtered))
@@ -1964,20 +2009,25 @@ class NavimowClient:
             self._register_forward(self._sdk, channel, filtered)
 
     @staticmethod
-    def _register_forward(sdk: NavimowSDK, channel: str, callback: Callable[[Any], None]) -> None:
+    def _register_forward(sdk: NavimowSDK, channel: str, callback: Callable[..., None]) -> None:
         """Register a wrapped callback with the facade's method for its channel.
 
         Args:
             sdk: The facade.
-            channel: "event", "attributes" or "rejected".
+            channel: "event", "attributes", "rejected", "location" or
+                "message_seen".
             callback: The wrapped callback.
         """
         if channel == "event":
             sdk.on_event(callback)
         elif channel == "attributes":
             sdk.on_attributes(callback)
-        else:
+        elif channel == "rejected":
             sdk.on_rejected(callback)
+        elif channel == "location":
+            sdk.on_location(callback)
+        else:
+            sdk.on_message_seen(callback)
 
     def _report(self, operation: str, exc: Exception) -> None:
         """Call the on_error callbacks with a failure, each in its own try.

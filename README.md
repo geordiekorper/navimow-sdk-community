@@ -92,10 +92,10 @@ base URL; `NavimowClient(api)` takes one the program already holds. The client o
 client and the MQTT facade and keeps one `MowerState` per mower: the
 status half from the latest state message while it is fresh, else from a REST status read after it,
 and the location record beside it (see [Mower states](#mower-states)). `client.state(device_id)` and
-`client.states()` return the states between callbacks; `on_event`, `on_attributes` and `on_rejected`
-forward the facade's callbacks, each with an optional `device_id=` filter, and `on_connection` and
-`on_error` report the connection's events and the client's own failures. The layers are reachable as
-`client.api`, `client.sdk` and `client.mqtt`.
+`client.states()` return the states between callbacks; `on_event`, `on_attributes`, `on_rejected`,
+`on_location` and `on_message_seen` forward the facade's callbacks, each with an optional
+`device_id=` filter, and `on_connection` and `on_error` report the connection's events and the
+client's own failures. The layers are reachable as `client.api`, `client.sdk` and `client.mqtt`.
 
 A command goes through the client: `await client.async_send_command(device_id, MowerCommand.START)`
 sends it over REST, returns its `CommandReceipt` (kept as `client.last_receipt(device_id)`) and
