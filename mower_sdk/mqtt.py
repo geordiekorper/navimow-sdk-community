@@ -486,7 +486,9 @@ class NavimowMQTT:
         last_disconnected_at: The UTC time of the disconnect
             last_disconnect_reason belongs to.
         connects: Successful connects since construction.
-        disconnects: Disconnects since construction.
+        disconnects: Disconnects since construction. A drop counts once:
+            paho 2.1 reports a keep-alive timeout twice, and a second report
+            from the same client with no CONNACK in between is ignored.
         connect_failures: Connect failures since construction.
         rebuilds: Rebuilds since construction.
         last_rebuild_reason: The reason given for the latest rebuild; None
@@ -613,6 +615,10 @@ class NavimowMQTT:
         # subscribe_all may run on a caller's thread while paho's thread handles an
         # acknowledgement, so both sides hold the lock.
         self._pending_subscribes: dict[int, str] = {}
+        # The client whose disconnect was last handled, until a CONNACK: paho 2.1
+        # calls on_disconnect twice for one keep-alive timeout, from _check_keepalive
+        # and again from loop_misc, and the second call is not a second drop.
+        self._disconnected_client: mqtt_client.Client | None = None
         self._subscribe_lock = threading.Lock()
         # True from the paho connect_async/loop_start pair until disconnect() or a
         # rebuild: paho's network thread keeps retrying after a failed connect, so
@@ -1369,6 +1375,7 @@ class NavimowMQTT:
         """
         if client is not self.client:
             return  # a client replaced by rebuild()
+        self._disconnected_client = None
         if reason_code.is_failure:
             _LOGGER.error("MQTT connection failed: %s (%s)", reason_code, reason_code.value)
             self._connect_failed(client, f"refused: {reason_code} ({reason_code.value})")
@@ -1433,7 +1440,9 @@ class NavimowMQTT:
         in last_disconnect_reason and last_disconnected_at: "requested" when
         the reason code is not a failure, else the reason code as text. Then
         on_disconnected and a "disconnected" connection event are scheduled,
-        each if its hook is set.
+        each if its hook is set. A second disconnect from the same client
+        with no CONNACK since the first is ignored: paho 2.1 reports one
+        keep-alive timeout twice.
 
         Args:
             client: The paho client the callback came from. A client other
@@ -1443,8 +1452,9 @@ class NavimowMQTT:
             reason_code: paho's ReasonCode for the disconnect.
             _properties: The MQTT 5 properties paho passes; unused.
         """
-        if client is not self.client:
+        if client is not self.client or client is self._disconnected_client:
             return
+        self._disconnected_client = client
         self.disconnects += 1
         self.last_disconnect_reason = (
             "requested" if not reason_code.is_failure else str(reason_code)

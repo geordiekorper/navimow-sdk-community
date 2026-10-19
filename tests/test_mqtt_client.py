@@ -309,6 +309,7 @@ async def test_on_disconnect_schedules_the_callback(fake_paho: type[FakeClient])
     await drain()
     assert seen == []
     mqtt.on_disconnected = on_disconnected
+    mqtt._on_connect(mqtt.client, None, {}, SUCCESS, None)
     mqtt._on_disconnect(mqtt.client, None, {}, UNSPECIFIED, None)
     await drain()
     assert seen == ["disconnected"]
@@ -1122,6 +1123,7 @@ async def test_the_counters_and_reasons_are_kept_with_no_hook_registered(
     assert mqtt.last_disconnected_at == T0 + timedelta(seconds=15)
     assert mqtt.last_connected_monotonic == 105.0  # the connect's, kept after the disconnect
     clock.advance(1)
+    mqtt._on_connect(mqtt.client, None, {}, SUCCESS, None)
     mqtt._on_disconnect(mqtt.client, None, {}, SUCCESS, None)
     assert (mqtt.disconnects, mqtt.last_disconnect_reason) == (2, "requested")
     assert mqtt.last_disconnected_at == T0 + timedelta(seconds=16)
@@ -1169,6 +1171,74 @@ async def test_the_disconnect_reason_is_set_before_on_disconnected_runs(
     await drain()
     assert seen == [(1, "Unspecified error")]
     assert fake_paho.instances == [mqtt.client]
+
+
+@pytest.mark.asyncio
+async def test_a_keep_alive_timeout_reported_twice_counts_once(
+    fake_paho: type[FakeClient],
+) -> None:
+    # paho 2.1's loop_misc reports one keep-alive timeout twice: from
+    # _check_keepalive, then from its own check of the unanswered ping.
+    keep_alive = FakeReasonCode(141, "Keep alive timeout")
+    seen: list[str] = []
+    mqtt = make(TCP_KWARGS)
+    events = recording_events(mqtt)
+
+    async def on_disconnected() -> None:
+        seen.append("disconnected")
+
+    mqtt.on_disconnected = on_disconnected
+    mqtt._on_connect(mqtt.client, None, {}, SUCCESS, None)
+    mqtt._on_disconnect(mqtt.client, None, {}, keep_alive, None)
+    first_at = mqtt.last_disconnected_at
+    mqtt._on_disconnect(mqtt.client, None, {}, keep_alive, None)
+    await drain()
+    assert mqtt.disconnects == 1
+    assert mqtt.last_disconnected_at is first_at
+    assert seen == ["disconnected"]
+    assert [e.kind for e in events] == ["connected", "disconnected"]
+
+    # A drop after the reconnect is a new one, and counts.
+    mqtt._on_connect(mqtt.client, None, {}, SUCCESS, None)
+    mqtt._on_disconnect(mqtt.client, None, {}, keep_alive, None)
+    await drain()
+    assert mqtt.disconnects == 2
+    assert seen == ["disconnected", "disconnected"]
+    assert [e.kind for e in events] == ["connected", "disconnected"] * 2
+    assert fake_paho.instances == [mqtt.client]
+
+
+@pytest.mark.asyncio
+async def test_a_disconnect_after_a_refused_connect_counts(
+    fake_paho: type[FakeClient],
+) -> None:
+    # A refused CONNACK is still a CONNACK: the disconnect that follows it is
+    # paho reporting the refused attempt, not the first drop repeated.
+    mqtt = make(TCP_KWARGS)
+    mqtt._on_connect(mqtt.client, None, {}, SUCCESS, None)
+    mqtt._on_disconnect(mqtt.client, None, {}, UNSPECIFIED, None)
+    mqtt._on_connect(mqtt.client, None, {}, NOT_AUTHORIZED, None)
+    mqtt._on_disconnect(mqtt.client, None, {}, UNSPECIFIED, None)
+    await drain()
+    assert (mqtt.connects, mqtt.connect_failures, mqtt.disconnects) == (1, 1, 2)
+    assert fake_paho.instances == [mqtt.client]
+
+
+@pytest.mark.asyncio
+async def test_the_first_disconnect_of_a_rebuilt_client_counts(
+    fake_paho: type[FakeClient],
+) -> None:
+    # The repeat is recognised by its client, so a new client from rebuild()
+    # starts afresh even before any CONNACK of its own.
+    mqtt = make(TCP_KWARGS)
+    mqtt.connect_async()
+    mqtt._on_connect(mqtt.client, None, {}, SUCCESS, None)
+    mqtt._on_disconnect(mqtt.client, None, {}, UNSPECIFIED, None)
+    mqtt.rebuild(reason="watchdog")
+    mqtt._on_disconnect(mqtt.client, None, {}, UNSPECIFIED, None)
+    await drain()
+    assert mqtt.disconnects == 2
+    assert len(fake_paho.instances) == 2
 
 
 @pytest.mark.asyncio
@@ -2448,6 +2518,7 @@ async def test_each_connection_change_is_an_event_with_its_client_id_and_reason(
     mqtt._on_connect_fail(mqtt.client, None)
     mqtt._on_connect(mqtt.client, None, {}, SUCCESS, None)
     mqtt._on_disconnect(mqtt.client, None, {}, UNSPECIFIED, None)
+    mqtt._on_connect(mqtt.client, None, {}, SUCCESS, None)
     mqtt._on_disconnect(mqtt.client, None, {}, SUCCESS, None)
     await drain()
     assert [(e.kind, e.client_id, e.reason, e.rebuilds) for e in events] == [
@@ -2455,13 +2526,14 @@ async def test_each_connection_change_is_an_event_with_its_client_id_and_reason(
         ("connect_failed", client_id, "connection failed before CONNACK", 0),
         ("connected", client_id, None, 0),
         ("disconnected", client_id, "Unspecified error", 0),
+        ("connected", client_id, None, 0),
         ("disconnected", client_id, "requested", 0),
     ]
     assert all(before <= e.at <= datetime.now(UTC) and e.at.tzinfo is UTC for e in events)
     # Each event carries the stamp its attribute keeps, not a second reading of the clock.
     assert events[1].at is mqtt.last_connect_failed_at
-    assert events[2].at is mqtt.last_connected_at
-    assert events[4].at is mqtt.last_disconnected_at
+    assert events[4].at is mqtt.last_connected_at
+    assert events[5].at is mqtt.last_disconnected_at
     with pytest.raises(dataclasses.FrozenInstanceError):
         events[0].reason = "changed"  # type: ignore[misc]
     assert mower_sdk.ConnectionEvent is mqtt_module.ConnectionEvent
