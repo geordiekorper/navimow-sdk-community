@@ -9,6 +9,17 @@ keep the headings they were released with.
 
 ## [Unreleased]
 
+### Fixed
+
+- `NavimowMQTT` counts a keep-alive timeout as one disconnect. paho-mqtt 2.1
+  calls `on_disconnect` twice for one, from `_check_keepalive` and again from
+  `loop_misc`, so `disconnects` went up by two and `on_disconnected` and the
+  `"disconnected"` connection event ran twice. A second disconnect from the
+  same paho client with no CONNACK since the first is now ignored, so a
+  reconnect attempt whose socket drops before any CONNACK is not counted
+  again either; a drop after a reconnect, refused or not, or on a client made
+  by `rebuild()`, still counts.
+
 ## [0.2.0a6] - 2026-10-08
 
 ### Changed
