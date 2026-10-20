@@ -3,10 +3,10 @@
 A release is a version bump on `main`, a tag on that commit and one approval.
 The bump is the one change that does not go through a pull request: the
 maintainer pushes it to `main` directly.
-The tag starts `.github/workflows/publish.yml`, which uploads to TestPyPI on
-its own and to PyPI once the owner approves. Both indexes trust this
-repository's workflow directly (trusted publishing), so no token is stored
-anywhere.
+The tag starts `.github/workflows/publish.yml`, which runs a consumer's tests
+against the wheel, uploads to TestPyPI on its own and to PyPI once the owner
+approves. Both indexes trust this repository's workflow directly (trusted
+publishing), so no token is stored anywhere.
 
 ## 1. The release commit
 
@@ -59,15 +59,25 @@ a second `chore(release)` commit first and tag that one.
 
 ## 4. What the workflow does
 
-Every `v*` tag runs three jobs:
+Every `v*` tag runs four jobs, each stopping the run when it fails:
 
 1. **build** checks that the tag is `v` plus `mower_sdk.__version__` and stops
    if it is not, builds the sdist and the wheel once, and runs
    `twine check --strict` on them.
-2. **testpypi** uploads those files to TestPyPI, unattended.
-3. **pypi** waits. It runs in the `pypi` environment, whose required-reviewer
+2. **compat** runs a consumer's tests against the wheel. The consumer is
+   named by two repository variables, set under the repository's settings:
+   `CONSUMER_REPOSITORY`, a public GitHub repository as `owner/name`, and
+   `CONSUMER_REF`, the branch, tag or commit to check out. The job checks it
+   out and runs its `scripts/test-against-sdk.sh --wheel <path>` from the
+   consumer's own directory, with the absolute path of the wheel; what the
+   script tests and how is the consumer's business, and its exit status is
+   the verdict. So a release that reaches TestPyPI has passed the consumer's
+   tests. With either variable unset the job passes, and the run's summary
+   says that no consumer's tests ran.
+3. **testpypi** uploads the files to TestPyPI, unattended.
+4. **pypi** waits. It runs in the `pypi` environment, whose required-reviewer
    rule holds it until the owner approves the deployment, and then uploads the
-   same files to PyPI. A failed TestPyPI upload stops the run before this job.
+   same files to PyPI.
 
 ## 5. Check, approve, check
 

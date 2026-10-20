@@ -1,12 +1,14 @@
 # Release a version tag using PyPI trusted publishing (OIDC), so no API
 # token is stored anywhere. Every v* tag builds the sdist and wheel once,
-# uploads them to TestPyPI unattended, and then waits at the pypi job: that
-# job runs in the pypi environment, whose required-reviewer rule holds it
-# until the owner approves the deployment, so nothing reaches PyPI before
-# the release has been tested. A failed TestPyPI upload stops the run before
-# PyPI. Both indexes list this repository as the project's trusted
-# publisher: owner geordiekorper, repository navimow-sdk-community, workflow
-# publish.yml, environment testpypi on test.pypi.org and pypi on pypi.org.
+# runs a consumer's tests against the wheel when the repository variables
+# name one, uploads the files to TestPyPI unattended, and then waits at the
+# pypi job: that job runs in the pypi environment, whose required-reviewer
+# rule holds it until the owner approves the deployment, so nothing reaches
+# PyPI before the release has been tested. A failed job stops the run before
+# the jobs after it. Both indexes list this repository as the project's
+# trusted publisher: owner geordiekorper, repository navimow-sdk-community,
+# workflow publish.yml, environment testpypi on test.pypi.org and pypi on
+# pypi.org.
 name: Publish
 
 on:
@@ -57,9 +59,58 @@ jobs:
           path: dist/
           if-no-files-found: error
 
+  compat:
+    name: a consumer's tests against the wheel
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # The consumer: a public repository as owner/name, and the ref to check
+    # out, from the repository variables CONSUMER_REPOSITORY and
+    # CONSUMER_REF. Its scripts/test-against-sdk.sh runs the consumer's own
+    # tests against the wheel it is given and exits non-zero when they fail.
+    # With no consumer named, the job passes and the run's summary says so.
+    env:
+      CONSUMER_REPOSITORY: ${{ vars.CONSUMER_REPOSITORY }}
+      CONSUMER_REF: ${{ vars.CONSUMER_REF }}
+    steps:
+      - name: Is a consumer named?
+        id: consumer
+        run: |
+          if [ -n "$CONSUMER_REPOSITORY" ] && [ -n "$CONSUMER_REF" ]; then
+            echo "named=true" >> "$GITHUB_OUTPUT"
+            echo "consumer: $CONSUMER_REPOSITORY at $CONSUMER_REF"
+          else
+            echo "named=false" >> "$GITHUB_OUTPUT"
+            message="No consumer named: the repository variables CONSUMER_REPOSITORY and CONSUMER_REF are not both set, so no consumer's tests ran against the wheel."
+            echo "::notice::$message"
+            echo "$message" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/download-artifact@v8
+        if: steps.consumer.outputs.named == 'true'
+        with:
+          name: dist
+          path: dist/
+      - uses: actions/checkout@v7
+        if: steps.consumer.outputs.named == 'true'
+        with:
+          repository: ${{ env.CONSUMER_REPOSITORY }}
+          ref: ${{ env.CONSUMER_REF }}
+          path: consumer
+          persist-credentials: false
+      - name: Run the consumer's test entry point against the wheel
+        if: steps.consumer.outputs.named == 'true'
+        working-directory: consumer
+        run: |
+          set -- "$GITHUB_WORKSPACE"/dist/*.whl
+          if [ "$#" -ne 1 ] || [ ! -f "$1" ]; then
+            echo "expected one wheel in dist/, found: $*"
+            exit 1
+          fi
+          scripts/test-against-sdk.sh --wheel "$1"
+
   testpypi:
     name: upload to TestPyPI
-    needs: build
+    needs: [build, compat]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment:
