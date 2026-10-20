@@ -36,7 +36,13 @@ from mower_sdk.models import (
     RejectedMessage,
 )
 from mower_sdk.mqtt import ConnectionEvent
-from mower_sdk.navimow_client import MQTT_STALE_SECONDS, MowerState, NavimowClient, StateSource
+from mower_sdk.navimow_client import (
+    MQTT_STALE_SECONDS,
+    MowerState,
+    NavimowClient,
+    PollResult,
+    StateSource,
+)
 from mower_sdk.sdk import NavimowSDK
 
 from .fakes import (
@@ -226,6 +232,7 @@ class Recorder:
         self.seen: list[tuple[str, str, datetime]] = []
         self.connections: list[ConnectionEvent] = []
         self.errors: list[tuple[str, Exception]] = []
+        self.polls: list[PollResult] = []
         client.on_state(self.states.append, device_id=device_id)
         client.on_event(self.events.append, device_id=device_id)
         client.on_attributes(self.attributes.append, device_id=device_id)
@@ -237,6 +244,7 @@ class Recorder:
         )
         client.on_connection(self.connections.append)
         client.on_error(lambda operation, exc: self.errors.append((operation, exc)))
+        client.on_poll(self.polls.append)
 
 
 # ---- building and driving a client ---------------------------------------------------------------
@@ -359,7 +367,7 @@ async def test_a_client_from_token_sends_on_the_session_it_was_given() -> None:
 
 
 def test_the_client_and_the_constants_are_exported_from_the_package() -> None:
-    for name in ("NavimowClient", "MQTT_STALE_SECONDS"):
+    for name in ("NavimowClient", "PollResult", "MQTT_STALE_SECONDS"):
         assert getattr(mower_sdk, name) is getattr(client_module, name)
         assert name in mower_sdk.__all__ and name in client_module.__all__
 

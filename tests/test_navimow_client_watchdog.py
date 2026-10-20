@@ -169,6 +169,23 @@ async def test_a_request_is_delivered_and_with_auto_rebuild_rebuilt_and_acknowle
 
 
 @pytest.mark.asyncio
+async def test_on_poll_runs_after_the_request_rule_1_made_from_the_reply() -> None:
+    client, _session, dogs = watched(replies=[*connect_replies(), both_docked()])
+    order: list[str] = []
+    client.on_state(lambda _state: order.append("state"))
+    client.on_rebuild_request(lambda _request: order.append("request"))
+    client.on_poll(lambda _result: order.append("poll"))
+    await connect(client)
+    await connected(client)
+    dogs[0].poll_answers.append(request("the feed went quiet"))
+    order.clear()
+    await client.async_poll()  # both states rebuilt from the reply, the request, then the outcome
+    assert order == ["state", "state", "request", "poll"]
+    await rebuilt(client)
+    assert client.mqtt.rebuilds == 1
+
+
+@pytest.mark.asyncio
 async def test_without_auto_rebuild_a_request_is_delivered_and_nothing_more() -> None:
     client, _session, dogs = watched(
         replies=[*connect_replies(), both_docked()], auto_rebuild=False

@@ -94,8 +94,9 @@ status half from the latest state message while it is fresh, else from a REST st
 and the location record beside it (see [Mower states](#mower-states)). `client.state(device_id)` and
 `client.states()` return the states between callbacks; `on_event`, `on_attributes`, `on_rejected`,
 `on_location` and `on_message_seen` forward the facade's callbacks, each with an optional
-`device_id=` filter, and `on_connection` and `on_error` report the connection's events and the
-client's own failures. The layers are reachable as `client.api`, `client.sdk` and `client.mqtt`.
+`device_id=` filter, and `on_connection`, `on_error` and `on_poll` report the connection's events,
+the client's own failures and the outcome of every poll. The layers are reachable as `client.api`,
+`client.sdk` and `client.mqtt`.
 
 A command goes through the client: `await client.async_send_command(device_id, MowerCommand.START)`
 sends it over REST, returns its `CommandReceipt` (kept as `client.last_receipt(device_id)`) and
@@ -283,6 +284,9 @@ which observation is current and runs the watchdog's silence check. A command se
 is started is followed by one poll `COMMAND_POLL_DELAY_SECONDS` (5) later, whatever the reply; a
 second command while that poll is pending shares it. That poll stands outside the schedule above:
 its failure changes no wait, and its success resets the backoff without moving the next poll.
+`on_poll(callback)` delivers a `PollResult` after every poll, the connect's, the task's, a
+program's own and the one after a command, with the statuses the reply carried, the receipt time,
+the device ids asked for and, for a failed poll, the exception beside an empty mapping.
 
 **Which observation the state shows.** The status half of a `MowerState` is the latest MQTT state
 message while it is younger than `mqtt_stale_seconds` (`MQTT_STALE_SECONDS`, 300); once it is

@@ -22,6 +22,22 @@ keep the headings they were released with.
   three arguments (the device id, the channel, the UTC receipt time) and the
   filter reads the first. A consumer no longer waits for `client.sdk` to
   exist to register either.
+- `NavimowClient.on_poll(callback)` and `PollResult`, in
+  `mower_sdk.navimow_client` and at the package root: the outcome of every
+  poll, success included, delivered after the poll inside `async_connect()`,
+  each of the poll task's polls, a program's own `async_poll()` and the poll
+  after a command, once the reply's observations are applied and the
+  watchdog's requests delivered. The record carries `statuses` (by device
+  id, as `async_poll()` returns them), `received_at` (the client's receipt
+  time, the one the states built from the reply carry), `requested` (the
+  device ids asked for) and `error` (the exception of a failed poll, a failed
+  token step included, beside an empty mapping; None on success). A poll
+  task tick that found no poll due delivers nothing. A consumer that shows
+  the poll's health learns of a recovery while the MQTT observation stays
+  current, which `on_state` could not tell it, and one keeping a record per
+  poll gets the reply as sent. A failure is still raised to `async_poll()`'s
+  awaiter, or reported through `on_error` for the client's own polls, as
+  before.
 
 ### Fixed
 

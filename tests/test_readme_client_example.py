@@ -205,6 +205,7 @@ def test_the_section_names_the_client_and_the_layers() -> None:
         "on_message_seen",
         "on_connection",
         "on_error",
+        "on_poll",
         "client.async_set_token()",
         "token_provider",
         "### The layers underneath",

@@ -11,7 +11,8 @@ clock.
 
 NavimowClient owns one MowerAPI and one NavimowSDK for an account, keeps the
 latest observation from each transport for every mower, decides which one the
-status half comes from, and delivers each new state to the on_state callbacks.
+status half comes from, delivers each new state to the on_state callbacks and
+each poll's outcome, a PollResult, to the on_poll callbacks.
 It connects the feed, runs the clock that polls the status and re-evaluates
 the merge by time, sends commands and polls after them, runs the watchdog
 and rebuilds the MQTT client when it asks, pushes a rotated token to the
@@ -64,6 +65,7 @@ __all__ = [
     "MQTT_STALE_SECONDS",
     "MowerState",
     "NavimowClient",
+    "PollResult",
     "REST_POLL_MAX_BACKOFF_SECONDS",
     "REST_POLL_SECONDS",
     "SILENCE_CHECK_SECONDS",
@@ -364,6 +366,27 @@ class MowerState:
 
 
 @dataclass(frozen=True)
+class PollResult:
+    """The outcome of one status poll, delivered to the on_poll callbacks.
+
+    Attributes:
+        statuses: The statuses by device id, as async_poll() returns them;
+            empty for a failed poll.
+        received_at: When the reply was read (UTC), the time the states built
+            from it carry; for a failed poll, when the failure was recorded.
+        requested: The device ids the poll asked for, in order: the ids given,
+            else every known device's; empty when the list was not known.
+        error: The exception of a failed poll, a failed token step included;
+            None for a success.
+    """
+
+    statuses: dict[str, DeviceStatus]
+    received_at: datetime
+    requested: tuple[str, ...]
+    error: Exception | None = None
+
+
+@dataclass(frozen=True)
 class _MqttObservation:
     """The latest state message the facade applied for a device, and when it arrived.
 
@@ -653,6 +676,7 @@ class NavimowClient:
         self._state_callbacks: list[tuple[Callable[[MowerState], None], str | None]] = []
         self._connection_callbacks: list[Callable[[ConnectionEvent], None]] = []
         self._error_callbacks: list[Callable[[str, Exception], None]] = []
+        self._poll_callbacks: list[Callable[[PollResult], None]] = []
         self.last_poll_at: datetime | None = None
         self.last_poll_error: Exception | None = None
         # The clock: the wait before the next poll (the interval, doubled after each
@@ -1442,7 +1466,8 @@ class NavimowClient:
         device the reply covers, the REST observation is replaced and the
         state rebuilt when the merge selects that observation, which fires
         on_state; a device whose MQTT observation is current is left as it
-        is. last_poll_at and last_poll_error are updated. The poll counts
+        is. last_poll_at and last_poll_error are updated, and the on_poll
+        callbacks receive the outcome, a failure included. The poll counts
         as a tick of the clock: a success sets the next poll one interval
         from now and resets the backoff, a failure doubles the wait.
 
@@ -1494,14 +1519,23 @@ class NavimowClient:
         Raises:
             MowerAPIError: The request failed; last_poll_error holds the
                 exception and the backoff counts the failure.
-            Exception: Whatever the provider raises; the same bookkeeping.
+            Exception: Whatever the provider raises; the same bookkeeping,
+                and the on_poll callbacks receive the failure.
         """
+        ids = None if device_ids is None else tuple(device_ids)
         try:
             if provider and self._token_provider is not None:
-                token = await self._token_provider()
-                if token is not None:
-                    await self.async_set_token(token)
-            statuses = await self._poll(device_ids, only_when_due=only_when_due)
+                try:
+                    token = await self._token_provider()
+                    if token is not None:
+                        await self.async_set_token(token)
+                except Exception as exc:
+                    # No request was made: the poll's outcome is the token step's failure.
+                    self.last_poll_error = exc
+                    requested = ids if ids is not None else tuple(d.id for d in self.devices)
+                    self._deliver_poll(PollResult({}, datetime.now(UTC), requested, exc))
+                    raise
+            statuses = await self._poll(ids, only_when_due=only_when_due)
         except Exception as exc:
             self.last_poll_error = exc
             if not after_command:
@@ -1645,7 +1679,8 @@ class NavimowClient:
 
         Raises:
             MowerAPIError: The request failed; last_poll_error holds the
-                exception and nothing changed.
+                exception, the on_poll callbacks receive the failure and
+                nothing else changed.
         """
         # Decision: polls are serialised on a lock of the client's own and applied
         # in reply order, so a manual or command poll waits for one in flight and an
@@ -1659,17 +1694,19 @@ class NavimowClient:
                 and self._next_poll_due > time.monotonic()
             ):
                 return None
+            ids: tuple[str, ...] = ()
             try:
                 if device_ids is None:
                     if not self._devices_known:
                         self.devices[:] = await self.api.async_get_devices()
                         self._devices_known = bool(self.devices)
-                    ids = [device.id for device in self.devices]
+                    ids = tuple(device.id for device in self.devices)
                 else:
-                    ids = list(device_ids)
-                statuses = await self.api.async_get_device_statuses(ids)
+                    ids = tuple(device_ids)
+                statuses = await self.api.async_get_device_statuses(list(ids))
             except Exception as exc:
                 self.last_poll_error = exc
+                self._deliver_poll(PollResult({}, datetime.now(UTC), ids, exc))
                 raise
             received_at = datetime.now(UTC)
             received_monotonic = time.monotonic()
@@ -1687,6 +1724,16 @@ class NavimowClient:
                 # fails after is reported, never raised to the caller.
                 _LOGGER.exception("NavimowClient: the watchdog's check after a poll failed")
                 self._report("poll", exc)
+            # Decision: on_poll reports the outcome of every poll, success included,
+            # once the observations are applied and the watchdog's requests delivered,
+            # with the client's own receipt time: a consumer showing the poll's health
+            # learns of a recovery while the MQTT observation stays current, which
+            # on_state cannot tell it, and one keeping a record per poll gets the reply
+            # as sent. A failure is delivered here too and, as before, raised to a
+            # program's own async_poll() or reported through on_error for the client's
+            # own polls; a tick that found no poll due delivers nothing, no request
+            # having been made.
+            self._deliver_poll(PollResult(statuses, received_at, ids))
             return statuses
 
     def _select(self, device_id: str) -> _Observation | None:
@@ -1883,6 +1930,24 @@ class NavimowClient:
         """
         self._error_callbacks.append(callback)
 
+    def on_poll(self, callback: Callable[[PollResult], None]) -> None:
+        """Call callback(result) with the outcome of every poll, success included.
+
+        After the poll inside async_connect(), each of the poll task's polls,
+        a program's own async_poll() and the poll after a command, once the
+        reply's observations are applied and the watchdog's requests
+        delivered: a PollResult with the statuses the reply carried, the
+        client's receipt time and the device ids asked for. A failed poll, a
+        token step that failed included, delivers an empty mapping and the
+        exception, which is still raised to async_poll()'s awaiter or, for
+        the startup, clock and command polls, reported through on_error. A
+        poll task tick that found no poll due delivers nothing.
+
+        Args:
+            callback: A synchronous function taking the PollResult.
+        """
+        self._poll_callbacks.append(callback)
+
     def on_rebuild_request(self, callback: Callable[[RebuildRequest], None]) -> None:
         """Call callback with each RebuildRequest the watchdog makes, before anything acts on it.
 
@@ -2043,6 +2108,18 @@ class NavimowClient:
                 _LOGGER.exception(
                     "NavimowClient error callback %r failed for %s", callback, operation
                 )
+
+    def _deliver_poll(self, result: PollResult) -> None:
+        """Call the on_poll callbacks with a poll's outcome, each in its own try.
+
+        Args:
+            result: The outcome.
+        """
+        for callback in list(self._poll_callbacks):
+            try:
+                callback(result)
+            except Exception:
+                _LOGGER.exception("NavimowClient poll callback %r failed", callback)
 
     # ---- the inner hooks -------------------------------------------------------------------
 
