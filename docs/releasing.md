@@ -4,9 +4,10 @@ A release is a version bump on `main`, a tag on that commit and one approval.
 The bump is the one change that does not go through a pull request: the
 maintainer pushes it to `main` directly.
 The tag starts `.github/workflows/publish.yml`, which runs a consumer's tests
-against the wheel, uploads to TestPyPI on its own and to PyPI once the owner
-approves. Both indexes trust this repository's workflow directly (trusted
-publishing), so no token is stored anywhere.
+against the wheel, uploads to TestPyPI on its own, tests the release as
+TestPyPI serves it, and uploads to PyPI once the owner approves. Both indexes
+trust this repository's workflow directly (trusted publishing), so no token
+is stored anywhere.
 
 ## 1. The release commit
 
@@ -59,7 +60,7 @@ a second `chore(release)` commit first and tag that one.
 
 ## 4. What the workflow does
 
-Every `v*` tag runs four jobs, each stopping the run when it fails:
+Every `v*` tag runs five jobs, each stopping the run when it fails:
 
 1. **build** checks that the tag is `v` plus `mower_sdk.__version__` and stops
    if it is not, builds the sdist and the wheel once, and runs
@@ -75,37 +76,27 @@ Every `v*` tag runs four jobs, each stopping the run when it fails:
    tests. With either variable unset the job passes, and the run's summary
    says that no consumer's tests ran.
 3. **testpypi** uploads the files to TestPyPI, unattended.
-4. **pypi** waits. It runs in the `pypi` environment, whose required-reviewer
+4. **testpypi-verify** checks the release as TestPyPI serves it, on the oldest
+   and the newest supported Python. `tools/check_index.py` reads TestPyPI's
+   record of the version, asking again while the index does not know it yet,
+   and compares the files it serves with the build's by name and sha256. The
+   job then has pip download the wheel from TestPyPI's simple index, checks
+   that it is byte for byte the built one, installs it with the test
+   dependencies into a fresh environment, and runs the tag's `tests/` from
+   another directory, so the installed package is what gets imported, plus
+   `tools/check_wheel.py metadata`. This is the fresh-environment check that
+   used to be done by hand.
+5. **pypi** waits. It runs in the `pypi` environment, whose required-reviewer
    rule holds it until the owner approves the deployment, and then uploads the
    same files to PyPI.
 
-## 5. Check, approve, check
+## 5. Approve
 
-While the `pypi` job waits, install the release from TestPyPI into a fresh
-environment. The dependencies come from PyPI, hence the second index:
-
-```bash
-python -m venv /tmp/release-check
-/tmp/release-check/bin/pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple navimow-sdk-community==<version> pytest pytest-asyncio
-```
-
-Run the tag's tests against it from a directory that is not the checkout, so
-the installed package is what gets imported:
-
-```bash
-git archive v<version> tests | tar -x -C /tmp/release-check
-cd /tmp/release-check && bin/python -m pytest tests
-```
-
-Then approve the `pypi` deployment on the workflow run's page. Once it has
-finished, repeat the check from PyPI in a second fresh environment, so that
-nothing installed from TestPyPI is reused, and run the same tests with it:
-
-```bash
-python -m venv /tmp/release-check-pypi
-/tmp/release-check-pypi/bin/pip install navimow-sdk-community==<version> pytest pytest-asyncio
-cd /tmp/release-check && /tmp/release-check-pypi/bin/python -m pytest tests
-```
+Once `testpypi-verify` has passed, approve the `pypi` deployment on the
+workflow run's page. The `pypi` job uploads the files the `build` job made,
+the ones TestPyPI received and served, and nothing is checked from PyPI
+afterwards: the dependencies that `testpypi-verify` installed beside the
+wheel came from PyPI already, so a second run from there would repeat it.
 
 ## When something is wrong
 

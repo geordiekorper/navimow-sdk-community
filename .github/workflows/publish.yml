@@ -1,14 +1,15 @@
 # Release a version tag using PyPI trusted publishing (OIDC), so no API
 # token is stored anywhere. Every v* tag builds the sdist and wheel once,
 # runs a consumer's tests against the wheel when the repository variables
-# name one, uploads the files to TestPyPI unattended, and then waits at the
-# pypi job: that job runs in the pypi environment, whose required-reviewer
-# rule holds it until the owner approves the deployment, so nothing reaches
-# PyPI before the release has been tested. A failed job stops the run before
-# the jobs after it. Both indexes list this repository as the project's
-# trusted publisher: owner geordiekorper, repository navimow-sdk-community,
-# workflow publish.yml, environment testpypi on test.pypi.org and pypi on
-# pypi.org.
+# name one, uploads the files to TestPyPI unattended, checks that TestPyPI
+# serves them as built and that the release installs from there and passes
+# its tests, and then waits at the pypi job: that job runs in the pypi
+# environment, whose required-reviewer rule holds it until the owner
+# approves the deployment, so nothing reaches PyPI before the release has
+# been tested. A failed job stops the run before the jobs after it. Both
+# indexes list this repository as the project's trusted publisher: owner
+# geordiekorper, repository navimow-sdk-community, workflow publish.yml,
+# environment testpypi on test.pypi.org and pypi on pypi.org.
 name: Publish
 
 on:
@@ -127,9 +128,58 @@ jobs:
         with:
           repository-url: https://test.pypi.org/legacy/
 
+  testpypi-verify:
+    name: install from TestPyPI and test (py${{ matrix.python-version }})
+    needs: [build, testpypi]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.14"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+      - name: Check that TestPyPI serves the files the build made
+        run: python tools/check_index.py --index https://test.pypi.org "${GITHUB_REF_NAME#v}" dist/
+      - name: Install the wheel TestPyPI serves into a fresh environment
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          python -m venv "$RUNNER_TEMP/venv"
+          python="$RUNNER_TEMP/venv/bin/python"
+          # The simple index can lag the upload by a few seconds: ask up to six times.
+          attempt=1
+          until "$python" -m pip download --no-deps --no-cache-dir --only-binary :all: \
+              --index-url https://test.pypi.org/simple/ --dest "$RUNNER_TEMP/served" \
+              "navimow-sdk-community==$version"; do
+            if [ "$attempt" -ge 6 ]; then
+              echo "TestPyPI did not serve navimow-sdk-community $version in $attempt attempts"
+              exit 1
+            fi
+            attempt=$((attempt + 1))
+            sleep 20
+          done
+          cmp "$RUNNER_TEMP"/served/*.whl dist/*.whl
+          "$python" -m pip install "$RUNNER_TEMP"/served/*.whl pytest pytest-asyncio
+      - name: Run the tag's tests against the installed package from another directory
+        run: |
+          python="$RUNNER_TEMP/venv/bin/python"
+          mkdir "$RUNNER_TEMP/checkout"
+          git archive HEAD tests | tar -x -C "$RUNNER_TEMP/checkout"
+          cd "$RUNNER_TEMP/checkout"
+          "$python" -c 'import mower_sdk; print("importing", mower_sdk.__file__)'
+          "$python" -m pytest tests
+          "$python" "$GITHUB_WORKSPACE/tools/check_wheel.py" metadata
+
   pypi:
     name: upload to PyPI
-    needs: [build, testpypi]
+    needs: [build, testpypi, testpypi-verify]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment:

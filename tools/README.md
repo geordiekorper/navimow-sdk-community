@@ -1,7 +1,8 @@
 # Tools
 
-The scripts behind the commit hooks, the nox sessions and two jobs done by
-hand. None of this is part of the package: the wheel ships `mower_sdk` only.
+The scripts behind the commit hooks, the nox sessions, the Publish workflow
+and two jobs done by hand. None of this is part of the package: the wheel
+ships `mower_sdk` only.
 [docs/development.md](../docs/development.md#the-commit-hooks) lists the hooks
 and what each refuses; this file is about the scripts.
 
@@ -15,6 +16,7 @@ and what each refuses; this file is about the scripts.
 | `gatelib.py` | What the three above share: reading the staged change or a commit range, the protected paths, the untracked names, the pattern file | Imported |
 | `check_mqtt_construction.py` | Builds the MQTT classes outside and inside a running event loop and updates credentials in both connection states, with paho's deprecation warning as an error | The `bounds` nox sessions |
 | `check_wheel.py` | `contents`: the wheel ships `mower_sdk` and `mower_sdk.legacy` and nothing else. `metadata`: the installed distribution's name, version and licence | The `wheel` nox session |
+| `check_index.py` | Compares the files a package index serves for a version, by name and sha256, with the ones a build made; asks again while the index does not know the version yet | The `testpypi-verify` job of `.github/workflows/publish.yml` |
 | `port_upstream.py`, `upstream_path_map.json` | Ports upstream commits into `mower_sdk/legacy/` | By hand |
 | `check_extraction.py` | Compares the definitions extracted into `mower_sdk/legacy/` with their originals | By hand |
 | `gen_export_inventory.py` | Generated `tests/upstream_exports.json` from the fork point | By hand, once |
