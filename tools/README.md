@@ -1,7 +1,8 @@
 # Tools
 
-The scripts behind the commit hooks, the nox sessions and two jobs done by
-hand. None of this is part of the package: the wheel ships `mower_sdk` only.
+The scripts behind the commit hooks, the nox sessions, the Publish workflow
+and two jobs done by hand. None of this is part of the package: the wheel
+ships `mower_sdk` only.
 [docs/development.md](../docs/development.md#the-commit-hooks) lists the hooks
 and what each refuses; this file is about the scripts.
 
@@ -15,6 +16,7 @@ and what each refuses; this file is about the scripts.
 | `gatelib.py` | What the three above share: reading the staged change or a commit range, the protected paths, the untracked names, the pattern file | Imported |
 | `check_mqtt_construction.py` | Builds the MQTT classes outside and inside a running event loop and updates credentials in both connection states, with paho's deprecation warning as an error | The `bounds` nox sessions |
 | `check_wheel.py` | `contents`: the wheel ships `mower_sdk` and `mower_sdk.legacy` and nothing else. `metadata`: the installed distribution's name, version and licence | The `wheel` nox session |
+| `check_index.py` | Compares the files a package index serves for a version, by name and sha256, with the ones a build made; asks again while the index does not know the version yet | The `testpypi-verify` job of `.github/workflows/publish.yml` |
 | `port_upstream.py`, `upstream_path_map.json` | Ports upstream commits into `mower_sdk/legacy/` | By hand |
 | `check_extraction.py` | Compares the definitions extracted into `mower_sdk/legacy/` with their originals | By hand |
 | `gen_export_inventory.py` | Generated `tests/upstream_exports.json` from the fork point | By hand, once |
@@ -75,7 +77,9 @@ repository that ignores the developer's own git configuration.
 | `test_gitlint_rules.py` | `.gitlint` and the repository's rules, run by gitlint itself on a staged change and on a commit range |
 | `test_ci_hygiene.py` | Which commit range CI's `hygiene` job checks, and how it runs the checks |
 | `test_nox_sessions.py` | That `noxfile.py` agrees with `ci.yml`, `pyproject.toml` and the hook configuration |
-| `test_publish_workflow.py` | The shape of the publish workflow: TestPyPI first, PyPI on approval |
+| `test_publish_workflow.py` | The shape of the publish workflow, and its steps run through bash with stand-ins: a consumer's tests, the install from TestPyPI, the soak gate before PyPI |
+| `test_check_index.py` | `check_index.py` against a record served from a file: every mismatch, the retries |
+| `test_tag_ruleset.py` | The release tag ruleset in `.github/rulesets/`: `v*` tags, admin only |
 | `test_fixture_isolation.py` | That the throwaway repositories are isolated |
 
 ```bash

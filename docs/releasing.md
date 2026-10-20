@@ -3,8 +3,10 @@
 A release is a version bump on `main`, a tag on that commit and one approval.
 The bump is the one change that does not go through a pull request: the
 maintainer pushes it to `main` directly.
-The tag starts `.github/workflows/publish.yml`, which uploads to TestPyPI on
-its own and to PyPI once the owner approves. Both indexes trust this
+The tag starts `.github/workflows/publish.yml`, which runs a consumer's tests
+against the wheel, uploads to TestPyPI on its own, tests the release as
+TestPyPI serves it, and uploads to PyPI once the release has soaked on a
+live installation and the owner approves. Both indexes trust this
 repository's workflow directly (trusted publishing), so no token is stored
 anywhere.
 
@@ -57,45 +59,80 @@ git push origin v<version>
 If the tag lands on a later day than the changelog says, correct the date in
 a second `chore(release)` commit first and tag that one.
 
+Only a repository admin, which in a repository owned by a user is the owner,
+can create, move or delete a `v*` tag: the ruleset in
+`.github/rulesets/release-tags.json` refuses it to anyone and anything else,
+a token with write access included. It is applied to the repository with
+
+```bash
+gh api --method POST repos/geordiekorper/navimow-sdk-community/rulesets --input .github/rulesets/release-tags.json
+```
+
+and `gh ruleset list --repo geordiekorper/navimow-sdk-community` shows it.
+A change to the file goes up the same way with `--method PUT` and the
+ruleset's id appended to the path.
+
 ## 4. What the workflow does
 
-Every `v*` tag runs three jobs:
+Every `v*` tag runs five jobs, each stopping the run when it fails:
 
 1. **build** checks that the tag is `v` plus `mower_sdk.__version__` and stops
    if it is not, builds the sdist and the wheel once, and runs
    `twine check --strict` on them.
-2. **testpypi** uploads those files to TestPyPI, unattended.
-3. **pypi** waits. It runs in the `pypi` environment, whose required-reviewer
-   rule holds it until the owner approves the deployment, and then uploads the
-   same files to PyPI. A failed TestPyPI upload stops the run before this job.
+2. **compat** runs a consumer's tests against the wheel. The consumer is
+   named by two repository variables, set under the repository's settings:
+   `CONSUMER_REPOSITORY`, a public GitHub repository as `owner/name`, and
+   `CONSUMER_REF`, the branch, tag or commit to check out. The job checks it
+   out and runs its `scripts/test-against-sdk.sh --wheel <path>` from the
+   consumer's own directory, with the absolute path of the wheel; what the
+   script tests and how is the consumer's business, and its exit status is
+   the verdict. So a release that reaches TestPyPI has passed the consumer's
+   tests. With either variable unset the job passes, and the run's summary
+   says that no consumer's tests ran.
+3. **testpypi** uploads the files to TestPyPI, unattended.
+4. **testpypi-verify** checks the release as TestPyPI serves it, on the oldest
+   and the newest supported Python. `tools/check_index.py` reads TestPyPI's
+   record of the version, asking again while the index does not know it yet,
+   and compares the files it serves with the build's by name and sha256. The
+   job then has pip download the wheel from TestPyPI's simple index, checks
+   that it is byte for byte the built one, installs it with the test
+   dependencies into a fresh environment, and runs the tag's `tests/` from
+   another directory, so the installed package is what gets imported, plus
+   `tools/check_wheel.py metadata`. This is the fresh-environment check that
+   used to be done by hand.
+5. **pypi** waits. It runs in the `pypi` environment, whose required-reviewer
+   rule holds it until the owner approves the deployment. Its first step then
+   reads the commit status `navimow-alpha/soak` on the tag's commit and
+   refuses the upload unless it is `success`: whoever deploys the release to
+   a live installation reports the outcome of its soak there as that status.
+   Once it is, the job uploads the same files to PyPI.
 
-## 5. Check, approve, check
+## 5. Wait for the soak, then approve
 
-While the `pypi` job waits, install the release from TestPyPI into a fresh
-environment. The dependencies come from PyPI, hence the second index:
+Two things have to hold before the approval: `testpypi-verify` has passed,
+and the status `navimow-alpha/soak` on the tag's commit is `success`. The
+run's page shows the first; the commit's status list on GitHub shows the
+second, as does
 
 ```bash
-python -m venv /tmp/release-check
-/tmp/release-check/bin/pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple navimow-sdk-community==<version> pytest pytest-asyncio
+gh api repos/geordiekorper/navimow-sdk-community/commits/v<version>/status --jq '.statuses[] | select(.context == "navimow-alpha/soak") | .state'
 ```
 
-Run the tag's tests against it from a directory that is not the checkout, so
-the installed package is what gets imported:
+Then approve the `pypi` deployment on the run's page. An approval given
+before the status is green fails at the job's first step; once it is green,
+re-run the job and approve again.
+
+The owner can waive the soak by posting the status by hand. A status carries
+its description, so the waiver is on the commit for anyone to read:
 
 ```bash
-git archive v<version> tests | tar -x -C /tmp/release-check
-cd /tmp/release-check && bin/python -m pytest tests
+gh api --method POST "repos/geordiekorper/navimow-sdk-community/statuses/$(git rev-parse 'v<version>^{commit}')" -f state=success -f context=navimow-alpha/soak -f description='soak waived by the owner'
 ```
 
-Then approve the `pypi` deployment on the workflow run's page. Once it has
-finished, repeat the check from PyPI in a second fresh environment, so that
-nothing installed from TestPyPI is reused, and run the same tests with it:
-
-```bash
-python -m venv /tmp/release-check-pypi
-/tmp/release-check-pypi/bin/pip install navimow-sdk-community==<version> pytest pytest-asyncio
-cd /tmp/release-check && /tmp/release-check-pypi/bin/python -m pytest tests
-```
+The `pypi` job uploads the files the `build` job made, the ones TestPyPI
+received and served, and nothing is checked from PyPI afterwards: the
+dependencies that `testpypi-verify` installed beside the wheel came from
+PyPI already, so a second run from there would repeat it.
 
 ## When something is wrong
 
