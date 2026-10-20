@@ -5,11 +5,13 @@
 # serves them as built and that the release installs from there and passes
 # its tests, and then waits at the pypi job: that job runs in the pypi
 # environment, whose required-reviewer rule holds it until the owner
-# approves the deployment, so nothing reaches PyPI before the release has
-# been tested. A failed job stops the run before the jobs after it. Both
-# indexes list this repository as the project's trusted publisher: owner
-# geordiekorper, repository navimow-sdk-community, workflow publish.yml,
-# environment testpypi on test.pypi.org and pypi on pypi.org.
+# approves the deployment, and its first step refuses the upload until the
+# release has soaked on a live installation, so nothing reaches PyPI before
+# the release has been tested and run. A failed job stops the run before
+# the jobs after it. Both indexes list this repository as the project's
+# trusted publisher: owner geordiekorper, repository navimow-sdk-community,
+# workflow publish.yml, environment testpypi on test.pypi.org and pypi on
+# pypi.org.
 name: Publish
 
 on:
@@ -187,7 +189,24 @@ jobs:
       url: https://pypi.org/project/navimow-sdk-community/
     permissions:
       id-token: write
+      statuses: read
     steps:
+      # The release must have soaked on a live installation first. Whoever
+      # deploys it there reports the outcome as the commit status
+      # navimow-alpha/soak on the tag's commit, and this step refuses the
+      # upload until that status is success. docs/releasing.md says how the
+      # owner records a waiver.
+      - name: Refuse to upload a release whose soak has not passed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          state="$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_REF_NAME/status" \
+            --jq '[.statuses[] | select(.context == "navimow-alpha/soak") | .state] | first // "absent"')"
+          if [ "$state" != "success" ]; then
+            echo "::error::navimow-alpha/soak on $GITHUB_REF_NAME is $state, not success: the release has not passed its soak; re-run this job once it has"
+            exit 1
+          fi
+          echo "navimow-alpha/soak on $GITHUB_REF_NAME is success"
       - uses: actions/download-artifact@v8
         with:
           name: dist

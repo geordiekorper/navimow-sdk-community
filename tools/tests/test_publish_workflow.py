@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -315,9 +317,76 @@ def test_pypi_waits_for_the_checks_and_the_approval_of_its_environment() -> None
         "name": "pypi",
         "url": "https://pypi.org/project/navimow-sdk-community/",
     }
-    assert job["permissions"] == {"id-token": "write"}
+    # The run's token reads the commit statuses for the soak gate.
+    assert job["permissions"] == {"id-token": "write", "statuses": "read"}
+    gate, *upload = job["steps"]
+    assert gate["env"] == {"GH_TOKEN": "${{ github.token }}"}
     # The same artifact TestPyPI received, and the default index: PyPI.
-    assert job["steps"] == [DOWNLOAD, {"uses": "pypa/gh-action-pypi-publish@release/v1"}]
+    assert upload == [DOWNLOAD, {"uses": "pypa/gh-action-pypi-publish@release/v1"}]
+
+
+# A stand-in for gh: records its arguments and answers "gh api ... --jq
+# EXPR" with EXPR applied by jq to the JSON in RESPONSE.
+FAKE_GH = (
+    "#!/bin/sh\n"
+    'printf "%s\\n" "$@" > "$RECORDED"\n'
+    'while [ $# -gt 0 ]; do [ "$1" = --jq ] && expr="$2"; shift; done\n'
+    'jq -r "$expr" "$RESPONSE"\n'
+)
+GATE = JOBS["pypi"]["steps"][0]
+needs_jq = pytest.mark.skipif(shutil.which("jq") is None, reason="jq applies the expression")
+
+
+def statuses(*states: tuple[str, str]) -> str:
+    """The combined status of a commit, as the API gives it: one entry per context."""
+    return json.dumps({"statuses": [{"context": c, "state": s} for c, s in states]})
+
+
+def run_gate(tmp_path: Path, response: str) -> subprocess.CompletedProcess[str]:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "gh").write_text(FAKE_GH, encoding="utf-8")
+    (bin_dir / "gh").chmod(0o755)
+    (tmp_path / "response.json").write_text(response, encoding="utf-8")
+    env = {
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "GITHUB_REPOSITORY": "owner/repo",
+        "GITHUB_REF_NAME": f"v{VERSION}",
+        "RECORDED": str(tmp_path / "recorded"),
+        "RESPONSE": str(tmp_path / "response.json"),
+    }
+    return run_step(GATE, tmp_path, env)
+
+
+@needs_jq
+def test_a_passed_soak_lets_the_upload_go_on(tmp_path: Path) -> None:
+    response = statuses(("navimow-alpha/smoke", "success"), ("navimow-alpha/soak", "success"))
+    proc = run_gate(tmp_path, response)
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout == f"navimow-alpha/soak on v{VERSION} is success\n"
+    # The tag's name resolves to its commit on the API's side.
+    recorded = (tmp_path / "recorded").read_text(encoding="utf-8").splitlines()
+    assert recorded[:2] == ["api", f"repos/owner/repo/commits/v{VERSION}/status"]
+
+
+@needs_jq
+@pytest.mark.parametrize(
+    ("response", "state"),
+    [
+        (statuses(("navimow-alpha/soak", "pending")), "pending"),
+        (statuses(("navimow-alpha/soak", "failure")), "failure"),
+        (statuses(("navimow-alpha/smoke", "success")), "absent"),
+        (statuses(), "absent"),
+    ],
+)
+def test_anything_but_a_passed_soak_refuses_the_upload(
+    tmp_path: Path, response: str, state: str
+) -> None:
+    proc = run_gate(tmp_path, response)
+    assert proc.returncode == 1
+    assert proc.stdout.startswith(
+        f"::error::navimow-alpha/soak on v{VERSION} is {state}, not success"
+    )
 
 
 def test_the_build_job_checks_the_tag_and_the_long_description() -> None:

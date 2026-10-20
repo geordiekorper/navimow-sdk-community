@@ -5,9 +5,10 @@ The bump is the one change that does not go through a pull request: the
 maintainer pushes it to `main` directly.
 The tag starts `.github/workflows/publish.yml`, which runs a consumer's tests
 against the wheel, uploads to TestPyPI on its own, tests the release as
-TestPyPI serves it, and uploads to PyPI once the owner approves. Both indexes
-trust this repository's workflow directly (trusted publishing), so no token
-is stored anywhere.
+TestPyPI serves it, and uploads to PyPI once the release has soaked on a
+live installation and the owner approves. Both indexes trust this
+repository's workflow directly (trusted publishing), so no token is stored
+anywhere.
 
 ## 1. The release commit
 
@@ -87,16 +88,38 @@ Every `v*` tag runs five jobs, each stopping the run when it fails:
    `tools/check_wheel.py metadata`. This is the fresh-environment check that
    used to be done by hand.
 5. **pypi** waits. It runs in the `pypi` environment, whose required-reviewer
-   rule holds it until the owner approves the deployment, and then uploads the
-   same files to PyPI.
+   rule holds it until the owner approves the deployment. Its first step then
+   reads the commit status `navimow-alpha/soak` on the tag's commit and
+   refuses the upload unless it is `success`: whoever deploys the release to
+   a live installation reports the outcome of its soak there as that status.
+   Once it is, the job uploads the same files to PyPI.
 
-## 5. Approve
+## 5. Wait for the soak, then approve
 
-Once `testpypi-verify` has passed, approve the `pypi` deployment on the
-workflow run's page. The `pypi` job uploads the files the `build` job made,
-the ones TestPyPI received and served, and nothing is checked from PyPI
-afterwards: the dependencies that `testpypi-verify` installed beside the
-wheel came from PyPI already, so a second run from there would repeat it.
+Two things have to hold before the approval: `testpypi-verify` has passed,
+and the status `navimow-alpha/soak` on the tag's commit is `success`. The
+run's page shows the first; the commit's status list on GitHub shows the
+second, as does
+
+```bash
+gh api repos/geordiekorper/navimow-sdk-community/commits/v<version>/status --jq '.statuses[] | select(.context == "navimow-alpha/soak") | .state'
+```
+
+Then approve the `pypi` deployment on the run's page. An approval given
+before the status is green fails at the job's first step; once it is green,
+re-run the job and approve again.
+
+The owner can waive the soak by posting the status by hand. A status carries
+its description, so the waiver is on the commit for anyone to read:
+
+```bash
+gh api --method POST "repos/geordiekorper/navimow-sdk-community/statuses/$(git rev-parse 'v<version>^{commit}')" -f state=success -f context=navimow-alpha/soak -f description='soak waived by the owner'
+```
+
+The `pypi` job uploads the files the `build` job made, the ones TestPyPI
+received and served, and nothing is checked from PyPI afterwards: the
+dependencies that `testpypi-verify` installed beside the wheel came from
+PyPI already, so a second run from there would repeat it.
 
 ## When something is wrong
 
