@@ -38,6 +38,16 @@ keep the headings they were released with.
   poll gets the reply as sent. A failure is still raised to `async_poll()`'s
   awaiter, or reported through `on_error` for the client's own polls, as
   before.
+- `DeviceLocation.live_fields`: the names of the record's fields an applied
+  location entry wrote since the record was restored or first built, as a
+  frozenset. A pose writes the pose fields; a task entry the task fields,
+  with the zone and route pairs only when it carried them; a target entry
+  `partition_ids` and `target_at` when the set changed, and `target_last_at`
+  always; a delay entry `task_delay` and `delay_received_at`; a docked pose
+  the dock fields. `restore()` and `from_dict()` start it empty, equality
+  ignores it and `to_dict()` leaves it out, so a program that persisted a
+  record and handed it back can tell a restored value from a live one by
+  membership, without a copy of the entry-to-field map.
 
 ### Fixed
 
