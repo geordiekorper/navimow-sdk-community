@@ -9,6 +9,46 @@ keep the headings they were released with.
 
 ## [Unreleased]
 
+### Added
+
+- `NavimowClient.on_location(callback, device_id=None)` and
+  `NavimowClient.on_message_seen(callback, device_id=None)`: the facade's
+  `on_location` and `on_message_seen` forwarded through the client as
+  `on_event`, `on_attributes` and `on_rejected` are, with the same
+  keyword-only device filter, registrable before `async_connect()` and
+  installed by the build after the client's own location handler, so inside
+  an `on_location` callback `state(device_id)` already shows the state built
+  with the entry's record. The `on_message_seen` callback takes the facade's
+  three arguments (the device id, the channel, the UTC receipt time) and the
+  filter reads the first. A consumer no longer waits for `client.sdk` to
+  exist to register either.
+- `NavimowClient.on_poll(callback)` and `PollResult`, in
+  `mower_sdk.navimow_client` and at the package root: the outcome of every
+  poll, success included, delivered after the poll inside `async_connect()`,
+  each of the poll task's polls, a program's own `async_poll()` and the poll
+  after a command, once the reply's observations are applied and the
+  watchdog's requests delivered. The record carries `statuses` (by device
+  id, as `async_poll()` returns them), `received_at` (the client's receipt
+  time, the one the states built from the reply carry), `requested` (the
+  device ids asked for) and `error` (the exception of a failed poll, a failed
+  token step included, beside an empty mapping; None on success). A poll
+  task tick that found no poll due delivers nothing. A consumer that shows
+  the poll's health learns of a recovery while the MQTT observation stays
+  current, which `on_state` could not tell it, and one keeping a record per
+  poll gets the reply as sent. A failure is still raised to `async_poll()`'s
+  awaiter, or reported through `on_error` for the client's own polls, as
+  before.
+- `DeviceLocation.live_fields`: the names of the record's fields an applied
+  location entry wrote since the record was restored or first built, as a
+  frozenset. A pose writes the pose fields; a task entry the task fields,
+  with the zone and route pairs only when it carried them; a target entry
+  `partition_ids` and `target_at` when the set changed, and `target_last_at`
+  always; a delay entry `task_delay` and `delay_received_at`; a docked pose
+  the dock fields. `restore()` and `from_dict()` start it empty, equality
+  ignores it and `to_dict()` leaves it out, so a program that persisted a
+  record and handed it back can tell a restored value from a live one by
+  membership, without a copy of the entry-to-field map.
+
 ### Fixed
 
 - `NavimowMQTT` counts a keep-alive timeout as one disconnect. paho-mqtt 2.1
@@ -19,6 +59,22 @@ keep the headings they were released with.
   reconnect attempt whose socket drops before any CONNACK is not counted
   again either; a drop after a reconnect, refused or not, or on a client made
   by `rebuild()`, still counts.
+- `NavimowClient.async_connect()` cancelled while the MQTT connect runs in
+  the executor leaves the feed not running. The cancellation marked the client
+  closed and cancelled its tasks, but the executor finished the connect, so
+  paho's network thread came up for a client that reported itself closed, and
+  `async_disconnect()`, a no-op on a closed client, could not stop it; a
+  consumer that cancels a connect in progress (a setup that times out or is
+  torn down) had to shield the call and disconnect by hand. The connect, once
+  started in the executor, is now awaited to its end and undone with a
+  disconnect before the cancellation propagates, through any further
+  cancellation, so nothing of the client's runs afterwards; the next
+  `async_connect()` restarts the client as before. A connect whose MQTT
+  connect raised (an unusable address, refused before paho's thread starts)
+  is followed by the same disconnect, and the exception propagates as before.
+  The reconnect of a connect after `async_disconnect()` is undone the same
+  way, and a rebuild it made (a token changed while closed) counts for the
+  rebuild generation, so a watchdog request from before it is stale.
 
 ## [0.2.0a6] - 2026-10-08
 

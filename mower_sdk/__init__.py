@@ -69,6 +69,7 @@ from mower_sdk.navimow_client import (
     SILENCE_CHECK_SECONDS,
     MowerState,
     NavimowClient,
+    PollResult,
     StateSource,
 )
 from mower_sdk.sdk import NavimowSDK
@@ -177,6 +178,7 @@ __all__ = [
     "MqttConnectionInfo",
     "MowerState",
     "StateSource",
+    "PollResult",
     "MQTT_STALE_SECONDS",
     "REST_POLL_SECONDS",
     "REST_POLL_MAX_BACKOFF_SECONDS",

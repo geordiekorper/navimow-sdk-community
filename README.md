@@ -92,10 +92,11 @@ base URL; `NavimowClient(api)` takes one the program already holds. The client o
 client and the MQTT facade and keeps one `MowerState` per mower: the
 status half from the latest state message while it is fresh, else from a REST status read after it,
 and the location record beside it (see [Mower states](#mower-states)). `client.state(device_id)` and
-`client.states()` return the states between callbacks; `on_event`, `on_attributes` and `on_rejected`
-forward the facade's callbacks, each with an optional `device_id=` filter, and `on_connection` and
-`on_error` report the connection's events and the client's own failures. The layers are reachable as
-`client.api`, `client.sdk` and `client.mqtt`.
+`client.states()` return the states between callbacks; `on_event`, `on_attributes`, `on_rejected`,
+`on_location` and `on_message_seen` forward the facade's callbacks, each with an optional
+`device_id=` filter, and `on_connection`, `on_error` and `on_poll` report the connection's events,
+the client's own failures and the outcome of every poll. The layers are reachable as `client.api`,
+`client.sdk` and `client.mqtt`.
 
 A command goes through the client: `await client.async_send_command(device_id, MowerCommand.START)`
 sends it over REST, returns its `CommandReceipt` (kept as `client.last_receipt(device_id)`) and
@@ -283,6 +284,9 @@ which observation is current and runs the watchdog's silence check. A command se
 is started is followed by one poll `COMMAND_POLL_DELAY_SECONDS` (5) later, whatever the reply; a
 second command while that poll is pending shares it. That poll stands outside the schedule above:
 its failure changes no wait, and its success resets the backoff without moving the next poll.
+`on_poll(callback)` delivers a `PollResult` after every poll, the connect's, the task's, a
+program's own and the one after a command, with the statuses the reply carried, the receipt time,
+the device ids asked for and, for a failed poll, the exception beside an empty mapping.
 
 **Which observation the state shows.** The status half of a `MowerState` is the latest MQTT state
 message while it is younger than `mqtt_stale_seconds` (`MQTT_STALE_SECONDS`, 300); once it is
@@ -383,10 +387,12 @@ timer and makes no request of its own. `NavimowClient` runs all of that itself
 channel, off by default (several models never publish on it, and it is a movement trace). Turn it
 on with `NavimowSDK(..., subscribe_location=True)`, then register `sdk.on_location(callback)`;
 `sdk.get_cached_location(device_id)` returns the merged record, which `DeviceLocation.to_dict()`
-and `from_dict()` let you persist and hand back with `sdk.restore_location()` after a restart.
-The record also carries the dock's estimated position (`dock_x`, `dock_y`), learned from the poses
-the mower sends while docked, and `target_zone(location, status)` reads its target report: a zone
-id, or `TargetZone.ALL` or `NONE` for a report that names none, inferred from the state you show.
+and `from_dict()` let you persist and hand back with `sdk.restore_location()` after a restart;
+`location.live_fields` then names the fields later entries have written, so a program can tell a
+restored value from a live one. The record also carries the dock's estimated position (`dock_x`,
+`dock_y`), learned from the poses the mower sends while docked, and `target_zone(location, status)`
+reads its target report: a zone id, or `TargetZone.ALL` or `NONE` for a report that names none,
+inferred from the state you show.
 Messages that could not be applied are reported through `sdk.on_rejected(callback)`; for a
 location message, `RejectedMessage.skipped` lists each entry that was not applied, with its reason
 and its fields read as far as they go, so a late task reading can still be kept, marked as late.

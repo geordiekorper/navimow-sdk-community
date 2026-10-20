@@ -130,6 +130,24 @@ def test_no_estimate_until_a_docked_pose() -> None:
     )
 
 
+def test_a_docked_pose_marks_the_dock_fields_live_and_a_moving_one_does_not() -> None:
+    dock_fields = {"dock_x", "dock_y", "dock_theta", "dock_at", "dock_samples"}
+    decoder = LocationDecoder()
+    moving = feed(decoder, docked(1, 5.0, 5.0, code="4"))
+    assert moving.live_fields.isdisjoint(dock_fields) and "x" in moving.live_fields
+    first = feed(decoder, docked(2, 1.0, 2.0))  # the first estimate
+    assert first.live_fields >= dock_fields
+    # Each write site on its own: a restore empties the set before the next pose.
+    decoder.restore(DEVICE, first)
+    assert decoder.get(DEVICE).live_fields == frozenset()
+    averaged = feed(decoder, docked(3, 1.05, 2.0))  # a near pose: the mean update
+    assert averaged.dock_samples == 2 and averaged.live_fields >= dock_fields
+    decoder.restore(DEVICE, averaged)
+    far = (docked(4 + i, 9.0, 9.0) for i in range(DOCK_MOVE_SAMPLES))
+    moved = feed(decoder, *far)  # agreeing far poses: a replacement
+    assert moved.dock_x == 9.0 and moved.live_fields >= dock_fields
+
+
 def test_the_first_docked_pose_is_the_estimate() -> None:
     record = feed(LocationDecoder(), docked(1, 1.0, 2.0, theta=0.25))
     assert (

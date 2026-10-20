@@ -11,7 +11,8 @@ clock.
 
 NavimowClient owns one MowerAPI and one NavimowSDK for an account, keeps the
 latest observation from each transport for every mower, decides which one the
-status half comes from, and delivers each new state to the on_state callbacks.
+status half comes from, delivers each new state to the on_state callbacks and
+each poll's outcome, a PollResult, to the on_poll callbacks.
 It connects the feed, runs the clock that polls the status and re-evaluates
 the merge by time, sends commands and polls after them, runs the watchdog
 and rebuilds the MQTT client when it asks, pushes a rotated token to the
@@ -64,6 +65,7 @@ __all__ = [
     "MQTT_STALE_SECONDS",
     "MowerState",
     "NavimowClient",
+    "PollResult",
     "REST_POLL_MAX_BACKOFF_SECONDS",
     "REST_POLL_SECONDS",
     "SILENCE_CHECK_SECONDS",
@@ -102,6 +104,29 @@ async def _sleep(seconds: float) -> None:
         seconds: How long to wait.
     """
     await asyncio.sleep(seconds)
+
+
+async def _settle(future: asyncio.Future[Any]) -> None:
+    """Wait for a future to end, through cancellations, and drop its outcome.
+
+    For an executor step that a coroutine being cancelled must see to its
+    end: a cancellation that lands during the wait is absorbed and the wait
+    goes on, and the step's result, or the Exception it raised, is read and
+    dropped. The caller re-raises what interrupted it afterwards.
+
+    Args:
+        future: The future to wait for.
+    """
+    while True:
+        try:
+            await asyncio.shield(future)
+        except asyncio.CancelledError:
+            if future.done():
+                return
+            continue
+        except Exception:
+            return
+        return
 
 
 def _positive(value: Any) -> bool:
@@ -338,6 +363,27 @@ class MowerState:
             now minus received_monotonic, in seconds.
         """
         return (time.monotonic() if now is None else now) - self.received_monotonic
+
+
+@dataclass(frozen=True)
+class PollResult:
+    """The outcome of one status poll, delivered to the on_poll callbacks.
+
+    Attributes:
+        statuses: The statuses by device id, as async_poll() returns them;
+            empty for a failed poll.
+        received_at: When the reply was read (UTC), the time the states built
+            from it carry; for a failed poll, when the failure was recorded.
+        requested: The device ids the poll asked for, in order: the ids given,
+            else every known device's; empty when the list was not known.
+        error: The exception of a failed poll, a failed token step included;
+            None for a success.
+    """
+
+    statuses: dict[str, DeviceStatus]
+    received_at: datetime
+    requested: tuple[str, ...]
+    error: Exception | None = None
 
 
 @dataclass(frozen=True)
@@ -626,10 +672,11 @@ class NavimowClient:
         self._rest_observations: dict[str, _RestObservation] = {}
         self._states: dict[str, MowerState] = {}
         self._queued_restores: dict[str, DeviceLocation] = {}
-        self._queued_forwards: list[tuple[str, Callable[[Any], None]]] = []
+        self._queued_forwards: list[tuple[str, Callable[..., None]]] = []
         self._state_callbacks: list[tuple[Callable[[MowerState], None], str | None]] = []
         self._connection_callbacks: list[Callable[[ConnectionEvent], None]] = []
         self._error_callbacks: list[Callable[[str, Exception], None]] = []
+        self._poll_callbacks: list[Callable[[PollResult], None]] = []
         self.last_poll_at: datetime | None = None
         self.last_poll_error: Exception | None = None
         # The clock: the wait before the next poll (the interval, doubled after each
@@ -835,8 +882,12 @@ class NavimowClient:
         once, and a token that changed while closed is pushed, which rebuilds
         and connects the MQTT client; else the client is reconnected. A
         connect interrupted after the facade was built (cancelled, say)
-        leaves the client closed, and the next async_connect() takes that
-        path.
+        leaves the client closed with the feed not running, and the next
+        async_connect() takes that path. A connect of the MQTT client that
+        had started in the executor, interrupted or failed, is awaited to
+        its end and undone with a disconnect before the exception
+        propagates, through any further cancellation, so nothing of the
+        client's runs afterwards.
 
         Raises:
             MowerAPIError: A REST request failed (its subclass says which
@@ -900,9 +951,10 @@ class NavimowClient:
             ),
         )
         # Decision: the client's handlers are registered at build, before the
-        # facade is reachable as client.sdk, so they run before any callback a
-        # consumer registers on the facade itself and state() already shows a
-        # message inside such a callback. The facade connects nothing until
+        # forwarded callbacks and before the facade is reachable as client.sdk, so
+        # they run before any callback a consumer registers through the client or
+        # on the facade itself, and state() already shows a message, or an entry's
+        # record, inside such a callback. The facade connects nothing until
         # connect(), so no message can arrive before the hooks are in place.
         sdk.mqtt.on_connect_fail = self._on_connect_fail
         sdk.mqtt.on_connection_event = self._on_connection_event
@@ -916,21 +968,30 @@ class NavimowClient:
         for device_id, location in restored:
             sdk.restore_location(device_id, location)
         self._sdk = sdk
+        connecting: asyncio.Future[None] | None = None
         try:
             self._watchdog = self._make_watchdog(sdk)
             for device_id, _location in restored:
                 if device_id in self._states:
                     self._rebuild(device_id, sdk.get_cached_location(device_id))
             await self._startup_poll()
-            await loop.run_in_executor(None, sdk.connect)
+            connecting = loop.run_in_executor(None, sdk.connect)
+            await asyncio.shield(connecting)
         except BaseException:
             # Decision: a first connect interrupted after the build (cancelled during
             # the startup poll, say) leaves the facade built and the client marked
             # closed, so the next async_connect() restarts it: polls, reconciles and
-            # connects, instead of finding it started and doing nothing. A task
+            # connects, instead of finding it started and doing nothing. The connect
+            # of the MQTT client, once started in the executor, runs on whatever
+            # happens to this coroutine, so it is awaited to its end and undone with
+            # a disconnect before the exception propagates, both through any further
+            # cancellation: a closed client's feed is not running, and
+            # async_disconnect(), a no-op while closed, has nothing to stop. A task
             # spawned meanwhile (the poll after a command sent during the startup
             # poll) is cancelled with it, as async_disconnect() would cancel it.
             self._closed = True
+            if connecting is not None:
+                await self._undo_connect(loop, sdk, connecting)
             await self._cancel_tasks()
             raise
         self._applied_bearer = self._bearer(token)
@@ -948,6 +1009,7 @@ class NavimowClient:
         assert sdk is not None
         self._closed = False
         before = sdk.mqtt.rebuilds
+        connecting: asyncio.Future[None] | None = None
         try:
             if self._watchdog is None:
                 self._watchdog = self._make_watchdog(sdk)  # the factory raised last time
@@ -961,17 +1023,44 @@ class NavimowClient:
                     sdk.update_mqtt_credentials(auth_headers=bearer)
                 sdk.connect()
 
-            await loop.run_in_executor(None, reconnect)
+            connecting = loop.run_in_executor(None, reconnect)
+            await asyncio.shield(connecting)
         except BaseException:
-            # Interrupted before the reconnect: still closed, so the next
-            # async_connect() restarts again; a task spawned meanwhile is cancelled.
+            # Interrupted: still closed, so the next async_connect() restarts again,
+            # and a reconnect that had started is awaited and undone as in _build. A
+            # rebuild it made counts, so a watchdog request from before it is stale;
+            # the bearer it pushed is not recorded, and the next restart's push of
+            # the same bearer changes nothing. A task spawned meanwhile is cancelled.
             self._closed = True
+            if connecting is not None:
+                await self._undo_connect(loop, sdk, connecting)
+                self._note_rebuilds(before)
             await self._cancel_tasks()
             raise
         if bearer is not None:
             self._applied_bearer = bearer
         self._note_rebuilds(before)
         self._start_clock(loop)
+
+    async def _undo_connect(
+        self, loop: asyncio.AbstractEventLoop, sdk: NavimowSDK, connecting: asyncio.Future[None]
+    ) -> None:
+        """Wait for an interrupted executor connect to end, then disconnect the facade.
+
+        The connect runs on in the executor whatever happened to the
+        coroutine that started it, so it is awaited to its end, and the
+        disconnect, in the executor as well, follows it; the MQTT client's own
+        lock orders the two. Both waits last through further cancellations and
+        neither raises, so whatever the connect did, the facade is left
+        disconnected when the caller re-raises.
+
+        Args:
+            loop: The bound loop.
+            sdk: The facade whose connect was started.
+            connecting: The executor connect's future.
+        """
+        await _settle(connecting)
+        await _settle(loop.run_in_executor(None, sdk.disconnect))
 
     async def _startup_poll(self) -> None:
         """The poll inside async_connect(): every device once, a failure reported, never raised."""
@@ -991,8 +1080,9 @@ class NavimowClient:
         Under the lifecycle lock, so an operation in flight finishes first.
         The clock's tasks are cancelled and awaited before the MQTT client is
         disconnected in the default executor, so nothing of the client's runs
-        afterwards. A no-op before async_connect() and when already closed.
-        While closed the
+        afterwards. A no-op before async_connect() and when already closed,
+        an interrupted connect included, which disconnected what it had
+        started itself. While closed the
         MQTT client is left alone until the next async_connect(); REST stays
         usable, and async_set_token() changes the REST token only.
 
@@ -1376,7 +1466,8 @@ class NavimowClient:
         device the reply covers, the REST observation is replaced and the
         state rebuilt when the merge selects that observation, which fires
         on_state; a device whose MQTT observation is current is left as it
-        is. last_poll_at and last_poll_error are updated. The poll counts
+        is. last_poll_at and last_poll_error are updated, and the on_poll
+        callbacks receive the outcome, a failure included. The poll counts
         as a tick of the clock: a success sets the next poll one interval
         from now and resets the backoff, a failure doubles the wait.
 
@@ -1428,14 +1519,23 @@ class NavimowClient:
         Raises:
             MowerAPIError: The request failed; last_poll_error holds the
                 exception and the backoff counts the failure.
-            Exception: Whatever the provider raises; the same bookkeeping.
+            Exception: Whatever the provider raises; the same bookkeeping,
+                and the on_poll callbacks receive the failure.
         """
+        ids = None if device_ids is None else tuple(device_ids)
         try:
             if provider and self._token_provider is not None:
-                token = await self._token_provider()
-                if token is not None:
-                    await self.async_set_token(token)
-            statuses = await self._poll(device_ids, only_when_due=only_when_due)
+                try:
+                    token = await self._token_provider()
+                    if token is not None:
+                        await self.async_set_token(token)
+                except Exception as exc:
+                    # No request was made: the poll's outcome is the token step's failure.
+                    self.last_poll_error = exc
+                    requested = ids if ids is not None else tuple(d.id for d in self.devices)
+                    self._deliver_poll(PollResult({}, datetime.now(UTC), requested, exc))
+                    raise
+            statuses = await self._poll(ids, only_when_due=only_when_due)
         except Exception as exc:
             self.last_poll_error = exc
             if not after_command:
@@ -1579,7 +1679,8 @@ class NavimowClient:
 
         Raises:
             MowerAPIError: The request failed; last_poll_error holds the
-                exception and nothing changed.
+                exception, the on_poll callbacks receive the failure and
+                nothing else changed.
         """
         # Decision: polls are serialised on a lock of the client's own and applied
         # in reply order, so a manual or command poll waits for one in flight and an
@@ -1593,17 +1694,19 @@ class NavimowClient:
                 and self._next_poll_due > time.monotonic()
             ):
                 return None
+            ids: tuple[str, ...] = ()
             try:
                 if device_ids is None:
                     if not self._devices_known:
                         self.devices[:] = await self.api.async_get_devices()
                         self._devices_known = bool(self.devices)
-                    ids = [device.id for device in self.devices]
+                    ids = tuple(device.id for device in self.devices)
                 else:
-                    ids = list(device_ids)
-                statuses = await self.api.async_get_device_statuses(ids)
+                    ids = tuple(device_ids)
+                statuses = await self.api.async_get_device_statuses(list(ids))
             except Exception as exc:
                 self.last_poll_error = exc
+                self._deliver_poll(PollResult({}, datetime.now(UTC), ids, exc))
                 raise
             received_at = datetime.now(UTC)
             received_monotonic = time.monotonic()
@@ -1621,6 +1724,16 @@ class NavimowClient:
                 # fails after is reported, never raised to the caller.
                 _LOGGER.exception("NavimowClient: the watchdog's check after a poll failed")
                 self._report("poll", exc)
+            # Decision: on_poll reports the outcome of every poll, success included,
+            # once the observations are applied and the watchdog's requests delivered,
+            # with the client's own receipt time: a consumer showing the poll's health
+            # learns of a recovery while the MQTT observation stays current, which
+            # on_state cannot tell it, and one keeping a record per poll gets the reply
+            # as sent. A failure is delivered here too and, as before, raised to a
+            # program's own async_poll() or reported through on_error for the client's
+            # own polls; a tick that found no poll due delivers nothing, no request
+            # having been made.
+            self._deliver_poll(PollResult(statuses, received_at, ids))
             return statuses
 
     def _select(self, device_id: str) -> _Observation | None:
@@ -1817,6 +1930,24 @@ class NavimowClient:
         """
         self._error_callbacks.append(callback)
 
+    def on_poll(self, callback: Callable[[PollResult], None]) -> None:
+        """Call callback(result) with the outcome of every poll, success included.
+
+        After the poll inside async_connect(), each of the poll task's polls,
+        a program's own async_poll() and the poll after a command, once the
+        reply's observations are applied and the watchdog's requests
+        delivered: a PollResult with the statuses the reply carried, the
+        client's receipt time and the device ids asked for. A failed poll, a
+        token step that failed included, delivers an empty mapping and the
+        exception, which is still raised to async_poll()'s awaiter or, for
+        the startup, clock and command polls, reported through on_error. A
+        poll task tick that found no poll due delivers nothing.
+
+        Args:
+            callback: A synchronous function taking the PollResult.
+        """
+        self._poll_callbacks.append(callback)
+
     def on_rebuild_request(self, callback: Callable[[RebuildRequest], None]) -> None:
         """Call callback with each RebuildRequest the watchdog makes, before anything acts on it.
 
@@ -1869,29 +2000,73 @@ class NavimowClient:
         """
         self._forward("rejected", callback, device_id)
 
-    def _forward(
-        self, channel: str, callback: Callable[[Any], None], device_id: str | None
+    def on_location(
+        self,
+        callback: Callable[[DeviceLocationMessage], None],
+        *,
+        device_id: str | None = None,
     ) -> None:
+        """Call callback with each applied location entry, as the facade's on_location does.
+
+        The callback runs after the client's own handler, so inside it
+        state(device_id) is already the state built with the entry's record,
+        when a status observation exists.
+
+        Args:
+            callback: A synchronous function taking the DeviceLocationMessage.
+            device_id: Deliver only this device's entries; None delivers
+                every device's.
+        """
+        self._forward("location", callback, device_id)
+
+    def on_message_seen(
+        self,
+        callback: Callable[[str, str, datetime], None],
+        *,
+        device_id: str | None = None,
+    ) -> None:
+        """Call callback(device_id, channel, received_at) for every message on a device's topic.
+
+        As the facade's on_message_seen does: every message whose topic names
+        a device and a channel, whatever its payload and whether or not it is
+        applied, with the UTC receipt time the MQTT client recorded.
+
+        Args:
+            callback: A synchronous function taking the device id, the
+                channel and the UTC receipt time.
+            device_id: Deliver only this device's messages; None delivers
+                every device's.
+        """
+        self._forward("message_seen", callback, device_id)
+
+    def _forward(self, channel: str, callback: Callable[..., None], device_id: str | None) -> None:
         """Register a consumer's callback with the facade, wrapped in the client's device filter.
 
         Before the facade exists the wrapper is queued and registered by the
-        build.
+        build, after the client's own handlers.
 
         Args:
-            channel: "event", "attributes" or "rejected".
+            channel: "event", "attributes", "rejected", "location" or
+                "message_seen".
             callback: The consumer's callback.
             device_id: The filter; None admits every device.
         """
 
-        # Decision: the client forwards on_event, on_attributes and on_rejected, the
-        # three feeds it does not consume, and not the facade's on_state,
-        # on_location, on_raw or on_message_seen: the first two are what the state
-        # is built from and the others are diagnostics, all reachable on client.sdk
-        # after async_connect(). The device filter is the client's, applied in this
-        # wrapper, so the facade's callbacks and their signatures are unchanged.
-        def filtered(message: Any) -> None:
-            if device_id is None or message.device_id == device_id:
-                callback(message)
+        # Decision: the client forwards on_event, on_attributes, on_rejected,
+        # on_location and on_message_seen, and not the facade's on_state or on_raw:
+        # the state message is what the state is built from, delivered as a
+        # MowerState through on_state, and the raw feed is a diagnostic, reachable
+        # on client.sdk after async_connect(). The location entries are forwarded
+        # although the state carries the record, for a consumer that reads each
+        # entry (which fields it wrote, an untimed repeat) and wants to register
+        # before the first connect, with the device filter, as for the other
+        # channels. The filter is the client's, applied in this wrapper, so the
+        # facade's callbacks and their signatures are unchanged; on_message_seen's
+        # device id is its first argument, the others carry it on the message.
+        def filtered(*args: Any) -> None:
+            seen = args[0] if channel == "message_seen" else args[0].device_id
+            if device_id is None or seen == device_id:
+                callback(*args)
 
         if self._sdk is None:
             self._queued_forwards.append((channel, filtered))
@@ -1899,20 +2074,25 @@ class NavimowClient:
             self._register_forward(self._sdk, channel, filtered)
 
     @staticmethod
-    def _register_forward(sdk: NavimowSDK, channel: str, callback: Callable[[Any], None]) -> None:
+    def _register_forward(sdk: NavimowSDK, channel: str, callback: Callable[..., None]) -> None:
         """Register a wrapped callback with the facade's method for its channel.
 
         Args:
             sdk: The facade.
-            channel: "event", "attributes" or "rejected".
+            channel: "event", "attributes", "rejected", "location" or
+                "message_seen".
             callback: The wrapped callback.
         """
         if channel == "event":
             sdk.on_event(callback)
         elif channel == "attributes":
             sdk.on_attributes(callback)
-        else:
+        elif channel == "rejected":
             sdk.on_rejected(callback)
+        elif channel == "location":
+            sdk.on_location(callback)
+        else:
+            sdk.on_message_seen(callback)
 
     def _report(self, operation: str, exc: Exception) -> None:
         """Call the on_error callbacks with a failure, each in its own try.
@@ -1928,6 +2108,18 @@ class NavimowClient:
                 _LOGGER.exception(
                     "NavimowClient error callback %r failed for %s", callback, operation
                 )
+
+    def _deliver_poll(self, result: PollResult) -> None:
+        """Call the on_poll callbacks with a poll's outcome, each in its own try.
+
+        Args:
+            result: The outcome.
+        """
+        for callback in list(self._poll_callbacks):
+            try:
+                callback(result)
+            except Exception:
+                _LOGGER.exception("NavimowClient poll callback %r failed", callback)
 
     # ---- the inner hooks -------------------------------------------------------------------
 

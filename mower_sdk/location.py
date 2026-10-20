@@ -372,6 +372,19 @@ def _entry_fields(entry_type: int, item: dict[str, Any]) -> dict[str, Any]:
     return {"task_delay": _task_delay(item.get("taskDelay"))}
 
 
+_DOCK_FIELDS = ("dock_x", "dock_y", "dock_theta", "dock_at", "dock_samples")
+
+
+def _written(record: dict[str, Any], *names: str) -> None:
+    """Add the fields an entry wrote to the working record's live_fields.
+
+    Args:
+        record: The working copy of the record's fields, changed in place.
+        names: The fields the entry wrote.
+    """
+    record["live_fields"] = record["live_fields"] | frozenset(names)
+
+
 class LocationDecoder:
     """The per-device location records, and the merge of each message into them.
 
@@ -481,7 +494,11 @@ class LocationDecoder:
                 observed = getattr(location, name)
                 if observed is not None:
                     marks[entry_type] = observed
-        self._records[device_id] = replace(location, device_id=device_id, marks=marks)
+        # The installed record has nothing live: live_fields names what entries
+        # write from here on, whatever the given record carried.
+        self._records[device_id] = replace(
+            location, device_id=device_id, marks=marks, live_fields=frozenset()
+        )
         self._dock_candidates.pop(device_id, None)
 
     def decode(
@@ -546,7 +563,8 @@ class LocationDecoder:
 
         A timed entry also raises the mark of its type to its time. An entry
         sent without a time sets the times it writes to None and leaves the
-        marks as they were.
+        marks as they were. Each field an entry writes joins the record's
+        live_fields, which restore() empties.
 
         Args:
             device_id: The device the message is from.
@@ -674,8 +692,9 @@ class LocationDecoder:
     ) -> None:
         """Apply one entry that passed the checks to the working record, as decode() describes.
 
-        The entry's type decides which fields it writes; a timed entry then
-        raises the mark of its type to its time.
+        The entry's type decides which fields it writes, and each field
+        written joins live_fields; a timed entry then raises the mark of its
+        type to its time.
 
         Args:
             device_id: The device, which the dock estimate's candidate is kept
@@ -684,6 +703,13 @@ class LocationDecoder:
             entry: The entry, which passed the checks.
             received_at: The UTC receipt time.
         """
+        # Decision: live_fields names exactly what the apply paths wrote since the
+        # restore, as they write it (a target repeat writes target_last_at only, a
+        # task entry without a route reading leaves route_progress alone), so a
+        # consumer that restored a record tells a restored value from a live one
+        # by membership, without a copy of the entry-to-field map. It is neither
+        # compared nor persisted: a record handed back after a restart starts with
+        # nothing live.
         if entry.entry_type == 1:
             self._apply_pose(device_id, record, entry, received_at)
         elif entry.entry_type == 2:
@@ -692,6 +718,7 @@ class LocationDecoder:
             self._apply_target(record, entry)
         else:
             record.update(task_delay=entry.own["task_delay"], delay_received_at=received_at)
+            _written(record, "task_delay", "delay_received_at")
         if entry.entry_time is not None:
             record["marks"][entry.entry_type] = entry.entry_time
 
@@ -709,6 +736,7 @@ class LocationDecoder:
         """
         own = entry.own
         record.update(own, pose_at=entry.entry_time, pose_received_at=received_at)
+        _written(record, *own, "pose_at", "pose_received_at")
         # Decision: the pose's own code says docked (1) or charging (2), not
         # the state channel or REST, which lag the mower and never report
         # charging; a pose without a code (a lifted mower sends none) is not a
@@ -729,14 +757,17 @@ class LocationDecoder:
         own, entry_time = entry.own, entry.entry_time
         if "current_zone" in own:
             record.update(current_zone=own["current_zone"], zone_at=entry_time)
+            _written(record, "current_zone", "zone_at")
         if "route_progress" in own:
             record.update(route_progress=own["route_progress"], progress_at=entry_time)
+            _written(record, "route_progress", "progress_at")
         task = {
             key: value
             for key, value in own.items()
             if key not in ("current_zone", "route_progress")
         }
         record.update(task, task_at=entry_time)
+        _written(record, *task, "task_at")
 
     @staticmethod
     def _apply_target(record: dict[str, Any], entry: _Entry) -> None:
@@ -749,8 +780,10 @@ class LocationDecoder:
         ids = entry.own["partition_ids"]
         if record["partition_ids"] is None or set(ids) != set(record["partition_ids"]):
             record.update(partition_ids=ids, target_at=entry.entry_time)
+            _written(record, "partition_ids", "target_at")
         # A repeat of the same set, in any order, only advances this.
         record["target_last_at"] = entry.entry_time
+        _written(record, "target_last_at")
 
     def _dock_sample(
         self,
@@ -805,6 +838,7 @@ class LocationDecoder:
         dock_x, dock_y, samples = record["dock_x"], record["dock_y"], record["dock_samples"]
         if dock_x is None or dock_y is None or samples < 1:
             record.update(latest, dock_x=x, dock_y=y, dock_samples=1)
+            _written(record, *_DOCK_FIELDS)
             self._dock_candidates.pop(device_id, None)
             return
         if math.hypot(x - dock_x, y - dock_y) <= self.dock_move_distance_m:
@@ -822,6 +856,7 @@ class LocationDecoder:
                 dock_y=dock_y + (y - dock_y) / weight,
                 dock_samples=weight,
             )
+            _written(record, *_DOCK_FIELDS)
             self._dock_candidates.pop(device_id, None)
             return
         # Decision: a far pose never enters the mean, so one outlier never moves the
@@ -856,6 +891,7 @@ class LocationDecoder:
                 dock_at=entry_time,
                 dock_samples=min(candidate[2], self.dock_max_samples),
             )
+            _written(record, *_DOCK_FIELDS)
             self._dock_candidates.pop(device_id, None)
         else:
             self._dock_candidates[device_id] = candidate

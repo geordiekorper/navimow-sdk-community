@@ -20,6 +20,7 @@ from mower_sdk.navimow_client import COMMAND_POLL_DELAY_SECONDS, NavimowClient
 from .fakes import FakeResponse, FakeSleeper
 from .test_navimow_client import (
     DEVICE,
+    OTHER,
     GatedResponse,
     Provider,
     Recorder,
@@ -136,6 +137,21 @@ async def test_every_command_schedules_one_poll_and_a_second_leaves_the_pending_
     assert client.state(DEVICE).status is MowerStatus.MOWING
     assert recorder.states[-1].status is MowerStatus.MOWING
     assert recorder.errors == []
+
+
+@pytest.mark.asyncio
+async def test_the_poll_after_a_command_is_delivered_to_on_poll(sleeper: FakeSleeper) -> None:
+    client, _session = make(*connect_replies(), accepted(), status_reply(**{DEVICE: "isRunning"}))
+    recorder = Recorder(client)
+    await connect(client)
+    await client.async_send_command(DEVICE, MowerCommand.START)
+    await sleeper.until_sleeping(COMMAND_POLL)
+    assert len(recorder.polls) == 1  # the startup poll's
+    sleeper.wake(COMMAND_POLL)
+    await command_poll_done(client)
+    result = recorder.polls[-1]
+    assert len(recorder.polls) == 2 and result.error is None
+    assert (list(result.statuses), result.requested) == ([DEVICE], (DEVICE, OTHER))
 
 
 @pytest.mark.asyncio

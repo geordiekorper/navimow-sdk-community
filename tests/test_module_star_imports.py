@@ -94,6 +94,7 @@ COMMUNITY_ADDITIONS: dict[str, set[str]] = {
         "MQTT_STALE_SECONDS",
         "MowerState",
         "NavimowClient",
+        "PollResult",
         "REST_POLL_MAX_BACKOFF_SECONDS",
         "REST_POLL_SECONDS",
         "SILENCE_CHECK_SECONDS",

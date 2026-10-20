@@ -28,6 +28,7 @@ from mower_sdk.navimow_client import (
     SILENCE_CHECK_SECONDS,
     MowerState,
     NavimowClient,
+    PollResult,
     StateSource,
 )
 
@@ -45,6 +46,7 @@ from .test_navimow_client import (
     requests,
     settle,
     state_message,
+    status_reply,
 )
 
 pytestmark = pytest.mark.usefixtures("fake_paho", "clock", "sleeper")
@@ -454,6 +456,130 @@ async def test_a_poll_whose_request_succeeded_returns_the_statuses_when_a_callba
         statuses = await client.async_poll()
     assert sorted(statuses) == [DEVICE, OTHER]
     assert "boom" in caplog.text
+
+
+# ---- the poll's outcome: on_poll -----------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_on_poll_delivers_every_polls_outcome_with_the_statuses_and_the_receipt_time(
+    sleeper: FakeSleeper, clock: FakeClock
+) -> None:
+    client, session = make(
+        broker_reply(),
+        both_docked(),
+        both_docked(),
+        status_reply(**{DEVICE: "isRunning"}),
+        both_docked(),
+    )
+    recorder = Recorder(client)  # registered before connect: hears the startup poll
+    await connect(client)
+    startup = recorder.polls[-1]
+    assert len(recorder.polls) == 1 and startup.error is None
+    assert (sorted(startup.statuses), startup.requested) == ([DEVICE, OTHER], (DEVICE, OTHER))
+    assert startup.received_at == clock.wall_now == client.last_poll_at
+    await sleeper.release(POLL)  # nothing due: no request, nothing delivered
+    assert len(recorder.polls) == 1
+    await tick(sleeper, clock, 120)
+    assert len(recorder.polls) == 2 and recorder.polls[-1].received_at == clock.wall_now
+    statuses = await client.async_poll([DEVICE])
+    assert recorder.polls[-1].statuses is statuses and list(statuses) == [DEVICE]
+    assert recorder.polls[-1].requested == (DEVICE,)
+    await client.async_disconnect()
+    await client.async_poll()  # REST stays usable while closed, and so does on_poll
+    assert len(recorder.polls) == 4 and recorder.polls[-1].requested == (DEVICE, OTHER)
+    assert requests(session).count("getVehicleStatus") == 4
+
+
+@pytest.mark.asyncio
+async def test_on_poll_runs_after_the_observations_and_a_current_mqtt_state_keeps_its_place(
+    sleeper: FakeSleeper, clock: FakeClock
+) -> None:
+    client, _session = make(
+        broker_reply(),
+        both_docked(),
+        status_reply(**{DEVICE: "isRunning", OTHER: "isDocked"}),
+        status_reply(**{DEVICE: "isDocked", OTHER: "isDocked"}),
+    )
+    recorder = Recorder(client)
+    # What on_poll saw: the device's shown status, and how many states had been delivered.
+    shown: list[tuple[MowerStatus | None, int]] = []
+
+    def inside(_result: PollResult) -> None:
+        state = client.state(DEVICE)
+        shown.append((None if state is None else state.status, len(recorder.states)))
+
+    client.on_poll(inside)
+    await connect(client)
+    await connected(client)
+    await tick(sleeper, clock, 120)  # the reply flips the shown state: on_state, then on_poll
+    assert shown[-1] == (MowerStatus.MOWING, 4)
+    assert recorder.states[-1].source is StateSource.REST
+    await state_message(client, "isDocked")  # MQTT now current for the device
+    states_before = len(recorder.states)
+    await tick(sleeper, clock, 120)  # the reply is read and delivered; the device keeps MQTT's
+    assert len(recorder.polls) == 3 and sorted(recorder.polls[-1].statuses) == [DEVICE, OTHER]
+    assert shown[-1][0] is MowerStatus.DOCKED and client.state(DEVICE).source is StateSource.MQTT
+    assert [s.device_id for s in recorder.states[states_before:]] == [OTHER]  # none for the device
+    assert recorder.errors == []
+
+
+@pytest.mark.asyncio
+async def test_a_failed_poll_delivers_the_exception_beside_an_empty_mapping(
+    sleeper: FakeSleeper, clock: FakeClock
+) -> None:
+    client, _session = make(broker_reply(), failure(), both_docked())
+    recorder = Recorder(client)
+    await connect(client)
+    failed = recorder.polls[-1]
+    assert (failed.statuses, failed.requested) == ({}, (DEVICE, OTHER))
+    assert isinstance(failed.error, MowerTransportError)
+    assert failed.error is recorder.errors[0][1] is client.last_poll_error
+    assert failed.received_at == clock.wall_now
+    await tick(sleeper, clock, 240)
+    recovered = recorder.polls[-1]
+    assert recovered.error is None and sorted(recovered.statuses) == [DEVICE, OTHER]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_token_step_is_delivered_as_a_failed_poll(
+    sleeper: FakeSleeper, clock: FakeClock
+) -> None:
+    provider = Provider(None, RuntimeError("no token"), "t2")
+    client, session = make(broker_reply(), both_docked(), both_docked(), token_provider=provider)
+    recorder = Recorder(client)
+    # Whether last_poll_error already held the delivered outcome's error during the delivery.
+    recorded: list[bool] = []
+    client.on_poll(lambda result: recorded.append(client.last_poll_error is result.error))
+    await connect(client)
+    await tick(sleeper, clock, 120)
+    failed = recorder.polls[-1]
+    assert (failed.statuses, failed.requested) == ({}, (DEVICE, OTHER))
+    assert str(failed.error) == "no token" and failed.error is recorder.errors[-1][1]
+    assert recorded == [True, True]  # the startup poll's None, then the failure, set before
+    assert requests(session) == ["v2", "getVehicleStatus"]  # no request was made
+    await tick(sleeper, clock, 240)
+    assert recorder.polls[-1].error is None and len(recorder.polls) == 3
+    assert recorded == [True, True, True] and client.last_poll_error is None
+
+
+@pytest.mark.asyncio
+async def test_a_raising_on_poll_callback_is_logged_and_the_others_still_run(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    client, _session = make(broker_reply(), both_docked(), both_docked())
+
+    def explode(_result: PollResult) -> None:
+        raise RuntimeError("boom")
+
+    client.on_poll(explode)
+    recorder = Recorder(client)
+    with caplog.at_level(logging.ERROR, logger="mower_sdk.navimow_client"):
+        await connect(client)
+        statuses = await client.async_poll()
+    assert sorted(statuses) == [DEVICE, OTHER] and len(recorder.polls) == 2
+    assert "poll callback" in caplog.text and "boom" in caplog.text
+    assert recorder.errors == []  # a callback's failure is not a poll failure
 
 
 @pytest.mark.asyncio

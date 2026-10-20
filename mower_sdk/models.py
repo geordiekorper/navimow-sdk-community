@@ -1512,6 +1512,17 @@ class DeviceLocation:
             record persisted and handed back after a restart keeps rejecting
             late entries. Left out of the hash, since a dict is unhashable;
             equality compares it.
+        live_fields: The names of the fields an applied entry wrote since the
+            record was restored or first built: a pose x, y, theta,
+            vehicle_state, pose_at and pose_received_at; a task entry
+            current_zone and zone_at, and route_progress and progress_at,
+            each pair when it carried the reading, and the other task fields
+            with task_at; a target entry partition_ids and target_at when the
+            set changed, and target_last_at; a delay entry task_delay and
+            delay_received_at; a docked pose the dock fields. A program that
+            persisted a record and handed it back tells a restored value from
+            a live one by membership. Not compared, left out of to_dict() and
+            empty on a record from from_dict() or restore().
     """
 
     device_id: str
@@ -1544,6 +1555,7 @@ class DeviceLocation:
     dock_at: int | None = None
     dock_samples: int = 0
     marks: dict[int, int] = field(default_factory=dict, hash=False)
+    live_fields: frozenset[str] = field(default=frozenset(), compare=False)
 
     @property
     def status(self) -> MowerStatus | None:
@@ -1574,13 +1586,15 @@ class DeviceLocation:
         """Give the record as JSON-ready values.
 
         Returns:
-            Every field under its own name. The two receipt times are ISO 8601
-            strings, the mower times stay integers, partition_ids is a list
-            and marks is keyed by the entry type as a string. A None stays
-            None.
+            Every field but live_fields under its own name. The two receipt
+            times are ISO 8601 strings, the mower times stay integers,
+            partition_ids is a list and marks is keyed by the entry type as a
+            string. A None stays None.
         """
         data: dict[str, Any] = {}
         for item in fields(self):
+            if item.name == "live_fields":
+                continue  # provenance of this run, not of the persisted record
             value = getattr(self, item.name)
             if isinstance(value, datetime):
                 value = _iso(value)
@@ -1603,7 +1617,8 @@ class DeviceLocation:
 
         Returns:
             The record. Absent or unreadable values are None, absent marks
-            empty. partition_ids keeps the ids that can be read from a list or
+            empty, live_fields empty (nothing has been applied to a rebuilt
+            record). partition_ids keeps the ids that can be read from a list or
             tuple, and marks the entries whose type and time can be read.
             dock_samples is 0 when absent, unreadable or negative, and
             device_id "" when absent.

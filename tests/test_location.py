@@ -708,6 +708,81 @@ def test_the_reconnect_delay_shape_with_an_unknown_field_is_reported() -> None:
     assert (parsed.messages, parsed.reasons) == ([], ["unknown_field"])
 
 
+# ---- provenance: live_fields ---------------------------------------------------------------------
+
+
+def test_live_fields_names_what_each_entry_type_wrote_since_the_restore() -> None:
+    decoder = LocationDecoder()
+    restored = DeviceLocation(
+        device_id=DEVICE, x=1.0, y=2.0, partition_ids=(7,), route_progress=5, marks={1: T - 100_000}
+    )
+    decoder.restore(DEVICE, restored)
+    assert decoder.get(DEVICE).live_fields == frozenset()
+    (after_pose,) = decode(decoder, [pose(T - 30_000)]).messages
+    assert after_pose.location.live_fields == {
+        "x",
+        "y",
+        "theta",
+        "vehicle_state",
+        "pose_at",
+        "pose_received_at",
+    }
+    (after_task,) = decode(decoder, [task(T - 20_000, mowingPercentage="12")]).messages
+    task_fields = {
+        "mowing_percentage",
+        "area_m2",
+        "week_area_m2",
+        "action",
+        "sub_action",
+        "mow_start_type",
+        "map_work_position",
+        "task_at",
+    }
+    assert after_task.location.live_fields == after_pose.location.live_fields | task_fields
+    assert "route_progress" not in after_task.location.live_fields  # not carried: left alone
+    (with_route,) = decode(
+        decoder, [task(T - 15_000, currentMowProgress="100", currentMowBoundary="3")]
+    ).messages
+    assert with_route.location.live_fields >= {
+        "route_progress",
+        "progress_at",
+        "current_zone",
+        "zone_at",
+    }
+    (repeat,) = decode(decoder, [target(T - 10_000, [7])]).messages  # the restored set again
+    assert "target_last_at" in repeat.location.live_fields
+    assert {"partition_ids", "target_at"}.isdisjoint(repeat.location.live_fields)
+    (changed,) = decode(decoder, [target(T - 5000, [8])]).messages
+    assert changed.location.live_fields >= {"partition_ids", "target_at", "target_last_at"}
+    (delayed,) = decode(decoder, [{"type": 4, "taskDelay": True}]).messages
+    assert delayed.location.live_fields >= {"task_delay", "delay_received_at"}
+    assert decoder.get(DEVICE).live_fields == delayed.location.live_fields
+    assert {"dock_x", "dock_samples", "marks", "device_id"}.isdisjoint(delayed.location.live_fields)
+
+
+def test_live_fields_is_cleared_by_a_restore_and_left_alone_by_a_rejected_entry() -> None:
+    decoder = LocationDecoder()
+    decode(decoder, [pose(T - 30_000)])
+    before = decoder.get(DEVICE).live_fields
+    assert before and decode(decoder, [pose(T - 40_000)]).reasons == ["stale"]
+    assert decoder.get(DEVICE).live_fields == before
+    decoder.restore(DEVICE, decoder.get(DEVICE))
+    assert decoder.get(DEVICE).live_fields == frozenset()
+    assert DeviceLocation.from_dict(decoder.get(DEVICE).to_dict()).live_fields == frozenset()
+
+
+def test_live_fields_is_neither_compared_nor_persisted() -> None:
+    decoder = LocationDecoder()
+    (message,) = decode(decoder, [pose(T)]).messages
+    record = message.location
+    assert record.live_fields and record == replace(record, live_fields=frozenset())
+    assert hash(record) == hash(replace(record, live_fields=frozenset()))
+    assert "live_fields" not in record.to_dict()
+    assert "live_fields" in repr(record)
+    given = {**record.to_dict(), "live_fields": ["x"]}  # a key from elsewhere is ignored
+    assert DeviceLocation.from_dict(given).live_fields == frozenset()
+
+
 def test_the_lower_edge_of_the_plausibility_window_is_believed() -> None:
     decoder = LocationDecoder()
     assert decode(decoder, [pose(PLAUSIBLE_MIN_MS)]).reasons == []
