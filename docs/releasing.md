@@ -59,6 +59,19 @@ git push origin v<version>
 If the tag lands on a later day than the changelog says, correct the date in
 a second `chore(release)` commit first and tag that one.
 
+Only a repository admin, which in a repository owned by a user is the owner,
+can create, move or delete a `v*` tag: the ruleset in
+`.github/rulesets/release-tags.json` refuses it to anyone and anything else,
+a token with write access included. It is applied to the repository with
+
+```bash
+gh api --method POST repos/geordiekorper/navimow-sdk-community/rulesets --input .github/rulesets/release-tags.json
+```
+
+and `gh ruleset list --repo geordiekorper/navimow-sdk-community` shows it.
+A change to the file goes up the same way with `--method PUT` and the
+ruleset's id appended to the path.
+
 ## 4. What the workflow does
 
 Every `v*` tag runs five jobs, each stopping the run when it fails:
