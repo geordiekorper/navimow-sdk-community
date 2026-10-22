@@ -1,0 +1,91 @@
+# Each configured consumer's tests against the release TestPyPI serves.
+# publish.yml calls this workflow once testpypi-verify has seen TestPyPI
+# serve the tag's version, with that version and the repository variable
+# CONSUMERS; consumers-check.yml calls it by hand with a version and
+# entries of its own, so the two jobs can be tried without a tag. The
+# consumers are configuration, never written here: whitespace-separated
+# entries owner/name@ref, @ref optional and main by default. No entry at
+# all fails the consumers job, and a consumer without
+# scripts/test-against-sdk.sh at its ref fails its compat leg: a release
+# that cannot be checked is not released.
+name: Consumers
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: The version each consumer installs from TestPyPI; empty leaves the choice to its script
+        type: string
+        required: true
+      consumers:
+        description: Whitespace-separated entries owner/name@ref, @ref optional and main by default
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  consumers:
+    name: read the consumer entries
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.parse.outputs.matrix }}
+    steps:
+      - name: Parse the entries into a matrix, one leg per consumer
+        id: parse
+        env:
+          CONSUMERS: ${{ inputs.consumers }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import sys
+
+          entries = os.environ["CONSUMERS"].split()
+          if not entries:
+              print("::error::no consumer is configured: set the repository variable CONSUMERS")
+              sys.exit(1)
+          include = []
+          for entry in entries:
+              repository, at, ref = entry.partition("@")
+              if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository) or (at and not ref):
+                  print(f"::error::{entry} is not a consumer entry: owner/name or owner/name@ref")
+                  sys.exit(1)
+              include.append({"repository": repository, "ref": ref or "main"})
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write("matrix=" + json.dumps({"include": include}) + "\n")
+          PY
+
+  compat:
+    name: a consumer's tests against the release TestPyPI serves
+    needs: [consumers]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.consumers.outputs.matrix) }}
+    steps:
+      # The consumer's code runs here: no credential is left in its checkout.
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ matrix.repository }}
+          ref: ${{ matrix.ref }}
+          path: consumer
+          persist-credentials: false
+      # The consumer's script makes its environment with uv. setup-uv has
+      # published no floating major tag since v7, so the pin is a release.
+      # Nothing here is worth caching, and the action's post step fails a
+      # run that cached nothing, so its cache is off.
+      - uses: astral-sh/setup-uv@v10.3.1
+        with:
+          enable-cache: false
+      - name: Run the consumer's test entry point against the release
+        working-directory: consumer
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          test -x scripts/test-against-sdk.sh || { echo "::error::the consumer has no scripts/test-against-sdk.sh at the configured ref; the release cannot be checked"; exit 1; }
+          scripts/test-against-sdk.sh ${VERSION:+"$VERSION"}

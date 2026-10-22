@@ -38,7 +38,7 @@ uv when uv is installed and with virtualenv otherwise.
 | `tools/` | The scripts behind the checks, and their own tests in `tools/tests/` |
 | `noxfile.py` | The checks, as nox sessions |
 | `.pre-commit-config.yaml`, `.gitlint` | The commit hooks and the commit-message rules |
-| `.github/workflows/` | `ci.yml`, which calls the nox sessions, and `publish.yml` |
+| `.github/workflows/` | `ci.yml`, which calls the nox sessions; `publish.yml` and the `consumers.yml` it calls; `consumers-check.yml`, which runs that one by hand |
 
 [architecture.md](architecture.md) says how the core modules work together.
 

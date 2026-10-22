@@ -77,7 +77,7 @@ repository that ignores the developer's own git configuration.
 | `test_gitlint_rules.py` | `.gitlint` and the repository's rules, run by gitlint itself on a staged change and on a commit range |
 | `test_ci_hygiene.py` | Which commit range CI's `hygiene` job checks, and how it runs the checks |
 | `test_nox_sessions.py` | That `noxfile.py` agrees with `ci.yml`, `pyproject.toml` and the hook configuration |
-| `test_publish_workflow.py` | The shape of the publish workflow, and its steps run through bash with stand-ins: a consumer's tests, the install from TestPyPI, the soak gate before PyPI |
+| `test_publish_workflow.py` | The shape of the publish workflow, of the consumers workflow it calls and of the check that runs that one by hand, and their steps run through bash with stand-ins: the tag's version, the consumer entries, a consumer's tests, the install from TestPyPI, the soak gate before PyPI |
 | `test_check_index.py` | `check_index.py` against a record served from a file: every mismatch, the retries |
 | `test_tag_ruleset.py` | The release tag ruleset in `.github/rulesets/`: `v*` tags, admin only |
 | `test_fixture_isolation.py` | That the throwaway repositories are isolated |
