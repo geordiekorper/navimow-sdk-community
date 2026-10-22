@@ -1,0 +1,31 @@
+# The consumers workflow without a release. Run by hand from the Actions
+# page with a version and consumer entries of its own, it reads the
+# entries, checks each consumer out and runs its scripts/test-against-sdk.sh
+# as a tag's Publish run would; it uploads nothing and touches no gate.
+# Two branches of this repository are consumers made for it: each holds
+# only the script, which prints the version it is given and exits 0 on
+# consumer-check-pass and 3 on consumer-check-fail.
+name: Consumers check
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: The version each consumer installs from TestPyPI; empty leaves the choice to its script
+        type: string
+        required: false
+        default: ""
+      consumers:
+        description: Whitespace-separated entries owner/name@ref, @ref optional and main by default
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  consumers:
+    uses: ./.github/workflows/consumers.yml
+    with:
+      version: ${{ inputs.version }}
+      consumers: ${{ inputs.consumers }}

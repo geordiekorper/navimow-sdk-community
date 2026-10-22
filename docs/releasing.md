@@ -3,10 +3,10 @@
 A release is a version bump on `main`, a tag on that commit and one approval.
 The bump is the one change that does not go through a pull request: the
 maintainer pushes it to `main` directly.
-The tag starts `.github/workflows/publish.yml`, which runs a consumer's tests
-against the wheel, uploads to TestPyPI on its own, tests the release as
-TestPyPI serves it, and uploads to PyPI once the release has soaked on a
-live installation and the owner approves. Both indexes trust this
+The tag starts `.github/workflows/publish.yml`, which uploads to TestPyPI on
+its own, tests the release as TestPyPI serves it, runs each configured
+consumer's tests against it, and uploads to PyPI once the release has soaked
+on a live installation and the owner approves. Both indexes trust this
 repository's workflow directly (trusted publishing), so no token is stored
 anywhere.
 
@@ -74,23 +74,13 @@ ruleset's id appended to the path.
 
 ## 4. What the workflow does
 
-Every `v*` tag runs five jobs, each stopping the run when it fails:
+Every `v*` tag runs six jobs, each stopping the run when it fails:
 
 1. **build** checks that the tag is `v` plus `mower_sdk.__version__` and stops
-   if it is not, builds the sdist and the wheel once, and runs
-   `twine check --strict` on them.
-2. **compat** runs a consumer's tests against the wheel. The consumer is
-   named by two repository variables, set under the repository's settings:
-   `CONSUMER_REPOSITORY`, a public GitHub repository as `owner/name`, and
-   `CONSUMER_REF`, the branch, tag or commit to check out. The job checks it
-   out and runs its `scripts/test-against-sdk.sh --wheel <path>` from the
-   consumer's own directory, with the absolute path of the wheel; what the
-   script tests and how is the consumer's business, and its exit status is
-   the verdict. So a release that reaches TestPyPI has passed the consumer's
-   tests. With either variable unset the job passes, and the run's summary
-   says that no consumer's tests ran.
-3. **testpypi** uploads the files to TestPyPI, unattended.
-4. **testpypi-verify** checks the release as TestPyPI serves it, on the oldest
+   if it is not, builds the sdist and the wheel once, runs
+   `twine check --strict` on them, and hands the version on to the consumers.
+2. **testpypi** uploads the files to TestPyPI, unattended.
+3. **testpypi-verify** checks the release as TestPyPI serves it, on the oldest
    and the newest supported Python. `tools/check_index.py` reads TestPyPI's
    record of the version, asking again while the index does not know it yet,
    and compares the files it serves with the build's by name and sha256. The
@@ -100,7 +90,29 @@ Every `v*` tag runs five jobs, each stopping the run when it fails:
    another directory, so the installed package is what gets imported, plus
    `tools/check_wheel.py metadata`. This is the fresh-environment check that
    used to be done by hand.
-5. **pypi** waits. It runs in the `pypi` environment, whose required-reviewer
+4. **consumers** reads the repository variable `CONSUMERS`, set under the
+   repository's settings: whitespace-separated entries `owner/name@ref`, each
+   a public GitHub repository and the branch, tag or commit to check out, with
+   `@ref` optional and `main` by default, so `example/mower-app
+   example/mower-cli@release` names two consumers, the first at `main`. The
+   consumers are configuration: neither the workflow nor this document names
+   one, and a maintainer sets their own. An empty or whitespace-only variable
+   fails the release, since a release no consumer has checked is not released.
+5. **compat** runs once per entry. It checks the consumer out at its ref,
+   installs `uv` and runs `scripts/test-against-sdk.sh <version>` from the
+   consumer's own directory, with the tag's version: the script installs that
+   version from TestPyPI, the bytes a user gets, and runs the consumer's tests;
+   what it tests and how is the consumer's business, and its exit status is
+   the verdict. A consumer without the script at its ref fails the release.
+   Every consumer has to pass before the next job.
+
+   Both jobs are `.github/workflows/consumers.yml`, which `publish.yml` calls.
+   `.github/workflows/consumers-check.yml` runs them by hand, from the Actions
+   page, with a version and entries of its own, so an entry or a script can be
+   tried without a tag; it uploads nothing. The branches `consumer-check-pass`
+   and `consumer-check-fail` of this repository are consumers made for that:
+   each holds only the script, which exits 0 on the first and 3 on the second.
+6. **pypi** waits. It runs in the `pypi` environment, whose required-reviewer
    rule holds it until the owner approves the deployment. Its first step then
    reads the commit status `navimow-alpha/soak` on the tag's commit and
    refuses the upload unless it is `success`: whoever deploys the release to
@@ -109,10 +121,10 @@ Every `v*` tag runs five jobs, each stopping the run when it fails:
 
 ## 5. Wait for the soak, then approve
 
-Two things have to hold before the approval: `testpypi-verify` has passed,
-and the status `navimow-alpha/soak` on the tag's commit is `success`. The
-run's page shows the first; the commit's status list on GitHub shows the
-second, as does
+Three things have to hold before the approval: `testpypi-verify` has passed,
+`compat` has passed for every consumer, and the status `navimow-alpha/soak`
+on the tag's commit is `success`. The run's page shows the first two; the
+commit's status list on GitHub shows the third, as does
 
 ```bash
 gh api repos/geordiekorper/navimow-sdk-community/commits/v<version>/status --jq '.statuses[] | select(.context == "navimow-alpha/soak") | .state'

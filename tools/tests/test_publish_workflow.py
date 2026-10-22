@@ -1,4 +1,8 @@
-"""The Publish workflow: a tag is tested, goes to TestPyPI, then to PyPI on approval."""
+"""The Publish workflow: a tag goes to TestPyPI, is tested from there, then to PyPI on approval.
+
+The consumers workflow it calls, and the check that runs that one by hand,
+are pinned here too.
+"""
 
 from __future__ import annotations
 
@@ -13,12 +17,20 @@ from conftest import ROOT, run
 
 yaml = pytest.importorskip("yaml")
 
-WORKFLOW = yaml.safe_load(
-    (ROOT / ".github" / "workflows" / "publish.yml").read_text(encoding="utf-8")
-)
+WORKFLOWS = ROOT / ".github" / "workflows"
+
+
+def workflow(name: str) -> dict:
+    return yaml.safe_load((WORKFLOWS / name).read_text(encoding="utf-8"))
+
+
+WORKFLOW = workflow("publish.yml")
 JOBS = WORKFLOW["jobs"]
+CONSUMERS = workflow("consumers.yml")
+CHECK = workflow("consumers-check.yml")
+CONSUMERS_WORKFLOW = "./.github/workflows/consumers.yml"
 DOWNLOAD = {"uses": "actions/download-artifact@v8", "with": {"name": "dist", "path": "dist/"}}
-A_CONSUMER = "steps.consumer.outputs.named == 'true'"
+VERSION = "0.2.0a9"
 
 
 def run_step(
@@ -74,104 +86,46 @@ def test_only_a_version_tag_starts_a_release() -> None:
     assert WORKFLOW["permissions"] == {"contents": "read"}
 
 
-def test_compat_runs_the_named_consumers_tests_against_the_wheel() -> None:
-    job = JOBS["compat"]
-    assert job["needs"] == "build"
-    # The consumer is named by repository variables, not in the workflow.
-    assert job["env"] == {
-        "CONSUMER_REPOSITORY": "${{ vars.CONSUMER_REPOSITORY }}",
-        "CONSUMER_REF": "${{ vars.CONSUMER_REF }}",
-    }
-    gate, download, checkout, run = job["steps"]
-    assert gate["id"] == "consumer"
-    assert download == {**DOWNLOAD, "if": A_CONSUMER}
-    assert checkout["if"] == A_CONSUMER
-    # The consumer's code runs here: no credential is left in its checkout.
-    assert checkout["with"] == {
-        "repository": "${{ env.CONSUMER_REPOSITORY }}",
-        "ref": "${{ env.CONSUMER_REF }}",
-        "path": "consumer",
-        "persist-credentials": False,
-    }
-    assert run["if"] == A_CONSUMER
-    assert run["working-directory"] == "consumer"
-    assert 'scripts/test-against-sdk.sh --wheel "$1"' in run["run"]
+BUILD_STEPS = {step.get("name"): step for step in JOBS["build"]["steps"]}
+TAG_CHECK = BUILD_STEPS["Check that the tag matches mower_sdk.__version__"]
 
 
-def test_compat_names_the_consumer_or_says_that_none_is_named(tmp_path: Path) -> None:
-    gate = JOBS["compat"]["steps"][0]
-    both = {"CONSUMER_REPOSITORY": "owner/consumer", "CONSUMER_REF": "main"}
-    proc = run_step(gate, tmp_path, both)
-    assert proc.returncode == 0
-    assert written(tmp_path, "github_output") == "named=true\n"
-    assert written(tmp_path, "github_step_summary") == ""
-    assert "consumer: owner/consumer at main" in proc.stdout
-    # GitHub gives an unset variable as the empty string.
-    for missing in ("CONSUMER_REPOSITORY", "CONSUMER_REF"):
-        proc = run_step(gate, tmp_path, {**both, missing: ""})
-        assert proc.returncode == 0
-        assert written(tmp_path, "github_output") == "named=false\n"
-        assert written(tmp_path, "github_step_summary").startswith("No consumer named")
-        assert "::notice::No consumer named" in proc.stdout
+def test_the_build_job_checks_the_tag_and_the_long_description() -> None:
+    runs = "\n".join(step.get("run", "") for step in JOBS["build"]["steps"])
+    assert "does not match mower_sdk.__version__" in runs
+    assert "twine check --strict dist/*" in runs
+    assert set(JOBS) == {"build", "testpypi", "testpypi-verify", "consumers", "pypi"}
 
 
-# A stand-in for a consumer's test entry point: records its arguments and
-# exits with the status the test chose.
-FAKE_ENTRY_POINT = '#!/bin/sh\nprintf "%s\\n" "$@" > "$RECORDED"\nexit "$STATUS"\n'
-
-
-def consumer_checkout(tmp_path: Path) -> Path:
-    consumer = tmp_path / "consumer"
-    script = consumer / "scripts" / "test-against-sdk.sh"
-    script.parent.mkdir(parents=True)
-    script.write_text(FAKE_ENTRY_POINT, encoding="utf-8")
-    script.chmod(0o755)
-    return consumer
-
-
-@pytest.mark.parametrize("status", [0, 3])
-def test_compat_runs_the_entry_point_in_the_consumers_directory_with_the_wheels_path(
-    tmp_path: Path, status: int
-) -> None:
-    run = JOBS["compat"]["steps"][3]
-    consumer = consumer_checkout(tmp_path)
-    (tmp_path / "dist").mkdir()
-    (tmp_path / "dist" / "navimow_sdk_community-0.2.0a9-py3-none-any.whl").write_bytes(b"")
-    (tmp_path / "dist" / "navimow_sdk_community-0.2.0a9.tar.gz").write_bytes(b"")
-    recorded = tmp_path / "recorded"
-    env = {"RECORDED": str(recorded), "STATUS": str(status)}
-    proc = run_step(run, tmp_path, env, cwd=consumer)
-    # The script's exit status is the verdict.
-    assert proc.returncode == status
-    wheel = tmp_path / "dist" / "navimow_sdk_community-0.2.0a9-py3-none-any.whl"
-    assert recorded.read_text(encoding="utf-8") == f"--wheel\n{wheel}\n"
-
-
-@pytest.mark.parametrize("wheels", [0, 2])
-def test_compat_refuses_to_run_without_exactly_one_wheel(tmp_path: Path, wheels: int) -> None:
-    run = JOBS["compat"]["steps"][3]
-    consumer = consumer_checkout(tmp_path)
-    (tmp_path / "dist").mkdir()
-    for n in range(wheels):
-        (tmp_path / "dist" / f"navimow_sdk_community-0.2.0a{n}-py3-none-any.whl").write_bytes(b"")
-    recorded = tmp_path / "recorded"
-    proc = run_step(run, tmp_path, {"RECORDED": str(recorded), "STATUS": "0"}, cwd=consumer)
+def test_the_tag_check_hands_the_version_on_to_the_consumers(tmp_path: Path) -> None:
+    # A with: value is an expression, not a shell, so the version the
+    # consumers job passes on is a job output of build.
+    assert JOBS["build"]["outputs"] == {"version": "${{ steps.version.outputs.version }}"}
+    assert TAG_CHECK["id"] == "version"
+    (tmp_path / "mower_sdk").mkdir()
+    (tmp_path / "mower_sdk" / "__init__.py").write_text(
+        f'__version__ = "{VERSION}"\n', encoding="utf-8"
+    )
+    proc = run_step(TAG_CHECK, tmp_path, {"GITHUB_REF_NAME": f"v{VERSION}"})
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout == f"releasing {VERSION}\n"
+    assert written(tmp_path, "github_output") == f"version={VERSION}\n"
+    proc = run_step(TAG_CHECK, tmp_path, {"GITHUB_REF_NAME": "v0.2.0a8"})
     assert proc.returncode == 1
-    assert "expected one wheel in dist/" in proc.stdout
-    assert not recorded.exists()
+    assert f"tag v0.2.0a8 does not match mower_sdk.__version__ {VERSION}" in proc.stderr
+    assert written(tmp_path, "github_output") == ""
 
 
 def test_testpypi_uploads_the_build_unattended() -> None:
     job = JOBS["testpypi"]
-    # A failed consumer test stops the run before TestPyPI.
-    assert job["needs"] == ["build", "compat"]
+    # The build is all TestPyPI waits for: the consumers test the release from there.
+    assert job["needs"] == ["build"]
     assert job["environment"]["name"] == "testpypi"
     assert job["permissions"] == {"id-token": "write"}
     assert job["steps"][0] == DOWNLOAD
     assert job["steps"][1]["with"] == {"repository-url": "https://test.pypi.org/legacy/"}
 
 
-VERSION = "0.2.0a9"
 WHEEL = f"navimow_sdk_community-{VERSION}-py3-none-any.whl"
 VERIFY_STEPS = {step.get("name"): step for step in JOBS["testpypi-verify"]["steps"]}
 INSTALL = VERIFY_STEPS["Install the wheel TestPyPI serves into a fresh environment"]
@@ -307,11 +261,198 @@ def test_the_test_step_runs_the_tracked_tests_from_another_directory(
     ]
 
 
+def test_the_consumers_job_calls_the_reusable_workflow_with_the_tags_version() -> None:
+    # Once testpypi-verify has seen TestPyPI serve the version. The consumers
+    # come from the repository variable, never from the workflow.
+    assert JOBS["consumers"] == {
+        "needs": ["build", "testpypi", "testpypi-verify"],
+        "uses": CONSUMERS_WORKFLOW,
+        "with": {
+            "version": "${{ needs.build.outputs.version }}",
+            "consumers": "${{ vars.CONSUMERS }}",
+        },
+    }
+
+
+def test_the_consumers_workflow_is_called_with_a_version_and_the_entries() -> None:
+    assert set(CONSUMERS[True]) == {"workflow_call"}
+    inputs = CONSUMERS[True]["workflow_call"]["inputs"]
+    assert {name: spec["type"] for name, spec in inputs.items()} == {
+        "version": "string",
+        "consumers": "string",
+    }
+    assert CONSUMERS["permissions"] == {"contents": "read"}
+    assert set(CONSUMERS["jobs"]) == {"consumers", "compat"}
+
+
+PARSE = CONSUMERS["jobs"]["consumers"]["steps"][0]
+COMPAT = CONSUMERS["jobs"]["compat"]
+RUN = COMPAT["steps"][2]
+
+
+def test_compat_runs_each_consumers_tests_against_the_release_testpypi_serves() -> None:
+    assert CONSUMERS["jobs"]["consumers"]["outputs"] == {
+        "matrix": "${{ steps.parse.outputs.matrix }}"
+    }
+    assert PARSE["id"] == "parse"
+    assert PARSE["env"] == {"CONSUMERS": "${{ inputs.consumers }}"}
+    assert COMPAT["needs"] == ["consumers"]
+    # One leg per entry; a failing consumer does not stop the others.
+    assert COMPAT["strategy"] == {
+        "fail-fast": False,
+        "matrix": "${{ fromJSON(needs.consumers.outputs.matrix) }}",
+    }
+    assert COMPAT["timeout-minutes"] == 30
+    checkout, uv, run_ = COMPAT["steps"]
+    # The consumer's code runs here: no credential is left in its checkout.
+    assert checkout["uses"] == "actions/checkout@v7"
+    assert checkout["with"] == {
+        "repository": "${{ matrix.repository }}",
+        "ref": "${{ matrix.ref }}",
+        "path": "consumer",
+        "persist-credentials": False,
+    }
+    # The consumer's script makes its environment with uv, so uv is there first.
+    # Its cache is off: the action's post step fails a run that cached nothing.
+    assert uv["uses"].startswith("astral-sh/setup-uv@v")
+    assert uv["with"] == {"enable-cache": False}
+    assert run_ is RUN
+    assert RUN["working-directory"] == "consumer"
+    assert RUN["env"] == {"VERSION": "${{ inputs.version }}"}
+
+
+def parse(tmp_path: Path, consumers: str) -> subprocess.CompletedProcess[str]:
+    return run_step(PARSE, tmp_path, {"CONSUMERS": consumers})
+
+
+def matrix(*entries: tuple[str, str]) -> str:
+    """The parse step's output line for these (repository, ref) entries."""
+    include = [{"repository": repository, "ref": ref} for repository, ref in entries]
+    return "matrix=" + json.dumps({"include": include}) + "\n"
+
+
+# GitHub gives an unset variable as the empty string.
+@pytest.mark.parametrize("consumers", ["", " \n\t "])
+def test_no_consumer_configured_fails_the_run(tmp_path: Path, consumers: str) -> None:
+    proc = parse(tmp_path, consumers)
+    assert proc.returncode == 1
+    assert proc.stdout == (
+        "::error::no consumer is configured: set the repository variable CONSUMERS\n"
+    )
+    assert written(tmp_path, "github_output") == ""
+
+
+def test_an_entry_is_a_repository_at_main_unless_it_names_a_ref(tmp_path: Path) -> None:
+    proc = parse(tmp_path, "owner/name")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert written(tmp_path, "github_output") == matrix(("owner/name", "main"))
+    # Any whitespace separates entries; @ref is the branch, tag or commit to check out.
+    proc = parse(tmp_path, " owner/name@release\n\tother-owner/other.name \n")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert written(tmp_path, "github_output") == matrix(
+        ("owner/name", "release"), ("other-owner/other.name", "main")
+    )
+
+
+@pytest.mark.parametrize(
+    "entry", ["name", "owner/name@", "owner/name/extra", "owner/name@v1 owner"]
+)
+def test_an_entry_that_is_not_a_repository_at_a_ref_fails_the_run(
+    tmp_path: Path, entry: str
+) -> None:
+    proc = parse(tmp_path, entry)
+    assert proc.returncode == 1
+    assert proc.stdout.startswith("::error::")
+    assert "is not a consumer entry: owner/name or owner/name@ref" in proc.stdout
+    assert written(tmp_path, "github_output") == ""
+
+
+# A stand-in for a consumer's test entry point: records its directory, how
+# many arguments it got and the arguments, and exits with the status the
+# test chose.
+FAKE_ENTRY_POINT = '#!/bin/sh\nprintf "%s\\n" "$PWD" "$#" "$@" > "$RECORDED"\nexit "$STATUS"\n'
+
+
+def consumer_checkout(tmp_path: Path, script: str | None = FAKE_ENTRY_POINT) -> Path:
+    """A consumer's checkout with its entry point, or without one when script is None."""
+    consumer = tmp_path / "consumer"
+    (consumer / "scripts").mkdir(parents=True)
+    if script is not None:
+        path = consumer / "scripts" / "test-against-sdk.sh"
+        path.write_text(script, encoding="utf-8")
+        path.chmod(0o755)
+    return consumer
+
+
+def recorded(tmp_path: Path) -> tuple[Path, list[str]]:
+    """The directory the stand-in ran in, and its argument count followed by the arguments."""
+    first, *rest = (tmp_path / "recorded").read_text(encoding="utf-8").splitlines()
+    return Path(first).resolve(), rest
+
+
+@pytest.mark.parametrize("status", [0, 3])
+def test_compat_runs_the_entry_point_in_the_consumers_directory_with_the_version(
+    tmp_path: Path, status: int
+) -> None:
+    consumer = consumer_checkout(tmp_path)
+    env = {"RECORDED": str(tmp_path / "recorded"), "STATUS": str(status), "VERSION": VERSION}
+    proc = run_step(RUN, tmp_path, env, cwd=consumer)
+    # The script's exit status is the verdict.
+    assert proc.returncode == status
+    # The version is the only argument.
+    assert recorded(tmp_path) == (consumer.resolve(), ["1", VERSION])
+
+
+def test_compat_passes_no_argument_when_no_version_is_given(tmp_path: Path) -> None:
+    # The check run may leave the version to the script.
+    consumer = consumer_checkout(tmp_path)
+    env = {"RECORDED": str(tmp_path / "recorded"), "STATUS": "0", "VERSION": ""}
+    proc = run_step(RUN, tmp_path, env, cwd=consumer)
+    assert proc.returncode == 0
+    assert recorded(tmp_path) == (consumer.resolve(), ["0"])
+
+
+@pytest.mark.parametrize("executable", [None, False], ids=["absent", "not executable"])
+def test_compat_fails_when_the_consumer_has_no_entry_point(
+    tmp_path: Path, executable: bool | None
+) -> None:
+    consumer = consumer_checkout(tmp_path, None if executable is None else FAKE_ENTRY_POINT)
+    if executable is False:
+        (consumer / "scripts" / "test-against-sdk.sh").chmod(0o644)
+    env = {"RECORDED": str(tmp_path / "recorded"), "STATUS": "0", "VERSION": VERSION}
+    proc = run_step(RUN, tmp_path, env, cwd=consumer)
+    assert proc.returncode == 1
+    assert proc.stdout == (
+        "::error::the consumer has no scripts/test-against-sdk.sh at the configured ref; "
+        "the release cannot be checked\n"
+    )
+    assert not (tmp_path / "recorded").exists()
+
+
+def test_consumers_check_runs_the_same_jobs_by_hand_without_a_release() -> None:
+    assert set(CHECK[True]) == {"workflow_dispatch"}
+    inputs = CHECK[True]["workflow_dispatch"]["inputs"]
+    assert set(inputs) == {"version", "consumers"}
+    # No version leaves the choice to the consumer's script.
+    assert inputs["version"]["type"] == "string"
+    assert inputs["version"]["required"] is False
+    assert inputs["version"]["default"] == ""
+    assert inputs["consumers"]["type"] == "string"
+    assert inputs["consumers"]["required"] is True
+    assert CHECK["permissions"] == {"contents": "read"}
+    assert CHECK["jobs"] == {
+        "consumers": {
+            "uses": CONSUMERS_WORKFLOW,
+            "with": {"version": "${{ inputs.version }}", "consumers": "${{ inputs.consumers }}"},
+        }
+    }
+
+
 def test_pypi_waits_for_the_checks_and_the_approval_of_its_environment() -> None:
     job = JOBS["pypi"]
-    # A failed upload to TestPyPI, or a release that fails from there, stops
-    # the run before PyPI.
-    assert job["needs"] == ["build", "testpypi", "testpypi-verify"]
+    # A failed upload to TestPyPI, a release that fails from there, or a
+    # consumer whose tests fail against it, stops the run before PyPI.
+    assert job["needs"] == ["build", "testpypi", "testpypi-verify", "consumers"]
     # The pypi environment's required-reviewer rule is what holds the job.
     assert job["environment"] == {
         "name": "pypi",
@@ -387,10 +528,3 @@ def test_anything_but_a_passed_soak_refuses_the_upload(
     assert proc.stdout.startswith(
         f"::error::navimow-alpha/soak on v{VERSION} is {state}, not success"
     )
-
-
-def test_the_build_job_checks_the_tag_and_the_long_description() -> None:
-    runs = "\n".join(step.get("run", "") for step in JOBS["build"]["steps"])
-    assert "does not match mower_sdk.__version__" in runs
-    assert "twine check --strict dist/*" in runs
-    assert set(JOBS) == {"build", "compat", "testpypi", "testpypi-verify", "pypi"}

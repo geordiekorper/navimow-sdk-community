@@ -1,17 +1,18 @@
 # Release a version tag using PyPI trusted publishing (OIDC), so no API
 # token is stored anywhere. Every v* tag builds the sdist and wheel once,
-# runs a consumer's tests against the wheel when the repository variables
-# name one, uploads the files to TestPyPI unattended, checks that TestPyPI
-# serves them as built and that the release installs from there and passes
-# its tests, and then waits at the pypi job: that job runs in the pypi
-# environment, whose required-reviewer rule holds it until the owner
-# approves the deployment, and its first step refuses the upload until the
-# release has soaked on a live installation, so nothing reaches PyPI before
-# the release has been tested and run. A failed job stops the run before
-# the jobs after it. Both indexes list this repository as the project's
-# trusted publisher: owner geordiekorper, repository navimow-sdk-community,
-# workflow publish.yml, environment testpypi on test.pypi.org and pypi on
-# pypi.org.
+# uploads the files to TestPyPI unattended, checks that TestPyPI serves
+# them as built and that the release installs from there and passes its
+# tests, runs each configured consumer's tests against the release
+# TestPyPI serves (consumers.yml, with the consumers the repository
+# variable CONSUMERS names), and then waits at the pypi job: that job runs
+# in the pypi environment, whose required-reviewer rule holds it until the
+# owner approves the deployment, and its first step refuses the upload
+# until the release has soaked on a live installation, so nothing reaches
+# PyPI before the release has been tested and run. A failed job stops the
+# run before the jobs after it. Both indexes list this repository as the
+# project's trusted publisher: owner geordiekorper, repository
+# navimow-sdk-community, workflow publish.yml, environment testpypi on
+# test.pypi.org and pypi on pypi.org.
 name: Publish
 
 on:
@@ -26,12 +27,17 @@ jobs:
     name: build and check the release
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    outputs:
+      # The tag's version, for the consumers job: a with: value is an
+      # expression, not a shell, so the tag check writes the version out.
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
           python-version: "3.14"
       - name: Check that the tag matches mower_sdk.__version__
+        id: version
         run: |
           python - <<'PY'
           import ast
@@ -50,6 +56,8 @@ jobs:
           if tag != f"v{version}":
               sys.exit(f"tag {tag} does not match mower_sdk.__version__ {version}")
           print(f"releasing {version}")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"version={version}\n")
           PY
       - name: Build the sdist and wheel
         run: |
@@ -62,58 +70,9 @@ jobs:
           path: dist/
           if-no-files-found: error
 
-  compat:
-    name: a consumer's tests against the wheel
-    needs: build
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    # The consumer: a public repository as owner/name, and the ref to check
-    # out, from the repository variables CONSUMER_REPOSITORY and
-    # CONSUMER_REF. Its scripts/test-against-sdk.sh runs the consumer's own
-    # tests against the wheel it is given and exits non-zero when they fail.
-    # With no consumer named, the job passes and the run's summary says so.
-    env:
-      CONSUMER_REPOSITORY: ${{ vars.CONSUMER_REPOSITORY }}
-      CONSUMER_REF: ${{ vars.CONSUMER_REF }}
-    steps:
-      - name: Is a consumer named?
-        id: consumer
-        run: |
-          if [ -n "$CONSUMER_REPOSITORY" ] && [ -n "$CONSUMER_REF" ]; then
-            echo "named=true" >> "$GITHUB_OUTPUT"
-            echo "consumer: $CONSUMER_REPOSITORY at $CONSUMER_REF"
-          else
-            echo "named=false" >> "$GITHUB_OUTPUT"
-            message="No consumer named: the repository variables CONSUMER_REPOSITORY and CONSUMER_REF are not both set, so no consumer's tests ran against the wheel."
-            echo "::notice::$message"
-            echo "$message" >> "$GITHUB_STEP_SUMMARY"
-          fi
-      - uses: actions/download-artifact@v8
-        if: steps.consumer.outputs.named == 'true'
-        with:
-          name: dist
-          path: dist/
-      - uses: actions/checkout@v7
-        if: steps.consumer.outputs.named == 'true'
-        with:
-          repository: ${{ env.CONSUMER_REPOSITORY }}
-          ref: ${{ env.CONSUMER_REF }}
-          path: consumer
-          persist-credentials: false
-      - name: Run the consumer's test entry point against the wheel
-        if: steps.consumer.outputs.named == 'true'
-        working-directory: consumer
-        run: |
-          set -- "$GITHUB_WORKSPACE"/dist/*.whl
-          if [ "$#" -ne 1 ] || [ ! -f "$1" ]; then
-            echo "expected one wheel in dist/, found: $*"
-            exit 1
-          fi
-          scripts/test-against-sdk.sh --wheel "$1"
-
   testpypi:
     name: upload to TestPyPI
-    needs: [build, compat]
+    needs: [build]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment:
@@ -179,9 +138,20 @@ jobs:
           "$python" -m pytest tests
           "$python" "$GITHUB_WORKSPACE/tools/check_wheel.py" metadata
 
+  consumers:
+    # Each configured consumer's tests against the release TestPyPI serves:
+    # the two jobs of consumers.yml, with the tag's version from the build
+    # job and the consumers from the repository variable CONSUMERS. Every
+    # consumer has to pass before pypi.
+    needs: [build, testpypi, testpypi-verify]
+    uses: ./.github/workflows/consumers.yml
+    with:
+      version: ${{ needs.build.outputs.version }}
+      consumers: ${{ vars.CONSUMERS }}
+
   pypi:
     name: upload to PyPI
-    needs: [build, testpypi, testpypi-verify]
+    needs: [build, testpypi, testpypi-verify, consumers]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment:
